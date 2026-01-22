@@ -5,6 +5,8 @@ use barehttp::response::ResponseExt;
 use barehttp::{Error, HttpClient};
 use core::time::Duration;
 
+const HTTPBIN: &str = "http://localhost"; // Local Docker container
+
 #[test]
 fn test_config_with_timeout() -> Result<(), Error> {
   let config = ConfigBuilder::new()
@@ -12,7 +14,7 @@ fn test_config_with_timeout() -> Result<(), Error> {
     .build();
 
   let mut client = HttpClient::with_config(config)?;
-  let response = client.get("http://httpbin.org/delay/1").call()?;
+  let response = client.get(format!("{}/delay/1", HTTPBIN)).call()?;
 
   assert!(response.is_success());
 
@@ -26,7 +28,7 @@ fn test_config_custom_user_agent() -> Result<(), Error> {
     .build();
 
   let mut client = HttpClient::with_config(config)?;
-  let response = client.get("http://httpbin.org/user-agent").call()?;
+  let response = client.get(format!("{}/user-agent", HTTPBIN)).call()?;
 
   assert!(response.is_success());
   let body = response.text()?;
@@ -44,7 +46,7 @@ fn test_config_http_status_as_response() -> Result<(), Error> {
   let mut client = HttpClient::with_config(config)?;
 
   // This should NOT return an error, even though it's a 404
-  let response = client.get("http://httpbin.org/status/404").call()?;
+  let response = client.get(format!("{}/status/404", HTTPBIN)).call()?;
   assert_eq!(response.status_code, 404);
   assert!(response.is_client_error());
 
@@ -58,7 +60,7 @@ fn test_config_redirect_no_follow() -> Result<(), Error> {
     .build();
 
   let mut client = HttpClient::with_config(config)?;
-  let response = client.get("http://httpbin.org/redirect/1").call()?;
+  let response = client.get(format!("{}/redirect/1", HTTPBIN)).call()?;
 
   // Should get the redirect response, not the final destination
   assert!(response.is_redirect());
@@ -77,7 +79,7 @@ fn test_config_max_redirects() -> Result<(), Error> {
   let mut client = HttpClient::with_config(config)?;
 
   // Follow 2 redirects (within limit)
-  let response = client.get("http://httpbin.org/redirect/2").call()?;
+  let response = client.get(format!("{}/redirect/2", HTTPBIN)).call()?;
   assert!(response.is_success());
 
   Ok(())
@@ -88,16 +90,16 @@ fn test_multiple_requests_same_client() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
 
   // First request
-  let response1 = client.get("http://httpbin.org/get").call()?;
+  let response1 = client.get(format!("{}/get", HTTPBIN)).call()?;
   assert!(response1.is_success());
 
   // Second request with different path
-  let response2 = client.get("http://httpbin.org/user-agent").call()?;
+  let response2 = client.get(format!("{}/user-agent", HTTPBIN)).call()?;
   assert!(response2.is_success());
 
   // Third request with POST
   let response3 = client
-    .post("http://httpbin.org/post")
+    .post(format!("{}/post", HTTPBIN))
     .send(b"data".to_vec())?;
   assert!(response3.is_success());
 

@@ -5,7 +5,7 @@
 use barehttp::response::ResponseExt;
 use barehttp::{Error, HttpClient, Request};
 
-const HTTPBIN: &str = "http://httpbin.org";
+const HTTPBIN: &str = "http://localhost"; // Local Docker container
 
 // ============================================================================
 // Request Builder Methods

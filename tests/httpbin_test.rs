@@ -6,7 +6,7 @@ use barehttp::config::{Config, HttpStatusHandling, RedirectPolicy};
 use barehttp::response::ResponseExt;
 use barehttp::{HttpClient, delete, get, post, put};
 
-const HTTPBIN_BASE: &str = "http://httpbin.org";
+const HTTPBIN_BASE: &str = "http://localhost"; // Local Docker container
 
 // ============================================================================
 // HTTP Methods

@@ -234,7 +234,11 @@ impl OsSocket {
 
   pub fn set_read_timeout(&mut self, timeout_ms: u32) -> Result<(), SocketError> {
     unsafe {
-      #[allow(clippy::cast_lossless, clippy::integer_division, clippy::cast_possible_wrap)]
+      #[allow(
+        clippy::cast_lossless,
+        clippy::integer_division,
+        clippy::cast_possible_wrap
+      )]
       let timeout = timeval {
         tv_sec: i64::from(timeout_ms.wrapping_div(1000)),
         tv_usec: ((timeout_ms % 1000).wrapping_mul(1000)) as i32,
@@ -258,7 +262,11 @@ impl OsSocket {
 
   pub fn set_write_timeout(&mut self, timeout_ms: u32) -> Result<(), SocketError> {
     unsafe {
-      #[allow(clippy::cast_lossless, clippy::integer_division, clippy::cast_possible_wrap)]
+      #[allow(
+        clippy::cast_lossless,
+        clippy::integer_division,
+        clippy::cast_possible_wrap
+      )]
       let timeout = timeval {
         tv_sec: i64::from(timeout_ms.wrapping_div(1000)),
         tv_usec: ((timeout_ms % 1000).wrapping_mul(1000)) as i32,
