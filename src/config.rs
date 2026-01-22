@@ -190,3 +190,113 @@ impl Default for ConfigBuilder {
     Self::new()
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn config_default_values() {
+    let config = Config::default();
+    
+    assert!(config.timeout.is_none());
+    assert_eq!(config.user_agent, Some(alloc::string::String::from("barehttp/1.0")));
+    assert_eq!(config.redirect_policy, RedirectPolicy::Follow);
+    assert_eq!(config.max_redirects, 10);
+    assert_eq!(config.http_status_handling, HttpStatusHandling::AsError);
+    assert_eq!(config.redirect_auth_headers, RedirectAuthHeaders::Never);
+    assert_eq!(config.max_response_header_size, 64 * 1024);
+    assert!(config.timeout_connect.is_none());
+    assert!(config.timeout_read.is_none());
+    assert_eq!(config.accept, Some(alloc::string::String::from("*/*")));
+    assert_eq!(config.protocol_restriction, ProtocolRestriction::Any);
+  }
+
+  #[test]
+  fn config_builder_timeout() {
+    let config = ConfigBuilder::new()
+      .timeout(Duration::from_secs(30))
+      .build();
+    
+    assert_eq!(config.timeout, Some(Duration::from_secs(30)));
+  }
+
+  #[test]
+  fn config_builder_user_agent() {
+    let config = ConfigBuilder::new()
+      .user_agent("MyClient/1.0")
+      .build();
+    
+    assert_eq!(config.user_agent, Some(alloc::string::String::from("MyClient/1.0")));
+  }
+
+  #[test]
+  fn config_builder_redirect_policy() {
+    let config = ConfigBuilder::new()
+      .redirect_policy(RedirectPolicy::NoFollow)
+      .build();
+    
+    assert_eq!(config.redirect_policy, RedirectPolicy::NoFollow);
+  }
+
+  #[test]
+  fn config_builder_max_redirects() {
+    let config = ConfigBuilder::new()
+      .max_redirects(5)
+      .build();
+    
+    assert_eq!(config.max_redirects, 5);
+  }
+
+  #[test]
+  fn config_builder_http_status_handling() {
+    let config = ConfigBuilder::new()
+      .http_status_handling(HttpStatusHandling::AsResponse)
+      .build();
+    
+    assert_eq!(config.http_status_handling, HttpStatusHandling::AsResponse);
+  }
+
+  #[test]
+  fn config_builder_chaining() {
+    let config = ConfigBuilder::new()
+      .timeout(Duration::from_secs(10))
+      .user_agent("Test/1.0")
+      .max_redirects(3)
+      .http_status_handling(HttpStatusHandling::AsResponse)
+      .build();
+    
+    assert_eq!(config.timeout, Some(Duration::from_secs(10)));
+    assert_eq!(config.max_redirects, 3);
+    assert_eq!(config.http_status_handling, HttpStatusHandling::AsResponse);
+  }
+
+  #[test]
+  fn config_builder_protocol_restriction() {
+    let config = ConfigBuilder::new()
+      .protocol_restriction(ProtocolRestriction::HttpsOnly)
+      .build();
+    
+    assert_eq!(config.protocol_restriction, ProtocolRestriction::HttpsOnly);
+  }
+
+  #[test]
+  fn config_builder_timeouts() {
+    let config = ConfigBuilder::new()
+      .timeout_connect(Duration::from_secs(5))
+      .timeout_read(Duration::from_secs(30))
+      .build();
+    
+    assert_eq!(config.timeout_connect, Some(Duration::from_secs(5)));
+    assert_eq!(config.timeout_read, Some(Duration::from_secs(30)));
+  }
+
+  #[test]
+  fn config_builder_accept_header() {
+    let config = ConfigBuilder::new()
+      .accept("application/json")
+      .build();
+    
+    assert_eq!(config.accept, Some(alloc::string::String::from("application/json")));
+  }
+}
