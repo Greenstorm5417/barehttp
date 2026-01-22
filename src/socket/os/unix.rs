@@ -55,11 +55,17 @@ impl OsSocket {
         crate::util::IpAddr::V4(ipv4) => self.connect_ipv4(*ipv4, *port)?,
         crate::util::IpAddr::V6(_ipv6) => return Err(SocketError::Unsupported),
       },
-      SocketAddr::Hostname { host, port: host_port } => {
-        let host_str = core::str::from_utf8(host).map_err(|_| SocketError::InvalidAddress)?;
+      SocketAddr::Hostname {
+        host,
+        port: host_port,
+      } => {
+        let host_str =
+          core::str::from_utf8(host).map_err(|_| SocketError::InvalidAddress)?;
 
         let addresses = crate::dns::os::resolve_host(host_str).map_err(|e| match e {
-          crate::error::DnsError::ResolutionFailed(code) => SocketError::DnsResolutionFailed(code),
+          crate::error::DnsError::ResolutionFailed(code) => {
+            SocketError::DnsResolutionFailed(code)
+          }
           crate::error::DnsError::NoAddressesFound => SocketError::DnsResolutionFailed(0),
           crate::error::DnsError::InvalidHostname => SocketError::InvalidAddress,
           crate::error::DnsError::Unsupported => SocketError::Unsupported,

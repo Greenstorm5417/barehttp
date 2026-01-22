@@ -3,7 +3,7 @@ use crate::error::DnsError;
 use crate::util::IpAddr;
 use alloc::vec::Vec;
 use core::ptr;
-use libc::{addrinfo, sockaddr_in, AF_INET, AF_INET6};
+use libc::{AF_INET, AF_INET6, addrinfo, sockaddr_in};
 
 pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
   let mut host_cstring = Vec::with_capacity(host.len() + 1);
