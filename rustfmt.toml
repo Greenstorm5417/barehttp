@@ -1,0 +1,19 @@
+edition = "2021"
+
+# Line width
+max_width = 90
+
+# Indentation
+hard_tabs = false
+tab_spaces = 2
+
+# Imports
+reorder_imports = true
+
+# Expressions
+use_field_init_shorthand = true
+use_try_shorthand = true
+match_arm_leading_pipes = "Preserve"
+
+# Formatting behavior (stable-safe defaults)
+newline_style = "Unix"

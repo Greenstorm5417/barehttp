@@ -1,0 +1,6 @@
+cognitive-complexity-threshold = 30
+too-many-arguments-threshold = 8
+type-complexity-threshold = 250
+single-char-binding-names-threshold = 4
+too-large-for-stack = 200
+enum-variant-name-threshold = 3

@@ -1,0 +1,24 @@
+[package]
+name = "barehttp"
+version = "0.0.1"
+edition = "2024"
+authors = ["greenstorm5417"]
+license = "MIT OR Apache-2.0"
+description = "A minimal, explicit HTTP client for Rust with no_std support and blocking I/O"
+repository = "https://github.com/Greenstorm5417/barehttp"
+documentation = "https://docs.rs/barehttp"
+readme = "README.md"
+keywords = ["http", "client", "no_std", "blocking", "minimal"]
+categories = ["network-programming", "no-std", "web-programming::http-client"]
+
+[lib]
+doctest = true
+
+[dependencies]
+
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Networking_WinSock",
+    "Win32_Foundation",
+] }
