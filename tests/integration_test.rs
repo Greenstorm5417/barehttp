@@ -5,12 +5,14 @@
 use barehttp::response::ResponseExt;
 use barehttp::{Error, HttpClient};
 
-const HTTPBIN: &str = "http://localhost"; // Local Docker container
+fn httpbin_url() -> String {
+  std::env::var("HTTPBIN_URL").unwrap_or_else(|_| "http://httpbin.org".to_string())
+}
 
 #[test]
 fn test_simple_get_request() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/get", httpbin_url())).call()?;
 
   assert!(response.is_success());
   assert_eq!(response.status_code, 200);
@@ -23,7 +25,7 @@ fn test_simple_get_request() -> Result<(), Error> {
 fn test_get_with_query_params() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   let response = client
-    .get(format!("{}/get", HTTPBIN))
+    .get(format!("{}/get", httpbin_url()))
     .query("foo", "bar")
     .query("test", "123")
     .call()?;
@@ -42,7 +44,7 @@ fn test_post_with_body() -> Result<(), Error> {
   let body_data = b"test data";
 
   let response = client
-    .post(format!("{}/post", HTTPBIN))
+    .post(format!("{}/post", httpbin_url()))
     .header("Content-Type", "text/plain")
     .send(body_data.to_vec())?;
 
@@ -56,7 +58,7 @@ fn test_post_with_body() -> Result<(), Error> {
 fn test_custom_headers() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   let response = client
-    .get(format!("{}/headers", HTTPBIN))
+    .get(format!("{}/headers", httpbin_url()))
     .header("X-Custom-Header", "test-value")
     .header("User-Agent", "barehttp-test/1.0")
     .call()?;
@@ -72,7 +74,7 @@ fn test_custom_headers() -> Result<(), Error> {
 fn test_put_request() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   let response = client
-    .put(format!("{}/put", HTTPBIN))
+    .put(format!("{}/put", httpbin_url()))
     .send(b"update data".to_vec())?;
 
   assert!(response.is_success());
@@ -84,7 +86,7 @@ fn test_put_request() -> Result<(), Error> {
 #[test]
 fn test_delete_request() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.delete(format!("{}/delete", HTTPBIN)).call()?;
+  let response = client.delete(format!("{}/delete", httpbin_url())).call()?;
 
   assert!(response.is_success());
   assert_eq!(response.status_code, 200);
@@ -95,7 +97,7 @@ fn test_delete_request() -> Result<(), Error> {
 #[test]
 fn test_head_request() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.head(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.head(format!("{}/get", httpbin_url())).call()?;
 
   assert!(response.is_success());
   assert_eq!(response.status_code, 200);
@@ -107,7 +109,7 @@ fn test_head_request() -> Result<(), Error> {
 
 #[test]
 fn test_convenience_get_function() -> Result<(), Error> {
-  let response = barehttp::get(&format!("{}/get", HTTPBIN))?;
+  let response = barehttp::get(&format!("{}/get", httpbin_url()))?;
 
   assert!(response.is_success());
   assert_eq!(response.status_code, 200);
@@ -117,7 +119,7 @@ fn test_convenience_get_function() -> Result<(), Error> {
 
 #[test]
 fn test_convenience_post_function() -> Result<(), Error> {
-  let response = barehttp::post(&format!("{}/post", HTTPBIN), b"test".to_vec())?;
+  let response = barehttp::post(&format!("{}/post", httpbin_url()), b"test".to_vec())?;
 
   assert!(response.is_success());
   assert_eq!(response.status_code, 200);
@@ -128,7 +130,7 @@ fn test_convenience_post_function() -> Result<(), Error> {
 #[test]
 fn test_response_helpers() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/get", httpbin_url())).call()?;
 
   assert!(response.is_success());
   assert!(!response.is_redirect());
@@ -147,7 +149,7 @@ fn test_json_content_type() -> Result<(), Error> {
   let json_body = br#"{"key":"value"}"#;
 
   let response = client
-    .post(format!("{}/post", HTTPBIN))
+    .post(format!("{}/post", httpbin_url()))
     .header("Content-Type", "application/json")
     .send(json_body.to_vec())?;
 

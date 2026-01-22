@@ -5,7 +5,9 @@
 use barehttp::response::ResponseExt;
 use barehttp::{Error, HttpClient, Request};
 
-const HTTPBIN: &str = "http://localhost"; // Local Docker container
+fn httpbin_url() -> String {
+  std::env::var("HTTPBIN_URL").unwrap_or_else(|_| "http://httpbin.org".to_string())
+}
 
 // ============================================================================
 // Request Builder Methods
@@ -15,7 +17,7 @@ const HTTPBIN: &str = "http://localhost"; // Local Docker container
 fn test_method_header() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   let response = client
-    .get(format!("{}/headers", HTTPBIN))
+    .get(format!("{}/headers", httpbin_url()))
     .header("X-Test-Header", "test-value")
     .call()?;
 
@@ -29,7 +31,7 @@ fn test_method_header() -> Result<(), Error> {
 fn test_method_query() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   let response = client
-    .get(format!("{}/get", HTTPBIN))
+    .get(format!("{}/get", httpbin_url()))
     .query("key1", "value1")
     .query("key2", "value2")
     .call()?;
@@ -48,7 +50,7 @@ fn test_method_query_pairs() -> Result<(), Error> {
   let params = vec![("foo", "bar"), ("baz", "qux")];
 
   let response = client
-    .get(format!("{}/get", HTTPBIN))
+    .get(format!("{}/get", httpbin_url()))
     .query_pairs(params)
     .call()?;
 
@@ -64,7 +66,7 @@ fn test_method_query_pairs() -> Result<(), Error> {
 fn test_method_form() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   let response = client
-    .post(format!("{}/post", HTTPBIN))
+    .post(format!("{}/post", httpbin_url()))
     .form("field1", "value1")
     .form("field2", "value2")
     .call()?;
@@ -79,7 +81,7 @@ fn test_method_form() -> Result<(), Error> {
 fn test_method_content_type() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   let response = client
-    .post(format!("{}/post", HTTPBIN))
+    .post(format!("{}/post", httpbin_url()))
     .content_type("application/json")
     .send(br#"{"test":"data"}"#.to_vec())?;
 
@@ -92,7 +94,7 @@ fn test_method_content_type() -> Result<(), Error> {
 fn test_method_cookie() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   let response = client
-    .get(format!("{}/cookies", HTTPBIN))
+    .get(format!("{}/cookies", httpbin_url()))
     .cookie("session", "abc123")
     .cookie("user", "john")
     .call()?;
@@ -109,7 +111,7 @@ fn test_method_cookie() -> Result<(), Error> {
 #[test]
 fn test_http_method_get() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/get", httpbin_url())).call()?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }
@@ -118,7 +120,7 @@ fn test_http_method_get() -> Result<(), Error> {
 fn test_http_method_post() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   let response = client
-    .post(format!("{}/post", HTTPBIN))
+    .post(format!("{}/post", httpbin_url()))
     .send(b"test".to_vec())?;
   assert_eq!(response.status_code, 200);
   Ok(())
@@ -128,7 +130,7 @@ fn test_http_method_post() -> Result<(), Error> {
 fn test_http_method_put() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   let response = client
-    .put(format!("{}/put", HTTPBIN))
+    .put(format!("{}/put", httpbin_url()))
     .send(b"test".to_vec())?;
   assert_eq!(response.status_code, 200);
   Ok(())
@@ -137,7 +139,7 @@ fn test_http_method_put() -> Result<(), Error> {
 #[test]
 fn test_http_method_delete() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.delete(format!("{}/delete", HTTPBIN)).call()?;
+  let response = client.delete(format!("{}/delete", httpbin_url())).call()?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }
@@ -145,7 +147,7 @@ fn test_http_method_delete() -> Result<(), Error> {
 #[test]
 fn test_http_method_head() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.head(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.head(format!("{}/get", httpbin_url())).call()?;
   assert_eq!(response.status_code, 200);
   assert!(response.body.as_bytes().is_empty());
   Ok(())
@@ -155,7 +157,7 @@ fn test_http_method_head() -> Result<(), Error> {
 fn test_http_method_patch() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   let response = client
-    .patch(format!("{}/patch", HTTPBIN))
+    .patch(format!("{}/patch", httpbin_url()))
     .send(b"test".to_vec())?;
   assert_eq!(response.status_code, 200);
   Ok(())
@@ -164,7 +166,7 @@ fn test_http_method_patch() -> Result<(), Error> {
 #[test]
 fn test_http_method_options() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.options(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.options(format!("{}/get", httpbin_url())).call()?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }
@@ -173,7 +175,7 @@ fn test_http_method_options() -> Result<(), Error> {
 fn test_http_method_trace() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   // TRACE may not be supported by httpbin, so we just check it doesn't panic
-  let _ = client.trace(format!("{}/get", HTTPBIN)).call();
+  let _ = client.trace(format!("{}/get", httpbin_url())).call();
   Ok(())
 }
 
@@ -184,7 +186,7 @@ fn test_http_method_trace() -> Result<(), Error> {
 #[test]
 fn test_terminator_call() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/get", httpbin_url())).call()?;
   assert!(response.is_success());
   Ok(())
 }
@@ -193,7 +195,7 @@ fn test_terminator_call() -> Result<(), Error> {
 fn test_terminator_send() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   let response = client
-    .post(format!("{}/post", HTTPBIN))
+    .post(format!("{}/post", httpbin_url()))
     .send(b"test data".to_vec())?;
   assert!(response.is_success());
   Ok(())
@@ -203,7 +205,7 @@ fn test_terminator_send() -> Result<(), Error> {
 fn test_terminator_send_string() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
   let response = client
-    .post(format!("{}/post", HTTPBIN))
+    .post(format!("{}/post", httpbin_url()))
     .send_string("test string")?;
   assert!(response.is_success());
   Ok(())
@@ -212,7 +214,7 @@ fn test_terminator_send_string() -> Result<(), Error> {
 #[test]
 fn test_terminator_send_empty() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.post(format!("{}/post", HTTPBIN)).send_empty()?;
+  let response = client.post(format!("{}/post", httpbin_url())).send_empty()?;
   assert!(response.is_success());
   Ok(())
 }
@@ -224,7 +226,7 @@ fn test_terminator_send_empty() -> Result<(), Error> {
 #[test]
 fn test_response_method_status() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/get", httpbin_url())).call()?;
   assert_eq!(response.status(), 200);
   Ok(())
 }
@@ -240,7 +242,7 @@ fn test_response_method_cookies() -> Result<(), Error> {
   let mut client = HttpClient::with_config(config)?;
 
   let response = client
-    .get(format!("{}/cookies/set?test=value", HTTPBIN))
+    .get(format!("{}/cookies/set?test=value", httpbin_url()))
     .call()?;
 
   let cookies = response.cookies();
@@ -252,10 +254,10 @@ fn test_response_method_cookies() -> Result<(), Error> {
 #[test]
 fn test_response_method_is_success() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/status/200", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/status/200", httpbin_url())).call()?;
   assert!(response.is_success());
 
-  let response2 = client.get(format!("{}/status/201", HTTPBIN)).call()?;
+  let response2 = client.get(format!("{}/status/201", httpbin_url())).call()?;
   assert!(response2.is_success());
   Ok(())
 }
@@ -270,7 +272,7 @@ fn test_response_method_is_redirect() -> Result<(), Error> {
   };
   let mut client = HttpClient::with_config(config)?;
 
-  let response = client.get(format!("{}/redirect/1", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/redirect/1", httpbin_url())).call()?;
   assert!(response.is_redirect());
   Ok(())
 }
@@ -285,7 +287,7 @@ fn test_response_method_is_client_error() -> Result<(), Error> {
   };
   let mut client = HttpClient::with_config(config)?;
 
-  let response = client.get(format!("{}/status/404", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/status/404", httpbin_url())).call()?;
   assert!(response.is_client_error());
   Ok(())
 }
@@ -300,7 +302,7 @@ fn test_response_method_is_server_error() -> Result<(), Error> {
   };
   let mut client = HttpClient::with_config(config)?;
 
-  let response = client.get(format!("{}/status/500", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/status/500", httpbin_url())).call()?;
   assert!(response.is_server_error());
   Ok(())
 }
@@ -308,7 +310,7 @@ fn test_response_method_is_server_error() -> Result<(), Error> {
 #[test]
 fn test_response_method_text() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/get", httpbin_url())).call()?;
   let text = response.text()?;
   assert!(!text.is_empty());
   assert!(text.contains("url"));
@@ -318,7 +320,7 @@ fn test_response_method_text() -> Result<(), Error> {
 #[test]
 fn test_response_method_bytes() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/bytes/100", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/bytes/100", httpbin_url())).call()?;
   let bytes = response.bytes();
   assert_eq!(bytes.len(), 100);
   Ok(())
@@ -327,7 +329,7 @@ fn test_response_method_bytes() -> Result<(), Error> {
 #[test]
 fn test_response_method_into_bytes() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/bytes/50", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/bytes/50", httpbin_url())).call()?;
   let bytes = response.into_bytes();
   assert_eq!(bytes.len(), 50);
   Ok(())
@@ -340,7 +342,7 @@ fn test_response_method_into_bytes() -> Result<(), Error> {
 #[test]
 fn test_response_field_status_code() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/status/201", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/status/201", httpbin_url())).call()?;
   assert_eq!(response.status_code, 201);
   Ok(())
 }
@@ -348,7 +350,7 @@ fn test_response_field_status_code() -> Result<(), Error> {
 #[test]
 fn test_response_field_reason() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/get", httpbin_url())).call()?;
   assert!(!response.reason.is_empty());
   Ok(())
 }
@@ -356,7 +358,7 @@ fn test_response_field_reason() -> Result<(), Error> {
 #[test]
 fn test_response_field_headers() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/get", httpbin_url())).call()?;
   assert!(!response.headers.is_empty());
 
   // Check we can access headers
@@ -368,7 +370,7 @@ fn test_response_field_headers() -> Result<(), Error> {
 #[test]
 fn test_response_field_body() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/get", httpbin_url())).call()?;
   assert!(!response.body.as_bytes().is_empty());
   Ok(())
 }
@@ -376,7 +378,7 @@ fn test_response_field_body() -> Result<(), Error> {
 #[test]
 fn test_response_field_body_mut() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let mut response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let mut response = client.get(format!("{}/get", httpbin_url())).call()?;
 
   // Access body_mut
   let body_bytes = response.body_mut().as_bytes_mut();
@@ -391,7 +393,7 @@ fn test_response_field_body_mut() -> Result<(), Error> {
 #[test]
 fn test_response_method_get_header() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/get", httpbin_url())).call()?;
 
   // Test get_header method
   let content_type = response.get_header("content-type");
@@ -407,7 +409,7 @@ fn test_response_method_get_header() -> Result<(), Error> {
 #[test]
 fn test_response_method_headers() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/get", httpbin_url())).call()?;
 
   // Test headers() accessor
   let headers = response.headers();
@@ -419,7 +421,7 @@ fn test_response_method_headers() -> Result<(), Error> {
 #[test]
 fn test_response_method_headers_mut() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let mut response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let mut response = client.get(format!("{}/get", httpbin_url())).call()?;
 
   // Test headers_mut() accessor
   let headers_mut = response.headers_mut();
@@ -434,7 +436,7 @@ fn test_response_method_headers_mut() -> Result<(), Error> {
 #[test]
 fn test_response_method_body() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let response = client.get(format!("{}/get", httpbin_url())).call()?;
 
   // Test body() accessor
   let body = response.body();
@@ -445,7 +447,7 @@ fn test_response_method_body() -> Result<(), Error> {
 #[test]
 fn test_response_method_body_mut_accessor() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let mut response = client.get(format!("{}/get", HTTPBIN)).call()?;
+  let mut response = client.get(format!("{}/get", httpbin_url())).call()?;
 
   // Test body_mut() accessor
   let body_mut = response.body_mut();
@@ -460,14 +462,14 @@ fn test_response_method_body_mut_accessor() -> Result<(), Error> {
 
 #[test]
 fn test_request_get() -> Result<(), Error> {
-  let response = Request::get(format!("{}/get", HTTPBIN)).send()?;
+  let response = Request::get(format!("{}/get", httpbin_url())).send()?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }
 
 #[test]
 fn test_request_post() -> Result<(), Error> {
-  let response = Request::post(format!("{}/post", HTTPBIN))
+  let response = Request::post(format!("{}/post", httpbin_url()))
     .body(b"test".to_vec())
     .send()?;
   assert_eq!(response.status_code, 200);
@@ -476,7 +478,7 @@ fn test_request_post() -> Result<(), Error> {
 
 #[test]
 fn test_request_put() -> Result<(), Error> {
-  let response = Request::put(format!("{}/put", HTTPBIN))
+  let response = Request::put(format!("{}/put", httpbin_url()))
     .body(b"test".to_vec())
     .send()?;
   assert_eq!(response.status_code, 200);
@@ -485,21 +487,21 @@ fn test_request_put() -> Result<(), Error> {
 
 #[test]
 fn test_request_delete() -> Result<(), Error> {
-  let response = Request::delete(format!("{}/delete", HTTPBIN)).send()?;
+  let response = Request::delete(format!("{}/delete", httpbin_url())).send()?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }
 
 #[test]
 fn test_request_head() -> Result<(), Error> {
-  let response = Request::head(format!("{}/get", HTTPBIN)).send()?;
+  let response = Request::head(format!("{}/get", httpbin_url())).send()?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }
 
 #[test]
 fn test_request_patch() -> Result<(), Error> {
-  let response = Request::patch(format!("{}/patch", HTTPBIN))
+  let response = Request::patch(format!("{}/patch", httpbin_url()))
     .body(b"test".to_vec())
     .send()?;
   assert_eq!(response.status_code, 200);
@@ -508,7 +510,7 @@ fn test_request_patch() -> Result<(), Error> {
 
 #[test]
 fn test_request_options() -> Result<(), Error> {
-  let response = Request::options(format!("{}/get", HTTPBIN)).send()?;
+  let response = Request::options(format!("{}/get", httpbin_url())).send()?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }
@@ -519,49 +521,49 @@ fn test_request_options() -> Result<(), Error> {
 
 #[test]
 fn test_convenience_get() -> Result<(), Error> {
-  let response = barehttp::get(&format!("{}/get", HTTPBIN))?;
+  let response = barehttp::get(&format!("{}/get", httpbin_url()))?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }
 
 #[test]
 fn test_convenience_post() -> Result<(), Error> {
-  let response = barehttp::post(&format!("{}/post", HTTPBIN), b"test".to_vec())?;
+  let response = barehttp::post(&format!("{}/post", httpbin_url()), b"test".to_vec())?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }
 
 #[test]
 fn test_convenience_put() -> Result<(), Error> {
-  let response = barehttp::put(&format!("{}/put", HTTPBIN), b"test".to_vec())?;
+  let response = barehttp::put(&format!("{}/put", httpbin_url()), b"test".to_vec())?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }
 
 #[test]
 fn test_convenience_delete() -> Result<(), Error> {
-  let response = barehttp::delete(&format!("{}/delete", HTTPBIN))?;
+  let response = barehttp::delete(&format!("{}/delete", httpbin_url()))?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }
 
 #[test]
 fn test_convenience_head() -> Result<(), Error> {
-  let response = barehttp::head(&format!("{}/get", HTTPBIN))?;
+  let response = barehttp::head(&format!("{}/get", httpbin_url()))?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }
 
 #[test]
 fn test_convenience_patch() -> Result<(), Error> {
-  let response = barehttp::patch(&format!("{}/patch", HTTPBIN), b"test".to_vec())?;
+  let response = barehttp::patch(&format!("{}/patch", httpbin_url()), b"test".to_vec())?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }
 
 #[test]
 fn test_convenience_options() -> Result<(), Error> {
-  let response = barehttp::options(&format!("{}/get", HTTPBIN))?;
+  let response = barehttp::options(&format!("{}/get", httpbin_url()))?;
   assert_eq!(response.status_code, 200);
   Ok(())
 }

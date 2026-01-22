@@ -4,9 +4,11 @@
 
 use barehttp::config::{Config, HttpStatusHandling, RedirectPolicy};
 use barehttp::response::ResponseExt;
-use barehttp::{HttpClient, delete, get, post, put};
+use barehttp::{delete, get, post, put, HttpClient};
 
-const HTTPBIN_BASE: &str = "http://localhost"; // Local Docker container
+fn httpbin_url() -> String {
+  std::env::var("HTTPBIN_URL").unwrap_or_else(|_| "http://httpbin.org".to_string())
+}
 
 // ============================================================================
 // HTTP Methods
@@ -14,7 +16,7 @@ const HTTPBIN_BASE: &str = "http://localhost"; // Local Docker container
 
 #[test]
 fn test_httpbin_get() {
-  let result = get(&format!("{}/get", HTTPBIN_BASE));
+  let result = get(&format!("{}/get", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -23,7 +25,7 @@ fn test_httpbin_get() {
 
 #[test]
 fn test_httpbin_post() {
-  let result = post(&format!("{}/post", HTTPBIN_BASE), b"test data".to_vec());
+  let result = post(&format!("{}/post", httpbin_url()), b"test data".to_vec());
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -32,7 +34,7 @@ fn test_httpbin_post() {
 
 #[test]
 fn test_httpbin_put() {
-  let result = put(&format!("{}/put", HTTPBIN_BASE), b"test data".to_vec());
+  let result = put(&format!("{}/put", httpbin_url()), b"test data".to_vec());
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -41,7 +43,7 @@ fn test_httpbin_put() {
 
 #[test]
 fn test_httpbin_delete() {
-  let result = delete(&format!("{}/delete", HTTPBIN_BASE));
+  let result = delete(&format!("{}/delete", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -51,7 +53,7 @@ fn test_httpbin_delete() {
 #[test]
 fn test_httpbin_patch() {
   use barehttp::Request;
-  let result = Request::patch(format!("{}/patch", HTTPBIN_BASE))
+  let result = Request::patch(format!("{}/patch", httpbin_url()))
     .body(b"test data".to_vec())
     .send();
   assert!(result.is_ok());
@@ -65,7 +67,7 @@ fn test_httpbin_patch() {
 
 #[test]
 fn test_httpbin_status_200() {
-  let result = get(&format!("{}/status/200", HTTPBIN_BASE));
+  let result = get(&format!("{}/status/200", httpbin_url()));
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 200);
 }
@@ -80,7 +82,7 @@ fn test_httpbin_status_404() {
 
   use barehttp::Request;
   let result =
-    Request::get(format!("{}/status/404", HTTPBIN_BASE)).send_with(&mut client);
+    Request::get(format!("{}/status/404", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 404);
 }
@@ -95,21 +97,21 @@ fn test_httpbin_status_500() {
 
   use barehttp::Request;
   let result =
-    Request::get(format!("{}/status/500", HTTPBIN_BASE)).send_with(&mut client);
+    Request::get(format!("{}/status/500", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 500);
 }
 
 #[test]
 fn test_httpbin_status_201() {
-  let result = get(&format!("{}/status/201", HTTPBIN_BASE));
+  let result = get(&format!("{}/status/201", httpbin_url()));
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 201);
 }
 
 #[test]
 fn test_httpbin_status_204() {
-  let result = get(&format!("{}/status/204", HTTPBIN_BASE));
+  let result = get(&format!("{}/status/204", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 204);
@@ -126,7 +128,7 @@ fn test_httpbin_status_301() {
 
   use barehttp::Request;
   let result =
-    Request::get(format!("{}/status/301", HTTPBIN_BASE)).send_with(&mut client);
+    Request::get(format!("{}/status/301", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 301);
 }
@@ -141,7 +143,7 @@ fn test_httpbin_status_302() {
 
   use barehttp::Request;
   let result =
-    Request::get(format!("{}/status/302", HTTPBIN_BASE)).send_with(&mut client);
+    Request::get(format!("{}/status/302", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 302);
 }
@@ -156,7 +158,7 @@ fn test_httpbin_status_400() {
 
   use barehttp::Request;
   let result =
-    Request::get(format!("{}/status/400", HTTPBIN_BASE)).send_with(&mut client);
+    Request::get(format!("{}/status/400", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 400);
 }
@@ -171,7 +173,7 @@ fn test_httpbin_status_401() {
 
   use barehttp::Request;
   let result =
-    Request::get(format!("{}/status/401", HTTPBIN_BASE)).send_with(&mut client);
+    Request::get(format!("{}/status/401", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 401);
 }
@@ -186,7 +188,7 @@ fn test_httpbin_status_403() {
 
   use barehttp::Request;
   let result =
-    Request::get(format!("{}/status/403", HTTPBIN_BASE)).send_with(&mut client);
+    Request::get(format!("{}/status/403", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 403);
 }
@@ -197,7 +199,7 @@ fn test_httpbin_status_403() {
 
 #[test]
 fn test_httpbin_headers() {
-  let result = get(&format!("{}/headers", HTTPBIN_BASE));
+  let result = get(&format!("{}/headers", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -206,7 +208,7 @@ fn test_httpbin_headers() {
 
 #[test]
 fn test_httpbin_ip() {
-  let result = get(&format!("{}/ip", HTTPBIN_BASE));
+  let result = get(&format!("{}/ip", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -215,7 +217,7 @@ fn test_httpbin_ip() {
 
 #[test]
 fn test_httpbin_user_agent() {
-  let result = get(&format!("{}/user-agent", HTTPBIN_BASE));
+  let result = get(&format!("{}/user-agent", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -228,7 +230,7 @@ fn test_httpbin_user_agent() {
 
 #[test]
 fn test_httpbin_json() {
-  let result = get(&format!("{}/json", HTTPBIN_BASE));
+  let result = get(&format!("{}/json", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -238,7 +240,7 @@ fn test_httpbin_json() {
 
 #[test]
 fn test_httpbin_html() {
-  let result = get(&format!("{}/html", HTTPBIN_BASE));
+  let result = get(&format!("{}/html", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -247,7 +249,7 @@ fn test_httpbin_html() {
 
 #[test]
 fn test_httpbin_xml() {
-  let result = get(&format!("{}/xml", HTTPBIN_BASE));
+  let result = get(&format!("{}/xml", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -256,7 +258,7 @@ fn test_httpbin_xml() {
 
 #[test]
 fn test_httpbin_robots_txt() {
-  let result = get(&format!("{}/robots.txt", HTTPBIN_BASE));
+  let result = get(&format!("{}/robots.txt", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -265,7 +267,7 @@ fn test_httpbin_robots_txt() {
 
 #[test]
 fn test_httpbin_deny() {
-  let result = get(&format!("{}/deny", HTTPBIN_BASE));
+  let result = get(&format!("{}/deny", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -273,7 +275,7 @@ fn test_httpbin_deny() {
 
 #[test]
 fn test_httpbin_encoding_utf8() {
-  let result = get(&format!("{}/encoding/utf8", HTTPBIN_BASE));
+  let result = get(&format!("{}/encoding/utf8", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -285,7 +287,7 @@ fn test_httpbin_encoding_utf8() {
 
 #[test]
 fn test_httpbin_uuid() {
-  let result = get(&format!("{}/uuid", HTTPBIN_BASE));
+  let result = get(&format!("{}/uuid", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -295,7 +297,7 @@ fn test_httpbin_uuid() {
 #[test]
 fn test_httpbin_base64_decode() {
   let encoded = "SFRUUEJJTiBpcyBhd2Vzb21l"; // "HTTPBIN is awesome"
-  let result = get(&format!("{}/base64/{}", HTTPBIN_BASE, encoded));
+  let result = get(&format!("{}/base64/{}", httpbin_url(), encoded));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -303,7 +305,7 @@ fn test_httpbin_base64_decode() {
 
 #[test]
 fn test_httpbin_bytes() {
-  let result = get(&format!("{}/bytes/100", HTTPBIN_BASE));
+  let result = get(&format!("{}/bytes/100", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -312,7 +314,7 @@ fn test_httpbin_bytes() {
 
 #[test]
 fn test_httpbin_delay_1() {
-  let result = get(&format!("{}/delay/1", HTTPBIN_BASE));
+  let result = get(&format!("{}/delay/1", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -320,7 +322,7 @@ fn test_httpbin_delay_1() {
 
 #[test]
 fn test_httpbin_delay_2() {
-  let result = get(&format!("{}/delay/2", HTTPBIN_BASE));
+  let result = get(&format!("{}/delay/2", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -328,7 +330,7 @@ fn test_httpbin_delay_2() {
 
 #[test]
 fn test_httpbin_stream_5() {
-  let result = get(&format!("{}/stream/5", HTTPBIN_BASE));
+  let result = get(&format!("{}/stream/5", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -336,7 +338,7 @@ fn test_httpbin_stream_5() {
 
 #[test]
 fn test_httpbin_links() {
-  let result = get(&format!("{}/links/5/0", HTTPBIN_BASE));
+  let result = get(&format!("{}/links/5/0", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -349,7 +351,7 @@ fn test_httpbin_links() {
 
 #[test]
 fn test_httpbin_redirect_1() {
-  let result = get(&format!("{}/redirect/1", HTTPBIN_BASE));
+  let result = get(&format!("{}/redirect/1", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -357,7 +359,7 @@ fn test_httpbin_redirect_1() {
 
 #[test]
 fn test_httpbin_redirect_3() {
-  let result = get(&format!("{}/redirect/3", HTTPBIN_BASE));
+  let result = get(&format!("{}/redirect/3", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -365,7 +367,7 @@ fn test_httpbin_redirect_3() {
 
 #[test]
 fn test_httpbin_redirect_5() {
-  let result = get(&format!("{}/redirect/5", HTTPBIN_BASE));
+  let result = get(&format!("{}/redirect/5", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -373,7 +375,7 @@ fn test_httpbin_redirect_5() {
 
 #[test]
 fn test_httpbin_relative_redirect() {
-  let result = get(&format!("{}/relative-redirect/2", HTTPBIN_BASE));
+  let result = get(&format!("{}/relative-redirect/2", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -381,7 +383,7 @@ fn test_httpbin_relative_redirect() {
 
 #[test]
 fn test_httpbin_absolute_redirect() {
-  let result = get(&format!("{}/absolute-redirect/2", HTTPBIN_BASE));
+  let result = get(&format!("{}/absolute-redirect/2", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -391,7 +393,7 @@ fn test_httpbin_absolute_redirect() {
 fn test_httpbin_redirect_to() {
   let result = get(&format!(
     "{}/redirect-to?url=https://httpbin.org/get",
-    HTTPBIN_BASE
+    httpbin_url()
   ));
   assert!(result.is_ok());
   let response = result.unwrap();
@@ -404,7 +406,7 @@ fn test_httpbin_redirect_to() {
 
 #[test]
 fn test_httpbin_cookies() {
-  let result = get(&format!("{}/cookies", HTTPBIN_BASE));
+  let result = get(&format!("{}/cookies", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -420,7 +422,7 @@ fn test_httpbin_cookies_set() {
   let mut client = HttpClient::with_config(config).unwrap();
 
   use barehttp::Request;
-  let result = Request::get(format!("{}/cookies/set?test=value", HTTPBIN_BASE))
+  let result = Request::get(format!("{}/cookies/set?test=value", httpbin_url()))
     .send_with(&mut client);
   assert!(result.is_ok());
   let response = result.unwrap();
@@ -436,7 +438,7 @@ fn test_httpbin_cookies_set_name_value() {
   let mut client = HttpClient::with_config(config).unwrap();
 
   use barehttp::Request;
-  let result = Request::get(format!("{}/cookies/set/session/abc123", HTTPBIN_BASE))
+  let result = Request::get(format!("{}/cookies/set/session/abc123", httpbin_url()))
     .send_with(&mut client);
   assert!(result.is_ok());
   let response = result.unwrap();
@@ -449,7 +451,7 @@ fn test_httpbin_cookies_set_name_value() {
 
 #[test]
 fn test_httpbin_image_png() {
-  let result = get(&format!("{}/image/png", HTTPBIN_BASE));
+  let result = get(&format!("{}/image/png", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -459,7 +461,7 @@ fn test_httpbin_image_png() {
 
 #[test]
 fn test_httpbin_image_jpeg() {
-  let result = get(&format!("{}/image/jpeg", HTTPBIN_BASE));
+  let result = get(&format!("{}/image/jpeg", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -469,7 +471,7 @@ fn test_httpbin_image_jpeg() {
 
 #[test]
 fn test_httpbin_image_svg() {
-  let result = get(&format!("{}/image/svg", HTTPBIN_BASE));
+  let result = get(&format!("{}/image/svg", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -479,7 +481,7 @@ fn test_httpbin_image_svg() {
 
 #[test]
 fn test_httpbin_image_webp() {
-  let result = get(&format!("{}/image/webp", HTTPBIN_BASE));
+  let result = get(&format!("{}/image/webp", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -493,7 +495,7 @@ fn test_httpbin_image_webp() {
 
 #[test]
 fn test_httpbin_anything_get() {
-  let result = get(&format!("{}/anything", HTTPBIN_BASE));
+  let result = get(&format!("{}/anything", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -502,7 +504,7 @@ fn test_httpbin_anything_get() {
 
 #[test]
 fn test_httpbin_anything_post() {
-  let result = post(&format!("{}/anything", HTTPBIN_BASE), b"test".to_vec());
+  let result = post(&format!("{}/anything", httpbin_url()), b"test".to_vec());
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -511,7 +513,7 @@ fn test_httpbin_anything_post() {
 
 #[test]
 fn test_httpbin_anything_put() {
-  let result = put(&format!("{}/anything", HTTPBIN_BASE), b"test".to_vec());
+  let result = put(&format!("{}/anything", httpbin_url()), b"test".to_vec());
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -520,7 +522,7 @@ fn test_httpbin_anything_put() {
 
 #[test]
 fn test_httpbin_anything_delete() {
-  let result = delete(&format!("{}/anything", HTTPBIN_BASE));
+  let result = delete(&format!("{}/anything", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -529,7 +531,7 @@ fn test_httpbin_anything_delete() {
 
 #[test]
 fn test_httpbin_anything_with_path() {
-  let result = get(&format!("{}/anything/foo/bar", HTTPBIN_BASE));
+  let result = get(&format!("{}/anything/foo/bar", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -542,7 +544,7 @@ fn test_httpbin_anything_with_path() {
 
 #[test]
 fn test_httpbin_cache() {
-  let result = get(&format!("{}/cache", HTTPBIN_BASE));
+  let result = get(&format!("{}/cache", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -550,7 +552,7 @@ fn test_httpbin_cache() {
 
 #[test]
 fn test_httpbin_cache_value() {
-  let result = get(&format!("{}/cache/60", HTTPBIN_BASE));
+  let result = get(&format!("{}/cache/60", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -560,7 +562,7 @@ fn test_httpbin_cache_value() {
 
 #[test]
 fn test_httpbin_etag() {
-  let result = get(&format!("{}/etag/test-etag", HTTPBIN_BASE));
+  let result = get(&format!("{}/etag/test-etag", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -570,7 +572,7 @@ fn test_httpbin_etag() {
 
 #[test]
 fn test_httpbin_response_headers() {
-  let result = get(&format!("{}/response-headers?X-Custom=test", HTTPBIN_BASE));
+  let result = get(&format!("{}/response-headers?X-Custom=test", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);

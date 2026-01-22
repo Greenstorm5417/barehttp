@@ -43,39 +43,8 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
       
-      - name: Start httpbin container
+      - name: Start httpbin container (Linux only)
         if: runner.os == 'Linux'
-        run: |
-          docker run -d -p 80:80 --name httpbin kennethreitz/httpbin
-          echo "Waiting for httpbin to be ready..."
-          for i in {1..30}; do
-            if curl -s http://localhost/status/200 > /dev/null; then
-              echo "httpbin is ready!"
-              break
-            fi
-            echo "Waiting for httpbin... ($i/30)"
-            sleep 1
-          done
-      
-      - name: Start httpbin container (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          docker run -d -p 80:80 --name httpbin kennethreitz/httpbin
-          Write-Host "Waiting for httpbin to be ready..."
-          for ($i = 1; $i -le 30; $i++) {
-            try {
-              $response = Invoke-WebRequest -Uri http://localhost/status/200 -UseBasicParsing -ErrorAction Stop
-              Write-Host "httpbin is ready!"
-              break
-            } catch {
-              Write-Host "Waiting for httpbin... ($i/30)"
-              Start-Sleep -Seconds 1
-            }
-          }
-      
-      - name: Start httpbin container (macOS)
-        if: runner.os == 'macOS'
         run: |
           docker run -d -p 80:80 --name httpbin kennethreitz/httpbin
           echo "Waiting for httpbin to be ready..."
@@ -90,9 +59,11 @@ jobs:
       
       - name: Run tests
         run: cargo test --verbose --all-features
+        env:
+          HTTPBIN_URL: ${{ runner.os == 'Linux' && 'http://localhost' || 'http://httpbin.org' }}
       
       - name: Stop httpbin container
-        if: always()
+        if: always() && runner.os == 'Linux'
         run: docker stop httpbin && docker rm httpbin
       
       - name: Run doc tests
