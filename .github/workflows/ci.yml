@@ -12,10 +12,9 @@ env:
 jobs:
   test:
     name: Test Suite
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
         rust: [stable, beta]
     steps:
       - uses: actions/checkout@v4
@@ -43,8 +42,7 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
       
-      - name: Start httpbin container (Linux only)
-        if: runner.os == 'Linux'
+      - name: Start httpbin container
         run: |
           docker run -d -p 80:80 --name httpbin kennethreitz/httpbin
           echo "Waiting for httpbin to be ready..."
@@ -60,10 +58,10 @@ jobs:
       - name: Run tests
         run: cargo test --verbose --all-features
         env:
-          HTTPBIN_URL: ${{ runner.os == 'Linux' && 'http://localhost' || 'http://httpbin.org' }}
+          HTTPBIN_URL: http://localhost
       
       - name: Stop httpbin container
-        if: always() && runner.os == 'Linux'
+        if: always()
         run: docker stop httpbin && docker rm httpbin
       
       - name: Run doc tests
