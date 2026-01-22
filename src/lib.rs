@@ -214,9 +214,6 @@
   clippy::too_many_lines,
   clippy::too_many_arguments,
   clippy::type_complexity,
-  clippy::doc_markdown,
-  clippy::needless_lifetimes,
-  clippy::as_conversions,
   clippy::ptr_as_ptr
 )]
 
@@ -367,4 +364,5 @@ mod method;
 pub(crate) mod parser;
 mod request;
 pub(crate) mod socket;
+mod transport;
 pub(crate) mod util;

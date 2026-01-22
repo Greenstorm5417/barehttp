@@ -139,7 +139,7 @@ impl Response {
   }
 
   /// Parse response headers only (for two-phase reading)
-  /// Returns (status_code, reason, headers, remaining_bytes_after_headers)
+  /// Returns (`status_code`, reason, headers, `remaining_bytes_after_headers`)
   pub fn parse_headers_only(
     input: &[u8],
   ) -> Result<(u16, String, Headers, &[u8]), ParseError> {

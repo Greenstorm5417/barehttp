@@ -3,7 +3,7 @@ use crate::socket::{SocketFlags, adapter::BlockingSocket, adapter::SocketAddr, o
 
 /// Operating system blocking socket
 ///
-/// Uses platform-specific socket APIs (WinSock on Windows, BSD sockets on Unix).
+/// Uses platform-specific socket APIs (`WinSock` on Windows, BSD sockets on Unix).
 pub struct OsBlockingSocket {
   inner: os::OsSocket,
 }

@@ -71,7 +71,7 @@ impl ResponseReader {
 
   /// Parse headers and transition to body reading state
   ///
-  /// Returns (status_code, reason, headers, body_strategy)
+  /// Returns (`status_code`, reason, headers, `body_strategy`)
   ///
   /// Must only be called when `has_complete_headers()` returns true
   pub fn parse_headers(
