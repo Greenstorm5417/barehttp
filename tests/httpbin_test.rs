@@ -4,7 +4,7 @@
 
 use barehttp::config::{Config, HttpStatusHandling, RedirectPolicy};
 use barehttp::response::ResponseExt;
-use barehttp::{delete, get, post, put, HttpClient};
+use barehttp::{HttpClient, delete, get, post, put};
 
 fn httpbin_url() -> String {
   std::env::var("HTTPBIN_URL").unwrap_or_else(|_| "http://httpbin.org".to_string())

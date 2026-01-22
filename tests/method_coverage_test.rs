@@ -214,7 +214,9 @@ fn test_terminator_send_string() -> Result<(), Error> {
 #[test]
 fn test_terminator_send_empty() -> Result<(), Error> {
   let mut client = HttpClient::new()?;
-  let response = client.post(format!("{}/post", httpbin_url())).send_empty()?;
+  let response = client
+    .post(format!("{}/post", httpbin_url()))
+    .send_empty()?;
   assert!(response.is_success());
   Ok(())
 }
