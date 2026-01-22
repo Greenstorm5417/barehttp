@@ -4,6 +4,6 @@ use crate::util::IpAddr;
 use alloc::vec::Vec;
 
 /// macOS DNS stub - not yet implemented
-pub fn resolve_host(_host: &str) -> Result<Vec<IpAddr>, DnsError> {
+pub const fn resolve_host(_host: &str) -> Result<Vec<IpAddr>, DnsError> {
   Err(DnsError::Unsupported)
 }

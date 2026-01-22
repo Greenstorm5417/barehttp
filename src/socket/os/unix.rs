@@ -91,10 +91,14 @@ impl OsSocket {
   fn connect_ipv4(&mut self, addr: [u8; 4], port: u16) -> Result<(), SocketError> {
     unsafe {
       let mut sockaddr: sockaddr_in = core::mem::zeroed();
-      sockaddr.sin_family = libc::AF_INET as u16;
+      #[allow(clippy::cast_possible_truncation)]
+      {
+        sockaddr.sin_family = libc::AF_INET as u16;
+      }
       sockaddr.sin_port = port.to_be();
       sockaddr.sin_addr.s_addr = u32::from_ne_bytes(addr);
 
+      #[allow(clippy::cast_possible_truncation)]
       let result = libc::connect(
         self.fd,
         &raw const sockaddr as *const sockaddr,
@@ -126,7 +130,10 @@ impl OsSocket {
         self.connected = false;
       }
 
-      Ok(result as usize)
+      #[allow(clippy::cast_sign_loss)]
+      {
+        Ok(result as usize)
+      }
     }
   }
 
@@ -142,7 +149,10 @@ impl OsSocket {
         return Err(get_last_error());
       }
 
-      Ok(result as usize)
+      #[allow(clippy::cast_sign_loss)]
+      {
+        Ok(result as usize)
+      }
     }
   }
 
@@ -169,6 +179,7 @@ impl OsSocket {
     unsafe {
       if flags.contains(SocketFlags::TCP_NODELAY) {
         let val: c_int = 1;
+        #[allow(clippy::cast_possible_truncation)]
         let result = libc::setsockopt(
           self.fd,
           libc::IPPROTO_TCP,
@@ -183,6 +194,7 @@ impl OsSocket {
 
       if flags.contains(SocketFlags::KEEPALIVE) {
         let val: c_int = 1;
+        #[allow(clippy::cast_possible_truncation)]
         let result = libc::setsockopt(
           self.fd,
           libc::SOL_SOCKET,
@@ -197,6 +209,7 @@ impl OsSocket {
 
       if flags.contains(SocketFlags::REUSEADDR) {
         let val: c_int = 1;
+        #[allow(clippy::cast_possible_truncation)]
         let result = libc::setsockopt(
           self.fd,
           libc::SOL_SOCKET,
@@ -215,11 +228,13 @@ impl OsSocket {
 
   pub fn set_read_timeout(&mut self, timeout_ms: u32) -> Result<(), SocketError> {
     unsafe {
+      #[allow(clippy::cast_lossless, clippy::integer_division)]
       let timeout = timeval {
-        tv_sec: (timeout_ms / 1000) as i64,
-        tv_usec: ((timeout_ms % 1000) * 1000) as i64,
+        tv_sec: i64::from(timeout_ms.wrapping_div(1000)),
+        tv_usec: i64::from((timeout_ms % 1000).wrapping_mul(1000)),
       };
 
+      #[allow(clippy::cast_possible_truncation)]
       let result = libc::setsockopt(
         self.fd,
         libc::SOL_SOCKET,
@@ -237,11 +252,13 @@ impl OsSocket {
 
   pub fn set_write_timeout(&mut self, timeout_ms: u32) -> Result<(), SocketError> {
     unsafe {
+      #[allow(clippy::cast_lossless, clippy::integer_division)]
       let timeout = timeval {
-        tv_sec: (timeout_ms / 1000) as i64,
-        tv_usec: ((timeout_ms % 1000) * 1000) as i64,
+        tv_sec: i64::from(timeout_ms.wrapping_div(1000)),
+        tv_usec: i64::from((timeout_ms % 1000).wrapping_mul(1000)),
       };
 
+      #[allow(clippy::cast_possible_truncation)]
       let result = libc::setsockopt(
         self.fd,
         libc::SOL_SOCKET,
