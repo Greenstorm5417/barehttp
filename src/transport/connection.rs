@@ -78,7 +78,16 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
     let mut header_buffer = Vec::new();
 
     loop {
-      let n = self.socket.read(&mut buffer).map_err(Error::Socket)?;
+      let n = match self.socket.read(&mut buffer) {
+        Ok(n) => n,
+        Err(e) => {
+          // RFC 9112 Section 9.5: If timing out, implementation SHOULD issue a graceful close
+          if e == crate::error::SocketError::TimedOut {
+            let _ = self.socket.shutdown();
+          }
+          return Err(Error::Socket(e));
+        }
+      };
       if n == 0 {
         break;
       }
@@ -141,7 +150,15 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
           while bytes_read < bytes_needed {
             let to_read = (bytes_needed - bytes_read).min(read_buffer.len());
             if let Some(buf_slice) = read_buffer.get_mut(..to_read) {
-              let n = self.socket.read(buf_slice).map_err(Error::Socket)?;
+              let n = match self.socket.read(buf_slice) {
+                Ok(n) => n,
+                Err(e) => {
+                  if e == crate::error::SocketError::TimedOut {
+                    let _ = self.socket.shutdown();
+                  }
+                  return Err(Error::Socket(e));
+                }
+              };
 
               if n == 0 {
                 return Err(Error::Socket(crate::error::SocketError::NotConnected));
@@ -166,7 +183,15 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
             break;
           }
 
-          let n = self.socket.read(&mut chunk_buffer).map_err(Error::Socket)?;
+          let n = match self.socket.read(&mut chunk_buffer) {
+            Ok(n) => n,
+            Err(e) => {
+              if e == crate::error::SocketError::TimedOut {
+                let _ = self.socket.shutdown();
+              }
+              return Err(Error::Socket(e));
+            }
+          };
           if n == 0 {
             return Err(Error::Socket(crate::error::SocketError::NotConnected));
           }
@@ -182,7 +207,15 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         let mut read_buffer = alloc::vec![0u8; 8192];
 
         loop {
-          let n = self.socket.read(&mut read_buffer).map_err(Error::Socket)?;
+          let n = match self.socket.read(&mut read_buffer) {
+            Ok(n) => n,
+            Err(e) => {
+              if e == crate::error::SocketError::TimedOut {
+                let _ = self.socket.shutdown();
+              }
+              return Err(Error::Socket(e));
+            }
+          };
           if n == 0 {
             break;
           }

@@ -66,7 +66,35 @@ impl<S: BlockingSocket> ConnectionPool<S> {
     });
   }
 
-  const fn current_time() -> Duration {
-    Duration::from_secs(0)
+  fn current_time() -> Duration {
+    #[cfg(windows)]
+    {
+      use core::mem::MaybeUninit;
+      unsafe {
+        let mut filetime =
+          MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
+        windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime(
+          filetime.as_mut_ptr(),
+        );
+        let ft = filetime.assume_init();
+        let ticks = (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime);
+        let nanos = ticks.saturating_mul(100);
+        Duration::from_nanos(nanos)
+      }
+    }
+    #[cfg(unix)]
+    {
+      unsafe {
+        let mut ts = core::mem::MaybeUninit::<libc::timespec>::uninit();
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, ts.as_mut_ptr());
+        let ts = ts.assume_init();
+        Duration::from_secs(ts.tv_sec as u64)
+          .saturating_add(Duration::from_nanos(ts.tv_nsec as u64))
+      }
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+      Duration::from_secs(0)
+    }
   }
 }
