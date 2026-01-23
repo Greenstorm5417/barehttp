@@ -3,6 +3,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::time::Duration;
+use spin::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolKey {
@@ -25,7 +26,7 @@ pub struct PooledSocket<S> {
 }
 
 pub struct ConnectionPool<S> {
-  connections: BTreeMap<PoolKey, Vec<PooledSocket<S>>>,
+  connections: Mutex<BTreeMap<PoolKey, Vec<PooledSocket<S>>>>,
   max_idle_per_host: usize,
   idle_timeout: Option<Duration>,
 }
@@ -36,17 +37,18 @@ impl<S: BlockingSocket> ConnectionPool<S> {
     idle_timeout: Option<Duration>,
   ) -> Self {
     Self {
-      connections: BTreeMap::new(),
+      connections: Mutex::new(BTreeMap::new()),
       max_idle_per_host,
       idle_timeout,
     }
   }
 
   pub fn get(
-    &mut self,
+    &self,
     key: &PoolKey,
   ) -> Option<S> {
-    let sockets = self.connections.get_mut(key)?;
+    let mut connections = self.connections.lock();
+    let sockets = connections.get_mut(key)?;
 
     while let Some(pooled) = sockets.pop() {
       if let Some(timeout) = self.idle_timeout {
@@ -63,11 +65,12 @@ impl<S: BlockingSocket> ConnectionPool<S> {
   }
 
   pub fn return_connection(
-    &mut self,
+    &self,
     key: PoolKey,
     socket: S,
   ) {
-    let sockets = self.connections.entry(key).or_default();
+    let mut connections = self.connections.lock();
+    let sockets = connections.entry(key).or_default();
 
     if sockets.len() >= self.max_idle_per_host {
       return;

@@ -12,6 +12,36 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
+/// Trait for types that can be converted into an HTTP body
+pub trait IntoBody {
+  /// Convert this type into a byte vector
+  fn into_body(self) -> Vec<u8>;
+}
+
+impl IntoBody for Vec<u8> {
+  fn into_body(self) -> Vec<u8> {
+    self
+  }
+}
+
+impl IntoBody for String {
+  fn into_body(self) -> Vec<u8> {
+    self.into_bytes()
+  }
+}
+
+impl IntoBody for &str {
+  fn into_body(self) -> Vec<u8> {
+    self.as_bytes().to_vec()
+  }
+}
+
+impl IntoBody for &[u8] {
+  fn into_body(self) -> Vec<u8> {
+    self.to_vec()
+  }
+}
+
 /// Typestate marker indicating a request without a body
 ///
 /// Used for HTTP methods like GET, HEAD, DELETE, OPTIONS.
@@ -27,8 +57,8 @@ pub struct WithBody;
 /// Uses the typestate pattern to enforce body semantics at compile time.
 /// Methods that require a body (POST, PUT, PATCH) return `ClientRequestBuilder<WithBody>`,
 /// while methods without a body (GET, HEAD, etc.) return `ClientRequestBuilder<WithoutBody>`.
-pub struct ClientRequestBuilder<'a, S, D, B = WithoutBody> {
-  client: &'a mut HttpClient<S, D>,
+pub struct ClientRequestBuilder<S, D, B = WithoutBody> {
+  client: HttpClient<S, D>,
   method: Method,
   url: String,
   headers: Headers,
@@ -40,7 +70,7 @@ pub struct ClientRequestBuilder<'a, S, D, B = WithoutBody> {
   _phantom: PhantomData<B>,
 }
 
-impl<S, D, B> ClientRequestBuilder<'_, S, D, B>
+impl<S, D, B> ClientRequestBuilder<S, D, B>
 where
   S: BlockingSocket,
   D: DnsResolver,
@@ -297,14 +327,14 @@ where
   }
 }
 
-impl<'a, S, D> ClientRequestBuilder<'a, S, D, WithoutBody>
+impl<S, D> ClientRequestBuilder<S, D, WithoutBody>
 where
   S: BlockingSocket,
   D: DnsResolver,
 {
   /// Create a new request builder for methods without a body
   pub fn new(
-    client: &'a mut HttpClient<S, D>,
+    client: HttpClient<S, D>,
     method: Method,
     url: impl Into<String>,
   ) -> Self {
@@ -325,9 +355,6 @@ where
   /// # Errors
   /// Returns an error if the request fails
   pub fn call(self) -> Result<Response, Error> {
-    if let Some(config) = self.request_config.clone() {
-      self.client.apply_request_config(config);
-    }
     let url = self.build_url();
 
     let body = if self.form_data.is_empty() {
@@ -336,12 +363,14 @@ where
       Some(self.build_form_body())
     };
 
-    self.client.request(self.method, &url, &self.headers, body)
+    self
+      .client
+      .request(self.method, &url, &self.headers, body, self.request_config)
   }
 
   /// Force this request to allow a body (e.g., for DELETE with body)
   #[must_use]
-  pub fn force_send_body(self) -> ClientRequestBuilder<'a, S, D, WithBody> {
+  pub fn force_send_body(self) -> ClientRequestBuilder<S, D, WithBody> {
     ClientRequestBuilder {
       client: self.client,
       method: self.method,
@@ -357,14 +386,14 @@ where
   }
 }
 
-impl<'a, S, D> ClientRequestBuilder<'a, S, D, WithBody>
+impl<S, D> ClientRequestBuilder<S, D, WithBody>
 where
   S: BlockingSocket,
   D: DnsResolver,
 {
   /// Create a new request builder for methods with a body
   pub fn new(
-    client: &'a mut HttpClient<S, D>,
+    client: HttpClient<S, D>,
     method: Method,
     url: impl Into<String>,
   ) -> Self {
@@ -395,9 +424,6 @@ where
   /// # Errors
   /// Returns an error if the request fails
   pub fn call(self) -> Result<Response, Error> {
-    if let Some(config) = self.request_config.clone() {
-      self.client.apply_request_config(config);
-    }
     let url = self.build_url();
 
     let body = if self.form_data.is_empty() {
@@ -406,7 +432,9 @@ where
       Some(self.build_form_body())
     };
 
-    self.client.request(self.method, &url, &self.headers, body)
+    self
+      .client
+      .request(self.method, &url, &self.headers, body, self.request_config)
   }
 
   /// # Errors
@@ -433,9 +461,9 @@ where
   /// Returns an error if the request fails
   pub fn send(
     mut self,
-    body: Vec<u8>,
+    body: impl IntoBody,
   ) -> Result<Response, Error> {
-    self.body = Some(body);
+    self.body = Some(body.into_body());
     self.call()
   }
 

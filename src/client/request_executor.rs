@@ -16,11 +16,12 @@ use crate::parser::uri::Uri;
 use crate::socket::BlockingSocket;
 use crate::transport::{ConnectionPool, Connector, PoolKey, RawResponse, ResponseBodyExpectation};
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 /// Executes a single HTTP request without redirect handling
 pub struct RequestExecutor<'a, S, D> {
-  pool: &'a mut ConnectionPool<S>,
+  pool: &'a Arc<ConnectionPool<S>>,
   dns: &'a D,
   config: &'a Config,
 }
@@ -31,7 +32,7 @@ where
   D: DnsResolver,
 {
   pub const fn new(
-    pool: &'a mut ConnectionPool<S>,
+    pool: &'a Arc<ConnectionPool<S>>,
     dns: &'a D,
     config: &'a Config,
   ) -> Self {
@@ -59,7 +60,7 @@ where
     let mut conn = connector.connect(uri, self.config)?;
 
     // Build and send request
-    let request_bytes = self.build_request(uri, method, &host_str, custom_headers, body)?;
+    let request_bytes = self.build_request(uri, method, &host_str, port, custom_headers, body)?;
     conn.send_request(&request_bytes)?;
 
     // Read response
@@ -104,7 +105,7 @@ where
 
   /// Get socket from pool or create new one
   fn get_or_create_socket(
-    &mut self,
+    &self,
     pool_key: &PoolKey,
   ) -> Result<S, Error> {
     if self.config.connection_pooling {
@@ -123,11 +124,21 @@ where
     uri: &Uri,
     method: Method,
     host_str: &str,
+    port: u16,
     custom_headers: &Headers,
     body: Option<&[u8]>,
   ) -> Result<Vec<u8>, Error> {
+    use alloc::format;
+
+    // Build Host header with port if non-default
+    let host_header = if (uri.scheme() == "http" && port == 80) || (uri.scheme() == "https" && port == 443) {
+      String::from(host_str)
+    } else {
+      format!("{host_str}:{port}")
+    };
+
     let mut builder =
-      ParserRequestBuilder::new(method.as_str(), &uri.path_and_query()).header(HeaderName::HOST, host_str);
+      ParserRequestBuilder::new(method.as_str(), &uri.path_and_query()).header(HeaderName::HOST, host_header.as_str());
 
     // RFC 9112 Section 9.3: Send Connection: close if pooling is disabled
     if !self.config.connection_pooling {
@@ -139,7 +150,10 @@ where
       builder = builder.header(HeaderName::USER_AGENT, user_agent.as_str());
     }
 
-    if let Some(ref accept) = self.config.accept {
+    // Only add default Accept if user hasn't specified it in custom headers
+    if let Some(ref accept) = self.config.accept
+      && !custom_headers.contains(HeaderName::ACCEPT)
+    {
       builder = builder.header(HeaderName::ACCEPT, accept.as_str());
     }
 
@@ -179,7 +193,7 @@ where
 
   /// Handle connection reuse based on pooling config
   fn handle_connection_reuse(
-    &mut self,
+    &self,
     is_reusable: bool,
     pool_key: PoolKey,
     socket: S,

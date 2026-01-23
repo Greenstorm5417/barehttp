@@ -11,7 +11,7 @@ fn httpbin_url() -> String {
 
 #[test]
 fn test_simple_get_request() -> Result<(), Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   let response = client.get(format!("{}/get", httpbin_url())).call()?;
 
   assert!(response.is_success());
@@ -23,7 +23,7 @@ fn test_simple_get_request() -> Result<(), Error> {
 
 #[test]
 fn test_get_with_query_params() -> Result<(), Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   let response = client
     .get(format!("{}/get", httpbin_url()))
     .query("foo", "bar")
@@ -40,7 +40,7 @@ fn test_get_with_query_params() -> Result<(), Error> {
 
 #[test]
 fn test_post_with_body() -> Result<(), Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   let body_data = b"test data";
 
   let response = client
@@ -56,7 +56,7 @@ fn test_post_with_body() -> Result<(), Error> {
 
 #[test]
 fn test_custom_headers() -> Result<(), Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   let response = client
     .get(format!("{}/headers", httpbin_url()))
     .header("X-Custom-Header", "test-value")
@@ -72,7 +72,7 @@ fn test_custom_headers() -> Result<(), Error> {
 
 #[test]
 fn test_put_request() -> Result<(), Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   let response = client
     .put(format!("{}/put", httpbin_url()))
     .send(b"update data".to_vec())?;
@@ -85,7 +85,7 @@ fn test_put_request() -> Result<(), Error> {
 
 #[test]
 fn test_delete_request() -> Result<(), Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   let response = client.delete(format!("{}/delete", httpbin_url())).call()?;
 
   assert!(response.is_success());
@@ -96,7 +96,7 @@ fn test_delete_request() -> Result<(), Error> {
 
 #[test]
 fn test_head_request() -> Result<(), Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   let response = client.head(format!("{}/get", httpbin_url())).call()?;
 
   assert!(response.is_success());
@@ -129,7 +129,7 @@ fn test_convenience_post_function() -> Result<(), Error> {
 
 #[test]
 fn test_response_helpers() -> Result<(), Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   let response = client.get(format!("{}/get", httpbin_url())).call()?;
 
   assert!(response.is_success());
@@ -145,7 +145,7 @@ fn test_response_helpers() -> Result<(), Error> {
 
 #[test]
 fn test_json_content_type() -> Result<(), Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   let json_body = br#"{"key":"value"}"#;
 
   let response = client

@@ -10,6 +10,7 @@ use crate::request_builder::ClientRequestBuilder;
 use crate::socket::BlockingSocket;
 use crate::transport::ConnectionPool;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 #[cfg(feature = "cookie-jar")]
@@ -28,17 +29,34 @@ use crate::cookie_jar::CookieStore;
 /// ```no_run
 /// use barehttp::HttpClient;
 ///
-/// let mut client = HttpClient::new()?;
+/// let client = HttpClient::new()?;
 ///
 /// let response = client.get("http://example.com").call()?;
 /// # Ok::<(), barehttp::Error>(())
 /// ```
+///
+/// # Cloning
+///
+/// `HttpClient` uses internal Arc. Cloning an `HttpClient` results in an instance
+/// that shares the same underlying connection pool and cookie store.
 pub struct HttpClient<S, D> {
-  pool: ConnectionPool<S>,
-  dns: D,
-  config: Config,
+  pool: Arc<ConnectionPool<S>>,
+  dns: Arc<D>,
+  config: Arc<Config>,
   #[cfg(feature = "cookie-jar")]
-  cookie_store: CookieStore,
+  cookie_store: Arc<CookieStore>,
+}
+
+impl<S, D> Clone for HttpClient<S, D> {
+  fn clone(&self) -> Self {
+    Self {
+      pool: Arc::clone(&self.pool),
+      dns: Arc::clone(&self.dns),
+      config: Arc::clone(&self.config),
+      #[cfg(feature = "cookie-jar")]
+      cookie_store: Arc::clone(&self.cookie_store),
+    }
+  }
 }
 
 impl HttpClient<crate::socket::blocking::OsBlockingSocket, crate::dns::resolver::OsDnsResolver> {
@@ -51,11 +69,11 @@ impl HttpClient<crate::socket::blocking::OsBlockingSocket, crate::dns::resolver:
   pub fn new() -> Result<Self, Error> {
     let config = Config::default();
     Ok(Self {
-      pool: ConnectionPool::new(config.max_idle_per_host, config.idle_timeout),
-      dns: crate::dns::resolver::OsDnsResolver::new(),
-      config,
+      pool: Arc::new(ConnectionPool::new(config.max_idle_per_host, config.idle_timeout)),
+      dns: Arc::new(crate::dns::resolver::OsDnsResolver::new()),
+      config: Arc::new(config),
       #[cfg(feature = "cookie-jar")]
-      cookie_store: CookieStore::new(),
+      cookie_store: Arc::new(CookieStore::new()),
     })
   }
 
@@ -65,13 +83,13 @@ impl HttpClient<crate::socket::blocking::OsBlockingSocket, crate::dns::resolver:
   ///
   /// # Errors
   /// Returns an error if socket initialization fails.
-  pub const fn with_config(config: Config) -> Result<Self, Error> {
+  pub fn with_config(config: Config) -> Result<Self, Error> {
     Ok(Self {
-      pool: ConnectionPool::new(config.max_idle_per_host, config.idle_timeout),
-      dns: crate::dns::resolver::OsDnsResolver::new(),
-      config,
+      pool: Arc::new(ConnectionPool::new(config.max_idle_per_host, config.idle_timeout)),
+      dns: Arc::new(crate::dns::resolver::OsDnsResolver::new()),
+      config: Arc::new(config),
       #[cfg(feature = "cookie-jar")]
-      cookie_store: CookieStore::new(),
+      cookie_store: Arc::new(CookieStore::new()),
     })
   }
 }
@@ -91,11 +109,11 @@ where
   pub fn new_with_adapters(dns: D) -> Self {
     let config = Config::default();
     Self {
-      pool: ConnectionPool::new(config.max_idle_per_host, config.idle_timeout),
-      dns,
-      config,
+      pool: Arc::new(ConnectionPool::new(config.max_idle_per_host, config.idle_timeout)),
+      dns: Arc::new(dns),
+      config: Arc::new(config),
       #[cfg(feature = "cookie-jar")]
-      cookie_store: CookieStore::new(),
+      cookie_store: Arc::new(CookieStore::new()),
     }
   }
 
@@ -110,82 +128,85 @@ where
     config: Config,
   ) -> Self {
     Self {
-      pool: ConnectionPool::new(config.max_idle_per_host, config.idle_timeout),
-      dns,
-      config,
+      pool: Arc::new(ConnectionPool::new(config.max_idle_per_host, config.idle_timeout)),
+      dns: Arc::new(dns),
+      config: Arc::new(config),
       #[cfg(feature = "cookie-jar")]
-      cookie_store: CookieStore::new(),
+      cookie_store: Arc::new(CookieStore::new()),
     }
-  }
-
-  /// TODO: Per-request config should overlay, not mutate client state
-  /// This is temporary until we implement proper config scoping
-  pub(crate) fn apply_request_config(
-    &mut self,
-    config: Config,
-  ) {
-    self.config = config;
   }
 
   /// Start building a GET request
   ///
   /// Returns a request builder that enforces no request body at compile time.
   pub fn get(
-    &mut self,
+    &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(self, crate::method::Method::Get, url)
+  ) -> ClientRequestBuilder<S, D, crate::request_builder::WithoutBody> {
+    ClientRequestBuilder::<S, D, crate::request_builder::WithoutBody>::new(
+      self.clone(),
+      crate::method::Method::Get,
+      url,
+    )
   }
 
   /// Start building a POST request
   ///
   /// Returns a request builder that requires a request body.
   pub fn post(
-    &mut self,
+    &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithBody>::new(self, crate::method::Method::Post, url)
+  ) -> ClientRequestBuilder<S, D, crate::request_builder::WithBody> {
+    ClientRequestBuilder::<S, D, crate::request_builder::WithBody>::new(self.clone(), crate::method::Method::Post, url)
   }
 
   /// Start building a PUT request
   ///
   /// Returns a request builder that requires a request body.
   pub fn put(
-    &mut self,
+    &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithBody>::new(self, crate::method::Method::Put, url)
+  ) -> ClientRequestBuilder<S, D, crate::request_builder::WithBody> {
+    ClientRequestBuilder::<S, D, crate::request_builder::WithBody>::new(self.clone(), crate::method::Method::Put, url)
   }
 
   /// Start building a DELETE request
   ///
   /// Returns a request builder with no body by default (use `force_send_body()` if needed).
   pub fn delete(
-    &mut self,
+    &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(self, crate::method::Method::Delete, url)
+  ) -> ClientRequestBuilder<S, D, crate::request_builder::WithoutBody> {
+    ClientRequestBuilder::<S, D, crate::request_builder::WithoutBody>::new(
+      self.clone(),
+      crate::method::Method::Delete,
+      url,
+    )
   }
 
   /// Start building a HEAD request
   ///
   /// Returns a request builder that enforces no request body.
   pub fn head(
-    &mut self,
+    &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(self, crate::method::Method::Head, url)
+  ) -> ClientRequestBuilder<S, D, crate::request_builder::WithoutBody> {
+    ClientRequestBuilder::<S, D, crate::request_builder::WithoutBody>::new(
+      self.clone(),
+      crate::method::Method::Head,
+      url,
+    )
   }
 
   /// Start building an OPTIONS request
   ///
   /// Returns a request builder that enforces no request body.
   pub fn options(
-    &mut self,
+    &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(
-      self,
+  ) -> ClientRequestBuilder<S, D, crate::request_builder::WithoutBody> {
+    ClientRequestBuilder::<S, D, crate::request_builder::WithoutBody>::new(
+      self.clone(),
       crate::method::Method::Options,
       url,
     )
@@ -195,49 +216,45 @@ where
   ///
   /// Returns a request builder that requires a request body.
   pub fn patch(
-    &mut self,
+    &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithBody>::new(self, crate::method::Method::Patch, url)
+  ) -> ClientRequestBuilder<S, D, crate::request_builder::WithBody> {
+    ClientRequestBuilder::<S, D, crate::request_builder::WithBody>::new(self.clone(), crate::method::Method::Patch, url)
   }
 
   /// Start building a TRACE request
   ///
   /// Returns a request builder that enforces no request body.
   pub fn trace(
-    &mut self,
+    &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(self, crate::method::Method::Trace, url)
+  ) -> ClientRequestBuilder<S, D, crate::request_builder::WithoutBody> {
+    ClientRequestBuilder::<S, D, crate::request_builder::WithoutBody>::new(
+      self.clone(),
+      crate::method::Method::Trace,
+      url,
+    )
   }
 
   /// Start building a CONNECT request
   ///
   /// Returns a request builder that enforces no request body.
   pub fn connect(
-    &mut self,
+    &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(
-      self,
+  ) -> ClientRequestBuilder<S, D, crate::request_builder::WithoutBody> {
+    ClientRequestBuilder::<S, D, crate::request_builder::WithoutBody>::new(
+      self.clone(),
       crate::method::Method::Connect,
       url,
     )
   }
 
-  /// Get mutable reference to the cookie store (requires cookie-jar feature)
-  ///
-  /// Allows direct access to the cookie store for custom cookie management.
-  #[cfg(feature = "cookie-jar")]
-  pub const fn cookie_store_mut(&mut self) -> &mut CookieStore {
-    &mut self.cookie_store
-  }
-
   /// Get reference to the cookie store (requires cookie-jar feature)
   ///
-  /// Allows read-only access to the cookie store.
+  /// Returns a reference to the Arc-wrapped cookie store.
   #[cfg(feature = "cookie-jar")]
-  pub const fn cookie_store(&self) -> &CookieStore {
+  pub fn cookie_store(&self) -> &Arc<CookieStore> {
     &self.cookie_store
   }
 
@@ -246,11 +263,11 @@ where
   /// # Errors
   /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
   pub fn run(
-    &mut self,
+    &self,
     request: crate::request::Request,
   ) -> Result<Response, Error> {
     let (method, url, headers, body) = request.into_parts();
-    self.request(method, &url, &headers, body.map(Body::into_bytes))
+    self.request(method, &url, &headers, body.map(Body::into_bytes), None)
   }
 
   /// Internal request execution with clean orchestration
@@ -263,17 +280,19 @@ where
   /// # Errors
   /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
   pub(crate) fn request(
-    &mut self,
+    &self,
     method: crate::method::Method,
     url: &str,
     custom_headers: &crate::headers::Headers,
     body: Option<Vec<u8>>,
+    request_config: Option<Config>,
   ) -> Result<Response, Error> {
+    let config = request_config.as_ref().unwrap_or(self.config.as_ref());
     let mut current_url = String::from(url);
     let mut current_method = method;
     let mut current_body = body;
 
-    let mut policy = RequestPolicy::new(&self.config);
+    let mut policy = RequestPolicy::new(config);
 
     loop {
       // Parse and validate URL
@@ -300,7 +319,7 @@ where
       let headers_to_use = custom_headers;
 
       // Execute single HTTP request
-      let mut executor = RequestExecutor::new(&mut self.pool, &self.dns, &self.config);
+      let mut executor = RequestExecutor::new(&self.pool, self.dns.as_ref(), config);
       let body_slice = current_body.as_deref();
       let raw = executor.execute(&uri, current_method, headers_to_use, body_slice)?;
 

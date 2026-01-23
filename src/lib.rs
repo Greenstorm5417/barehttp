@@ -227,6 +227,7 @@ pub mod cookie_jar;
 // Re-exports of core types
 pub use client::HttpClient;
 pub use error::Error;
+pub use request_builder::IntoBody;
 
 // Re-exports of default OS adapters
 pub use dns::resolver::OsDnsResolver;
@@ -249,7 +250,7 @@ pub use request::Request;
 /// # Errors
 /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
 pub fn get(url: &str) -> Result<parser::Response, crate::error::Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   client.get(url).call()
 }
 
@@ -261,9 +262,9 @@ pub fn get(url: &str) -> Result<parser::Response, crate::error::Error> {
 /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
 pub fn post(
   url: &str,
-  body: alloc::vec::Vec<u8>,
+  body: impl IntoBody,
 ) -> Result<parser::Response, crate::error::Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   client.post(url).send(body)
 }
 
@@ -275,9 +276,9 @@ pub fn post(
 /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
 pub fn put(
   url: &str,
-  body: alloc::vec::Vec<u8>,
+  body: impl IntoBody,
 ) -> Result<parser::Response, crate::error::Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   client.put(url).send(body)
 }
 
@@ -288,7 +289,7 @@ pub fn put(
 /// # Errors
 /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
 pub fn delete(url: &str) -> Result<parser::Response, crate::error::Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   client.delete(url).call()
 }
 
@@ -299,7 +300,7 @@ pub fn delete(url: &str) -> Result<parser::Response, crate::error::Error> {
 /// # Errors
 /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
 pub fn head(url: &str) -> Result<parser::Response, crate::error::Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   client.head(url).call()
 }
 
@@ -310,7 +311,7 @@ pub fn head(url: &str) -> Result<parser::Response, crate::error::Error> {
 /// # Errors
 /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
 pub fn options(url: &str) -> Result<parser::Response, crate::error::Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   client.options(url).call()
 }
 
@@ -322,9 +323,9 @@ pub fn options(url: &str) -> Result<parser::Response, crate::error::Error> {
 /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
 pub fn patch(
   url: &str,
-  body: alloc::vec::Vec<u8>,
+  body: impl IntoBody,
 ) -> Result<parser::Response, crate::error::Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   client.patch(url).send(body)
 }
 
@@ -335,7 +336,7 @@ pub fn patch(
 /// # Errors
 /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
 pub fn trace(url: &str) -> Result<parser::Response, crate::error::Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   client.trace(url).call()
 }
 
@@ -346,7 +347,7 @@ pub fn trace(url: &str) -> Result<parser::Response, crate::error::Error> {
 /// # Errors
 /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
 pub fn connect(url: &str) -> Result<parser::Response, crate::error::Error> {
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
   client.connect(url).call()
 }
 

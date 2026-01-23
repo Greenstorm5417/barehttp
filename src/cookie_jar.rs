@@ -2,6 +2,7 @@ extern crate alloc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
+use spin::Mutex;
 
 #[cfg(feature = "cookie-jar")]
 use crate::parser::cookie::SetCookie;
@@ -40,7 +41,7 @@ pub struct StoredCookie {
 /// Automatically handles cookie domain/path matching, expiration,
 /// and secure cookie restrictions.
 pub struct CookieStore {
-  cookies: Vec<StoredCookie>,
+  cookies: Mutex<Vec<StoredCookie>>,
   counter: AtomicU64,
 }
 
@@ -50,7 +51,7 @@ impl CookieStore {
   #[must_use]
   pub const fn new() -> Self {
     Self {
-      cookies: Vec::new(),
+      cookies: Mutex::new(Vec::new()),
       counter: AtomicU64::new(0),
     }
   }
@@ -68,10 +69,11 @@ impl CookieStore {
   /// * `uri` - Request URI for domain/path context
   /// * `set_cookie_headers` - Set-Cookie header values from response
   pub fn store_response_cookies(
-    &mut self,
+    &self,
     uri: &str,
     set_cookie_headers: &[String],
   ) {
+    let mut cookies = self.cookies.lock();
     let Some(request_host) = extract_host_from_uri(uri) else {
       return;
     };
@@ -80,18 +82,19 @@ impl CookieStore {
 
     for header_value in set_cookie_headers {
       if let Some(parsed) = SetCookie::parse(header_value) {
-        self.insert_cookie(parsed, request_host, &request_path);
+        Self::insert_cookie_locked(&mut cookies, parsed, request_host, &request_path, &self.counter);
       }
     }
   }
 
-  fn insert_cookie(
-    &mut self,
+  fn insert_cookie_locked(
+    cookies: &mut Vec<StoredCookie>,
     cookie: SetCookie,
     request_host: &str,
     request_path: &str,
+    counter: &AtomicU64,
   ) {
-    let current = self.current_time();
+    let current = counter.fetch_add(1, Ordering::SeqCst);
 
     let host_only = cookie.domain.is_none();
 
@@ -116,9 +119,7 @@ impl CookieStore {
       cookie.expires.map(|_| current.saturating_add(31_536_000))
     };
 
-    self
-      .cookies
-      .retain(|c| !(c.name == cookie.name && c.domain == domain && c.path == path));
+    cookies.retain(|c| !(c.name == cookie.name && c.domain == domain && c.path == path));
 
     if expiry_time != Some(0) {
       let stored = StoredCookie {
@@ -133,7 +134,7 @@ impl CookieStore {
         expiry_time,
       };
 
-      self.cookies.push(stored);
+      cookies.push(stored);
     }
   }
 
@@ -158,11 +159,12 @@ impl CookieStore {
     };
 
     let request_path = extract_path_from_uri(uri);
-    let current = self.current_time();
+    let current = self.counter.fetch_add(1, Ordering::SeqCst);
 
+    let cookies = self.cookies.lock();
     let mut matching_cookies = Vec::new();
 
-    for cookie in &self.cookies {
+    for cookie in cookies.iter() {
       if let Some(expiry) = cookie.expiry_time
         && expiry <= current
       {
@@ -211,19 +213,21 @@ impl CookieStore {
   }
 
   /// Clears all stored cookies
-  pub fn clear(&mut self) {
-    self.cookies.clear();
+  pub fn clear(&self) {
+    self.cookies.lock().clear();
   }
 
-  /// Returns an iterator over unexpired cookies
+  /// Returns unexpired cookies as a Vec
   ///
   /// Filters out cookies that have passed their expiration time.
-  pub fn iter_unexpired(&self) -> impl Iterator<Item = &StoredCookie> {
-    let current = self.current_time();
-    self.cookies.iter().filter(move |c| {
-      c.expiry_time
-        .map_or_else(|| true, |expiry| expiry > current)
-    })
+  pub fn get_unexpired(&self) -> Vec<StoredCookie> {
+    let current = self.counter.fetch_add(1, Ordering::SeqCst);
+    let cookies = self.cookies.lock();
+    cookies
+      .iter()
+      .filter(|c| c.expiry_time.map_or(true, |expiry| expiry > current))
+      .cloned()
+      .collect()
   }
 }
 

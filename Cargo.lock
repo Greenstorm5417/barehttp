@@ -15,6 +15,7 @@ dependencies = [
  "libc",
  "miniz_oxide",
  "ruzstd",
+ "spin",
  "windows-sys",
 ]
 
@@ -41,6 +42,12 @@ checksum = "e5ff0cc5e135c8870a775d3320910cd9b564ec036b4dc0b8741629020be63f01"
 dependencies = [
  "twox-hash",
 ]
+
+[[package]]
+name = "spin"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 
 [[package]]
 name = "twox-hash"
