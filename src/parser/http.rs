@@ -38,8 +38,7 @@ impl StatusCode {
     }
 
     #[allow(clippy::cast_lossless)]
-    let code =
-      u16::from(d0 - b'0') * 100 + u16::from(d1 - b'0') * 10 + u16::from(d2 - b'0');
+    let code = u16::from(d0 - b'0') * 100 + u16::from(d1 - b'0') * 10 + u16::from(d2 - b'0');
 
     let inner = StatusCodeType::new(code).ok_or(ParseError::InvalidStatusCode)?;
     let remaining = input.get(3..).ok_or(ParseError::InvalidStatusCode)?;
@@ -89,14 +88,7 @@ impl<'a> StatusLine<'a> {
     let rest5 = rest4.get(i..).ok_or(ParseError::InvalidReasonPhrase)?;
     let rest6 = expect_crlf(rest5)?;
 
-    Ok((
-      Self {
-        version,
-        status,
-        reason,
-      },
-      rest6,
-    ))
+    Ok((Self { version, status, reason }, rest6))
   }
 }
 

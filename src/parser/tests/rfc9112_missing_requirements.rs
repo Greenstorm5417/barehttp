@@ -16,10 +16,7 @@ fn test_missing_host_header_enforcement() {
 
   // Should return error for missing Host header
   assert!(result.is_err(), "Should reject request without Host header");
-  assert_eq!(
-    result.unwrap_err(),
-    crate::error::ParseError::MissingHostHeader
-  );
+  assert_eq!(result.unwrap_err(), crate::error::ParseError::MissingHostHeader);
 }
 
 #[test]
@@ -29,10 +26,7 @@ fn test_missing_empty_host_when_no_authority() {
 
   // Should return error for missing Host header
   assert!(result.is_err(), "Should reject request without Host header");
-  assert_eq!(
-    result.unwrap_err(),
-    crate::error::ParseError::MissingHostHeader
-  );
+  assert_eq!(result.unwrap_err(), crate::error::ParseError::MissingHostHeader);
 }
 
 // ============================================================================
@@ -47,10 +41,7 @@ fn test_missing_reject_te_in_1xx_response() {
   let result = Response::parse(input);
 
   // Should fail but currently succeeds
-  assert!(
-    result.is_err(),
-    "MISSING: Should reject TE in 1xx responses"
-  );
+  assert!(result.is_err(), "MISSING: Should reject TE in 1xx responses");
 }
 
 #[test]
@@ -61,34 +52,22 @@ fn test_missing_reject_te_in_204_response() {
   let result = Response::parse(input);
 
   // Should fail but currently succeeds
-  assert!(
-    result.is_err(),
-    "MISSING: Should reject TE in 204 responses"
-  );
+  assert!(result.is_err(), "MISSING: Should reject TE in 204 responses");
 }
 
 #[test]
 fn test_missing_reject_te_in_2xx_connect_response() {
   // RFC 9112 Section 6.1: Server MUST NOT send TE in 2xx to CONNECT
   // RFC 9112 Section 6.3: Client SHOULD IGNORE (not reject) TE/CL in 2xx CONNECT
-  let input =
-    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
+  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
 
   // Parse with CONNECT method context
   let headers_bytes = vec![(b"Transfer-Encoding".to_vec(), b"chunked".to_vec())];
 
-  let result = Response::parse_body(
-    b"5\r\nHello\r\n0\r\n\r\n",
-    &headers_bytes,
-    200,
-    Some("CONNECT"),
-  );
+  let result = Response::parse_body(b"5\r\nHello\r\n0\r\n\r\n", &headers_bytes, 200, Some("CONNECT"));
 
   // Should succeed and ignore the TE header (return empty body)
-  assert!(
-    result.is_ok(),
-    "Should ignore (not reject) TE in 2xx CONNECT responses"
-  );
+  assert!(result.is_ok(), "Should ignore (not reject) TE in 2xx CONNECT responses");
   assert!(
     result.unwrap().is_empty(),
     "2xx CONNECT should have empty body even with TE"
@@ -125,10 +104,7 @@ fn test_missing_prevent_obs_fold_generation() {
 
   // Should return error for obs-fold in header value
   assert!(result.is_err(), "Should reject obs-fold in header values");
-  assert_eq!(
-    result.unwrap_err(),
-    crate::error::ParseError::ObsoleteFoldInHeader
-  );
+  assert_eq!(result.unwrap_err(), crate::error::ParseError::ObsoleteFoldInHeader);
 }
 
 #[test]
@@ -143,10 +119,7 @@ fn test_missing_no_cl_when_te_present() {
 
   // Should return error when both TE and CL are present
   assert!(result.is_err(), "Should reject when both TE and CL present");
-  assert_eq!(
-    result.unwrap_err(),
-    crate::error::ParseError::ConflictingFraming
-  );
+  assert_eq!(result.unwrap_err(), crate::error::ParseError::ConflictingFraming);
 }
 
 // ============================================================================
@@ -203,8 +176,7 @@ fn test_missing_version_check_for_te() {
   // This is a response parsing requirement
   // Our implementation rejects TE in HTTP/1.0 responses
 
-  let input =
-    b"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
+  let input = b"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
 
   assert!(result.is_err(), "Should reject TE in HTTP/1.0 responses");
@@ -224,10 +196,7 @@ fn test_missing_no_chunked_in_te_header() {
 
   // Should return error for chunked in TE header
   assert!(result.is_err(), "Should reject 'chunked' in TE header");
-  assert_eq!(
-    result.unwrap_err(),
-    crate::error::ParseError::ChunkedInTeHeader
-  );
+  assert_eq!(result.unwrap_err(), crate::error::ParseError::ChunkedInTeHeader);
 }
 
 #[test]
@@ -240,10 +209,7 @@ fn test_missing_te_requires_connection_header() {
 
   // Should return error when TE present without Connection: TE
   assert!(result.is_err(), "Should reject TE without Connection: TE");
-  assert_eq!(
-    result.unwrap_err(),
-    crate::error::ParseError::TeHeaderMissingConnection
-  );
+  assert_eq!(result.unwrap_err(), crate::error::ParseError::TeHeaderMissingConnection);
 }
 
 // ============================================================================
@@ -322,8 +288,5 @@ fn test_missing_comprehensive_request_validation() {
 
   // Should fail due to missing Host header
   assert!(result.is_err(), "Should reject request without Host header");
-  assert_eq!(
-    result.unwrap_err(),
-    crate::error::ParseError::MissingHostHeader
-  );
+  assert_eq!(result.unwrap_err(), crate::error::ParseError::MissingHostHeader);
 }

@@ -35,37 +35,28 @@ impl OsSocket {
         return Err(get_last_error());
       }
 
-      Ok(Self {
-        fd,
-        connected: false,
-      })
+      Ok(Self { fd, connected: false })
     }
   }
 
-  pub fn connect(&mut self, addr: &SocketAddr) -> Result<(), SocketError> {
+  pub fn connect(
+    &mut self,
+    addr: &SocketAddr,
+  ) -> Result<(), SocketError> {
     if self.connected {
       return Ok(());
     }
 
     match addr {
-      SocketAddr::Ip {
-        addr: ip_addr,
-        port,
-      } => match ip_addr {
+      SocketAddr::Ip { addr: ip_addr, port } => match ip_addr {
         crate::util::IpAddr::V4(ipv4) => self.connect_ipv4(*ipv4, *port)?,
         crate::util::IpAddr::V6(_ipv6) => return Err(SocketError::Unsupported),
       },
-      SocketAddr::Hostname {
-        host,
-        port: host_port,
-      } => {
-        let host_str =
-          core::str::from_utf8(host).map_err(|_| SocketError::InvalidAddress)?;
+      SocketAddr::Hostname { host, port: host_port } => {
+        let host_str = core::str::from_utf8(host).map_err(|_| SocketError::InvalidAddress)?;
 
         let addresses = crate::dns::os::resolve_host(host_str).map_err(|e| match e {
-          crate::error::DnsError::ResolutionFailed(code) => {
-            SocketError::DnsResolutionFailed(code)
-          }
+          crate::error::DnsError::ResolutionFailed(code) => SocketError::DnsResolutionFailed(code),
           crate::error::DnsError::NoAddressesFound => SocketError::DnsResolutionFailed(0),
           crate::error::DnsError::InvalidHostname => SocketError::InvalidAddress,
           crate::error::DnsError::Unsupported => SocketError::Unsupported,
@@ -88,13 +79,17 @@ impl OsSocket {
         }
 
         return Err(last_error);
-      }
+      },
     }
 
     Ok(())
   }
 
-  fn connect_ipv4(&mut self, addr: [u8; 4], port: u16) -> Result<(), SocketError> {
+  fn connect_ipv4(
+    &mut self,
+    addr: [u8; 4],
+    port: u16,
+  ) -> Result<(), SocketError> {
     unsafe {
       let mut sockaddr: sockaddr_in = core::mem::zeroed();
       #[allow(clippy::cast_possible_truncation)]
@@ -120,7 +115,10 @@ impl OsSocket {
     Ok(())
   }
 
-  pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, SocketError> {
+  pub fn read(
+    &mut self,
+    buf: &mut [u8],
+  ) -> Result<usize, SocketError> {
     if !self.connected {
       return Err(SocketError::NotConnected);
     }
@@ -143,7 +141,10 @@ impl OsSocket {
     }
   }
 
-  pub fn write(&mut self, buf: &[u8]) -> Result<usize, SocketError> {
+  pub fn write(
+    &mut self,
+    buf: &[u8],
+  ) -> Result<usize, SocketError> {
     if !self.connected {
       return Err(SocketError::NotConnected);
     }
@@ -181,7 +182,10 @@ impl OsSocket {
     Ok(())
   }
 
-  pub fn set_flags(&mut self, flags: SocketFlags) -> Result<(), SocketError> {
+  pub fn set_flags(
+    &mut self,
+    flags: SocketFlags,
+  ) -> Result<(), SocketError> {
     unsafe {
       if flags.contains(SocketFlags::TCP_NODELAY) {
         let val: c_int = 1;
@@ -232,7 +236,10 @@ impl OsSocket {
     Ok(())
   }
 
-  pub fn set_read_timeout(&mut self, timeout_ms: u32) -> Result<(), SocketError> {
+  pub fn set_read_timeout(
+    &mut self,
+    timeout_ms: u32,
+  ) -> Result<(), SocketError> {
     unsafe {
       #[allow(clippy::cast_lossless, clippy::integer_division)]
       let timeout = timeval {
@@ -256,7 +263,10 @@ impl OsSocket {
     Ok(())
   }
 
-  pub fn set_write_timeout(&mut self, timeout_ms: u32) -> Result<(), SocketError> {
+  pub fn set_write_timeout(
+    &mut self,
+    timeout_ms: u32,
+  ) -> Result<(), SocketError> {
     unsafe {
       #[allow(clippy::cast_lossless, clippy::integer_division)]
       let timeout = timeval {

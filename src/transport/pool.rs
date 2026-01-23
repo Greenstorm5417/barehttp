@@ -11,7 +11,10 @@ pub struct PoolKey {
 }
 
 impl PoolKey {
-  pub const fn new(host: String, port: u16) -> Self {
+  pub const fn new(
+    host: String,
+    port: u16,
+  ) -> Self {
     Self { host, port }
   }
 }
@@ -28,7 +31,10 @@ pub struct ConnectionPool<S> {
 }
 
 impl<S: BlockingSocket> ConnectionPool<S> {
-  pub const fn new(max_idle_per_host: usize, idle_timeout: Option<Duration>) -> Self {
+  pub const fn new(
+    max_idle_per_host: usize,
+    idle_timeout: Option<Duration>,
+  ) -> Self {
     Self {
       connections: BTreeMap::new(),
       max_idle_per_host,
@@ -36,7 +42,10 @@ impl<S: BlockingSocket> ConnectionPool<S> {
     }
   }
 
-  pub fn get(&mut self, key: &PoolKey) -> Option<S> {
+  pub fn get(
+    &mut self,
+    key: &PoolKey,
+  ) -> Option<S> {
     let sockets = self.connections.get_mut(key)?;
 
     while let Some(pooled) = sockets.pop() {
@@ -53,7 +62,11 @@ impl<S: BlockingSocket> ConnectionPool<S> {
     None
   }
 
-  pub fn return_connection(&mut self, key: PoolKey, socket: S) {
+  pub fn return_connection(
+    &mut self,
+    key: PoolKey,
+    socket: S,
+  ) {
     let sockets = self.connections.entry(key).or_default();
 
     if sockets.len() >= self.max_idle_per_host {
@@ -71,11 +84,8 @@ impl<S: BlockingSocket> ConnectionPool<S> {
     {
       use core::mem::MaybeUninit;
       unsafe {
-        let mut filetime =
-          MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
-        windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime(
-          filetime.as_mut_ptr(),
-        );
+        let mut filetime = MaybeUninit::<windows_sys::Win32::Foundation::FILETIME>::uninit();
+        windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime(filetime.as_mut_ptr());
         let ft = filetime.assume_init();
         let ticks = (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime);
         let nanos = ticks.saturating_mul(100);
@@ -88,8 +98,7 @@ impl<S: BlockingSocket> ConnectionPool<S> {
         let mut ts_uninit = core::mem::MaybeUninit::<libc::timespec>::uninit();
         libc::clock_gettime(libc::CLOCK_MONOTONIC, ts_uninit.as_mut_ptr());
         let ts = ts_uninit.assume_init();
-        Duration::from_secs(ts.tv_sec.cast_unsigned())
-          .saturating_add(Duration::from_nanos(ts.tv_nsec.cast_unsigned()))
+        Duration::from_secs(ts.tv_sec.cast_unsigned()).saturating_add(Duration::from_nanos(ts.tv_nsec.cast_unsigned()))
       }
     }
     #[cfg(not(any(windows, unix)))]

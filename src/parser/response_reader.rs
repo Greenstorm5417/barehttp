@@ -51,12 +51,13 @@ impl ResponseReader {
   /// Add more data to the reader's buffer
   ///
   /// Returns an error if header size limit is exceeded
-  pub fn feed(&mut self, data: &[u8]) -> Result<(), ParseError> {
+  pub fn feed(
+    &mut self,
+    data: &[u8],
+  ) -> Result<(), ParseError> {
     self.buffer.extend_from_slice(data);
 
-    if matches!(self.state, ReaderState::ReadingHeaders)
-      && self.buffer.len() > self.max_header_size
-    {
+    if matches!(self.state, ReaderState::ReadingHeaders) && self.buffer.len() > self.max_header_size {
       return Err(ParseError::HeaderTooLarge);
     }
 
@@ -65,8 +66,7 @@ impl ResponseReader {
 
   /// Check if headers are complete and ready to be parsed
   pub fn has_complete_headers(&self) -> bool {
-    matches!(self.state, ReaderState::ReadingHeaders)
-      && FramingDetector::has_complete_headers(&self.buffer)
+    matches!(self.state, ReaderState::ReadingHeaders) && FramingDetector::has_complete_headers(&self.buffer)
   }
 
   /// Parse headers and transition to body reading state
@@ -74,25 +74,19 @@ impl ResponseReader {
   /// Returns (`status_code`, reason, headers, `body_strategy`)
   ///
   /// Must only be called when `has_complete_headers()` returns true
-  pub fn parse_headers(
-    &mut self,
-  ) -> Result<(u16, alloc::string::String, Headers, BodyReadStrategy), ParseError> {
+  pub fn parse_headers(&mut self) -> Result<(u16, alloc::string::String, Headers, BodyReadStrategy), ParseError> {
     if !matches!(self.state, ReaderState::ReadingHeaders) {
       return Err(ParseError::InvalidState);
     }
 
-    let (status_code, reason, headers, remaining) =
-      Response::parse_headers_only(&self.buffer)?;
+    let (status_code, reason, headers, remaining) = Response::parse_headers_only(&self.buffer)?;
 
     let strategy = Response::body_read_strategy(&headers, status_code);
 
     // Replace buffer with only the body bytes (clear headers)
     self.buffer = remaining.to_vec();
 
-    self.state = ReaderState::ReadingBody {
-      status_code,
-      strategy,
-    };
+    self.state = ReaderState::ReadingBody { status_code, strategy };
 
     Ok((status_code, reason, headers, strategy))
   }
@@ -105,9 +99,7 @@ impl ResponseReader {
       match strategy {
         BodyReadStrategy::NoBody => true,
         BodyReadStrategy::ContentLength(expected) => self.buffer.len() >= expected,
-        BodyReadStrategy::Chunked => {
-          FramingDetector::has_chunked_terminator(&self.buffer)
-        }
+        BodyReadStrategy::Chunked => FramingDetector::has_chunked_terminator(&self.buffer),
         // UntilClose requires explicit signal from caller
         BodyReadStrategy::UntilClose => false,
       }
@@ -134,7 +126,11 @@ impl ResponseReader {
   /// Parse the complete response
   ///
   /// Must only be called when body is complete
-  pub fn finish(self, headers: &Headers, status_code: u16) -> Result<Body, ParseError> {
+  pub fn finish(
+    self,
+    headers: &Headers,
+    status_code: u16,
+  ) -> Result<Body, ParseError> {
     if !matches!(
       self.state,
       ReaderState::ReadingHeaders | ReaderState::ReadingBody { .. }

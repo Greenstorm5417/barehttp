@@ -2,7 +2,7 @@ use crate::client::HttpClient;
 use crate::config::Config;
 use crate::dns::DnsResolver;
 use crate::error::Error;
-use crate::headers::Headers;
+use crate::headers::{HeaderName, Headers};
 use crate::method::Method;
 use crate::parser::Response;
 use crate::parser::version::Version;
@@ -47,21 +47,32 @@ where
 {
   /// Add a header to the request
   #[must_use]
-  pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+  pub fn header(
+    mut self,
+    name: impl Into<String>,
+    value: impl Into<String>,
+  ) -> Self {
     self.headers.insert(name, value);
     self
   }
 
   /// Add a URL-encoded query parameter
   #[must_use]
-  pub fn query(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+  pub fn query(
+    mut self,
+    key: impl Into<String>,
+    value: impl Into<String>,
+  ) -> Self {
     self.query_params.push((key.into(), value.into()));
     self
   }
 
   /// Add multiple URL-encoded query parameters from an iterator
   #[must_use]
-  pub fn query_pairs<I, K, V>(mut self, iter: I) -> Self
+  pub fn query_pairs<I, K, V>(
+    mut self,
+    iter: I,
+  ) -> Self
   where
     I: IntoIterator<Item = (K, V)>,
     K: Into<String>,
@@ -75,7 +86,11 @@ where
 
   /// Add a raw (non-encoded) query parameter
   #[must_use]
-  pub fn query_raw(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+  pub fn query_raw(
+    mut self,
+    key: impl Into<String>,
+    value: impl Into<String>,
+  ) -> Self {
     let key_str = key.into();
     let value_str = value.into();
     self.query_params.push((key_str, value_str));
@@ -84,7 +99,10 @@ where
 
   /// Add multiple raw (non-encoded) query parameters from an iterator
   #[must_use]
-  pub fn query_pairs_raw<I, K, V>(mut self, iter: I) -> Self
+  pub fn query_pairs_raw<I, K, V>(
+    mut self,
+    iter: I,
+  ) -> Self
   where
     I: IntoIterator<Item = (K, V)>,
     K: Into<String>,
@@ -98,15 +116,22 @@ where
 
   /// Add a form data field (application/x-www-form-urlencoded)
   #[must_use]
-  pub fn form(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+  pub fn form(
+    mut self,
+    key: impl Into<String>,
+    value: impl Into<String>,
+  ) -> Self {
     self.form_data.push((key.into(), value.into()));
     self
   }
 
   /// Set the Content-Type header
   #[must_use]
-  pub fn content_type(self, content_type: impl Into<String>) -> Self {
-    self.header("Content-Type", content_type)
+  pub fn content_type(
+    self,
+    content_type: impl Into<String>,
+  ) -> Self {
+    self.header(HeaderName::CONTENT_TYPE, content_type)
   }
 
   /// Add a cookie to the request
@@ -125,21 +150,25 @@ where
   /// # Ok::<(), barehttp::Error>(())
   /// ```
   #[must_use]
-  pub fn cookie(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+  pub fn cookie(
+    mut self,
+    name: impl Into<String>,
+    value: impl Into<String>,
+  ) -> Self {
     use alloc::format;
     let name_str = name.into();
     let value_str = value.into();
     let cookie_value = format!("{name_str}={value_str}");
 
     // Check if Cookie header already exists
-    if let Some(existing) = self.headers.get("Cookie") {
+    if let Some(existing) = self.headers.get(HeaderName::COOKIE) {
       // Append to existing cookies with semicolon separator
       let combined = format!("{existing}; {cookie_value}");
-      self.headers.remove("Cookie");
-      self.headers.insert("Cookie", combined);
+      self.headers.remove(HeaderName::COOKIE);
+      self.headers.insert(HeaderName::COOKIE, combined);
     } else {
       // Create new Cookie header
-      self.headers.insert("Cookie", cookie_value);
+      self.headers.insert(HeaderName::COOKIE, cookie_value);
     }
 
     self
@@ -147,7 +176,10 @@ where
 
   /// Override the request URL
   #[must_use]
-  pub fn uri(mut self, url: impl Into<String>) -> Self {
+  pub fn uri(
+    mut self,
+    url: impl Into<String>,
+  ) -> Self {
     self.url = url.into();
     self
   }
@@ -178,7 +210,10 @@ where
 
   /// Set the HTTP protocol version
   #[must_use]
-  pub const fn version(mut self, version: Version) -> Self {
+  pub const fn version(
+    mut self,
+    version: Version,
+  ) -> Self {
     self.version = version;
     self
   }
@@ -191,7 +226,10 @@ where
 
   /// Override the client configuration for this request
   #[must_use]
-  pub fn with_config(mut self, config: Config) -> Self {
+  pub fn with_config(
+    mut self,
+    config: Config,
+  ) -> Self {
     self.request_config = Some(config);
     self
   }
@@ -208,7 +246,11 @@ where
     }
 
     let mut url = self.url.clone();
-    let separator = if url.contains('?') { '&' } else { '?' };
+    let separator = if url.contains('?') {
+      '&'
+    } else {
+      '?'
+    };
     url.push(separator);
 
     for (i, (key, value)) in self.query_params.iter().enumerate() {
@@ -342,7 +384,10 @@ where
 
   /// Set the request body
   #[must_use]
-  pub fn body(mut self, data: Vec<u8>) -> Self {
+  pub fn body(
+    mut self,
+    data: Vec<u8>,
+  ) -> Self {
     self.body = Some(data);
     self
   }
@@ -366,28 +411,40 @@ where
 
   /// # Errors
   /// Returns an error if the request fails
-  pub fn send_string(mut self, content: impl Into<String>) -> Result<Response, Error> {
+  pub fn send_string(
+    mut self,
+    content: impl Into<String>,
+  ) -> Result<Response, Error> {
     self.body = Some(content.into().into_bytes());
     self.call()
   }
 
   /// # Errors
   /// Returns an error if the request fails
-  pub fn send_bytes(mut self, bytes: Vec<u8>) -> Result<Response, Error> {
+  pub fn send_bytes(
+    mut self,
+    bytes: Vec<u8>,
+  ) -> Result<Response, Error> {
     self.body = Some(bytes);
     self.call()
   }
 
   /// # Errors
   /// Returns an error if the request fails
-  pub fn send(mut self, body: Vec<u8>) -> Result<Response, Error> {
+  pub fn send(
+    mut self,
+    body: Vec<u8>,
+  ) -> Result<Response, Error> {
     self.body = Some(body);
     self.call()
   }
 
   /// # Errors
   /// Returns an error if the request fails
-  pub fn send_form<I, K, V>(mut self, iter: I) -> Result<Response, Error>
+  pub fn send_form<I, K, V>(
+    mut self,
+    iter: I,
+  ) -> Result<Response, Error>
   where
     I: IntoIterator<Item = (K, V)>,
     K: AsRef<str>,
@@ -396,7 +453,7 @@ where
     let form_body = Self::build_form_url_encoded(iter);
     self
       .headers
-      .insert("Content-Type", "application/x-www-form-urlencoded");
+      .insert(HeaderName::CONTENT_TYPE, "application/x-www-form-urlencoded");
     self.body = Some(form_body);
     self.call()
   }

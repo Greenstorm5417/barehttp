@@ -66,14 +66,8 @@ fn test_no_leading_crlf_in_request() {
     .unwrap();
 
   // Should start directly with method, not with CRLF
-  assert!(
-    request.starts_with(b"GET"),
-    "Request should not have leading CRLF"
-  );
-  assert!(
-    !request.starts_with(b"\r\n"),
-    "Request should not start with CRLF"
-  );
+  assert!(request.starts_with(b"GET"), "Request should not have leading CRLF");
+  assert!(!request.starts_with(b"\r\n"), "Request should not start with CRLF");
 }
 
 #[test]
@@ -150,10 +144,7 @@ fn test_te_and_cl_conflict_rejected() {
   let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
 
-  assert!(
-    result.is_err(),
-    "Response with both TE and CL should be rejected"
-  );
+  assert!(result.is_err(), "Response with both TE and CL should be rejected");
   if let Err(e) = result {
     assert!(
       matches!(e, crate::error::ParseError::ConflictingFraming),
@@ -165,8 +156,7 @@ fn test_te_and_cl_conflict_rejected() {
 #[test]
 fn test_te_without_cl_accepted() {
   // Transfer-Encoding without Content-Length should work
-  let input =
-    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
+  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
 
   assert!(result.is_ok(), "Response with only TE should be accepted");
@@ -195,18 +185,10 @@ fn test_connect_2xx_ignores_content_length() {
   let input = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nThis should be ignored";
 
   // Parse with CONNECT method
-  let (status_line, after_status) =
-    crate::parser::http::StatusLine::parse(&input[..]).unwrap();
-  let (headers_bytes, remaining) =
-    crate::parser::headers::HeaderField::parse(after_status).unwrap();
+  let (status_line, after_status) = crate::parser::http::StatusLine::parse(&input[..]).unwrap();
+  let (headers_bytes, remaining) = crate::parser::headers::HeaderField::parse(after_status).unwrap();
 
-  let body_bytes = Response::parse_body(
-    remaining,
-    &headers_bytes,
-    status_line.status.code(),
-    Some("CONNECT"),
-  )
-  .unwrap();
+  let body_bytes = Response::parse_body(remaining, &headers_bytes, status_line.status.code(), Some("CONNECT")).unwrap();
 
   assert!(
     body_bytes.is_empty(),
@@ -219,18 +201,10 @@ fn test_connect_non_2xx_processes_body_normally() {
   // Non-2xx CONNECT responses should process body normally
   let input = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 5\r\n\r\nError";
 
-  let (status_line, after_status) =
-    crate::parser::http::StatusLine::parse(&input[..]).unwrap();
-  let (headers_bytes, remaining) =
-    crate::parser::headers::HeaderField::parse(after_status).unwrap();
+  let (status_line, after_status) = crate::parser::http::StatusLine::parse(&input[..]).unwrap();
+  let (headers_bytes, remaining) = crate::parser::headers::HeaderField::parse(after_status).unwrap();
 
-  let body_bytes = Response::parse_body(
-    remaining,
-    &headers_bytes,
-    status_line.status.code(),
-    Some("CONNECT"),
-  )
-  .unwrap();
+  let body_bytes = Response::parse_body(remaining, &headers_bytes, status_line.status.code(), Some("CONNECT")).unwrap();
 
   assert_eq!(
     body_bytes, b"Error",
@@ -241,21 +215,12 @@ fn test_connect_non_2xx_processes_body_normally() {
 #[test]
 fn test_connect_2xx_ignores_transfer_encoding() {
   // RFC 9112 Section 6.3: 2xx to CONNECT ignores Transfer-Encoding
-  let input =
-    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
+  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
 
-  let (status_line, after_status) =
-    crate::parser::http::StatusLine::parse(&input[..]).unwrap();
-  let (headers_bytes, remaining) =
-    crate::parser::headers::HeaderField::parse(after_status).unwrap();
+  let (status_line, after_status) = crate::parser::http::StatusLine::parse(&input[..]).unwrap();
+  let (headers_bytes, remaining) = crate::parser::headers::HeaderField::parse(after_status).unwrap();
 
-  let body_bytes = Response::parse_body(
-    remaining,
-    &headers_bytes,
-    status_line.status.code(),
-    Some("CONNECT"),
-  )
-  .unwrap();
+  let body_bytes = Response::parse_body(remaining, &headers_bytes, status_line.status.code(), Some("CONNECT")).unwrap();
 
   assert!(
     body_bytes.is_empty(),
@@ -274,10 +239,7 @@ fn test_invalid_content_length_rejected() {
   let result = Response::parse(input);
 
   // Should parse successfully but treat as no Content-Length
-  assert!(
-    result.is_ok(),
-    "Should handle invalid Content-Length gracefully"
-  );
+  assert!(result.is_ok(), "Should handle invalid Content-Length gracefully");
   let response = result.unwrap();
   assert!(
     response.body.is_empty(),
@@ -306,10 +268,7 @@ fn test_multiple_different_content_length_rejected() {
   let result = Response::parse(input);
 
   // Should parse but treat as invalid Content-Length
-  assert!(
-    result.is_ok(),
-    "Should handle conflicting Content-Length gracefully"
-  );
+  assert!(result.is_ok(), "Should handle conflicting Content-Length gracefully");
   let response = result.unwrap();
   assert!(
     response.body.is_empty(),
@@ -323,10 +282,7 @@ fn test_content_length_with_non_digits_rejected() {
   let input = b"HTTP/1.1 200 OK\r\nContent-Length: 5abc\r\n\r\n";
   let result = Response::parse(input);
 
-  assert!(
-    result.is_ok(),
-    "Should handle malformed Content-Length gracefully"
-  );
+  assert!(result.is_ok(), "Should handle malformed Content-Length gracefully");
   let response = result.unwrap();
   assert!(
     response.body.is_empty(),
@@ -340,10 +296,7 @@ fn test_content_length_with_whitespace_accepted() {
   let input = b"HTTP/1.1 200 OK\r\nContent-Length:  5  \r\n\r\nHello";
   let result = Response::parse(input);
 
-  assert!(
-    result.is_ok(),
-    "Content-Length with whitespace should be accepted"
-  );
+  assert!(result.is_ok(), "Content-Length with whitespace should be accepted");
   let response = result.unwrap();
   assert_eq!(response.body.as_bytes(), b"Hello");
 }
@@ -371,10 +324,7 @@ fn test_complete_request_with_all_phase1_fixes() {
   );
 
   // Should have Host header
-  assert!(
-    request_str.contains("Host: example.com\r\n"),
-    "Should have Host header"
-  );
+  assert!(request_str.contains("Host: example.com\r\n"), "Should have Host header");
 
   // Should end with body (no trailing CRLF)
   assert!(

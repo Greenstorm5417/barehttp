@@ -23,9 +23,7 @@ impl Body {
   /// Create a body from a string
   #[must_use]
   pub const fn from_string(s: String) -> Self {
-    Self {
-      data: s.into_bytes(),
-    }
+    Self { data: s.into_bytes() }
   }
 
   /// Get the body as a byte slice

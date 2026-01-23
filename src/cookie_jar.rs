@@ -67,7 +67,11 @@ impl CookieStore {
   /// # Arguments
   /// * `uri` - Request URI for domain/path context
   /// * `set_cookie_headers` - Set-Cookie header values from response
-  pub fn store_response_cookies(&mut self, uri: &str, set_cookie_headers: &[String]) {
+  pub fn store_response_cookies(
+    &mut self,
+    uri: &str,
+    set_cookie_headers: &[String],
+  ) {
     let Some(request_host) = extract_host_from_uri(uri) else {
       return;
     };
@@ -81,7 +85,12 @@ impl CookieStore {
     }
   }
 
-  fn insert_cookie(&mut self, cookie: SetCookie, request_host: &str, request_path: &str) {
+  fn insert_cookie(
+    &mut self,
+    cookie: SetCookie,
+    request_host: &str,
+    request_path: &str,
+  ) {
     let current = self.current_time();
 
     let host_only = cookie.domain.is_none();
@@ -139,7 +148,11 @@ impl CookieStore {
   ///
   /// # Returns
   /// Cookie header value (empty string if no matches)
-  pub fn get_request_cookies(&self, uri: &str, is_secure: bool) -> String {
+  pub fn get_request_cookies(
+    &self,
+    uri: &str,
+    is_secure: bool,
+  ) -> String {
     let Some(request_host) = extract_host_from_uri(uri) else {
       return String::new();
     };
@@ -236,7 +249,11 @@ fn extract_host_from_uri(uri: &str) -> Option<&str> {
     .rfind(':')
     .map_or(host_with_port, |pos| &host_with_port[..pos]);
 
-  if host.is_empty() { None } else { Some(host) }
+  if host.is_empty() {
+    None
+  } else {
+    Some(host)
+  }
 }
 
 fn extract_path_from_uri(uri: &str) -> String {
@@ -257,7 +274,10 @@ fn extract_path_from_uri(uri: &str) -> String {
   )
 }
 
-fn domain_matches(request_host: &str, cookie_domain: &str) -> bool {
+fn domain_matches(
+  request_host: &str,
+  cookie_domain: &str,
+) -> bool {
   let request_lower = request_host.to_ascii_lowercase();
   let domain_lower = cookie_domain.to_ascii_lowercase();
 
@@ -275,7 +295,10 @@ fn domain_matches(request_host: &str, cookie_domain: &str) -> bool {
   false
 }
 
-fn path_matches(request_path: &str, cookie_path: &str) -> bool {
+fn path_matches(
+  request_path: &str,
+  cookie_path: &str,
+) -> bool {
   if request_path == cookie_path {
     return true;
   }
@@ -316,14 +339,8 @@ mod tests {
 
   #[test]
   fn test_extract_host() {
-    assert_eq!(
-      extract_host_from_uri("http://example.com"),
-      Some("example.com")
-    );
-    assert_eq!(
-      extract_host_from_uri("https://example.com/path"),
-      Some("example.com")
-    );
+    assert_eq!(extract_host_from_uri("http://example.com"), Some("example.com"));
+    assert_eq!(extract_host_from_uri("https://example.com/path"), Some("example.com"));
     assert_eq!(
       extract_host_from_uri("http://example.com:8080/path"),
       Some("example.com")
@@ -339,14 +356,8 @@ mod tests {
     assert_eq!(extract_path_from_uri("http://example.com"), "/");
     assert_eq!(extract_path_from_uri("http://example.com/"), "/");
     assert_eq!(extract_path_from_uri("http://example.com/path"), "/path");
-    assert_eq!(
-      extract_path_from_uri("http://example.com/path/sub"),
-      "/path/sub"
-    );
-    assert_eq!(
-      extract_path_from_uri("http://example.com/path?query"),
-      "/path"
-    );
+    assert_eq!(extract_path_from_uri("http://example.com/path/sub"), "/path/sub");
+    assert_eq!(extract_path_from_uri("http://example.com/path?query"), "/path");
   }
 
   #[test]
@@ -394,8 +405,7 @@ mod tests {
     let set_cookie = alloc::vec!["id=123; Path=/admin".to_string()];
     store.store_response_cookies("http://example.com/admin/panel", &set_cookie);
 
-    let cookies_admin =
-      store.get_request_cookies("http://example.com/admin/panel", false);
+    let cookies_admin = store.get_request_cookies("http://example.com/admin/panel", false);
     assert_eq!(cookies_admin, "id=123");
 
     let cookies_other = store.get_request_cookies("http://example.com/other", false);
@@ -437,17 +447,11 @@ mod tests {
   fn test_cookie_replacement() {
     let mut store = CookieStore::new();
 
-    store.store_response_cookies(
-      "http://example.com/",
-      &alloc::vec!["id=first".to_string()],
-    );
+    store.store_response_cookies("http://example.com/", &alloc::vec!["id=first".to_string()]);
     let cookies_first = store.get_request_cookies("http://example.com/", false);
     assert_eq!(cookies_first, "id=first");
 
-    store.store_response_cookies(
-      "http://example.com/",
-      &alloc::vec!["id=second".to_string()],
-    );
+    store.store_response_cookies("http://example.com/", &alloc::vec!["id=second".to_string()]);
     let cookies_second = store.get_request_cookies("http://example.com/", false);
     assert_eq!(cookies_second, "id=second");
   }

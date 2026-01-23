@@ -74,15 +74,9 @@ fn test_rfc9112_section_6_2_content_length_parsing() {
 #[test]
 fn test_has_complete_headers_efficiency() {
   // Test that has_complete_headers works correctly
-  assert!(FramingDetector::has_complete_headers(
-    b"HTTP/1.1 200 OK\r\n\r\n"
-  ));
-  assert!(FramingDetector::has_complete_headers(
-    b"HTTP/1.1 200 OK\r\n\r\nBody"
-  ));
-  assert!(!FramingDetector::has_complete_headers(
-    b"HTTP/1.1 200 OK\r\n"
-  ));
+  assert!(FramingDetector::has_complete_headers(b"HTTP/1.1 200 OK\r\n\r\n"));
+  assert!(FramingDetector::has_complete_headers(b"HTTP/1.1 200 OK\r\n\r\nBody"));
+  assert!(!FramingDetector::has_complete_headers(b"HTTP/1.1 200 OK\r\n"));
   assert!(!FramingDetector::has_complete_headers(b"HTTP/1.1"));
 }
 
@@ -97,8 +91,7 @@ fn test_split_headers_various_responses() {
   assert_eq!(remaining1, b"");
 
   // With multiple headers
-  let multi_header =
-    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 4\r\n\r\nTest";
+  let multi_header = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 4\r\n\r\nTest";
   let (headers2, remaining2) = FramingDetector::split_headers(multi_header).unwrap();
   assert_eq!(
     headers2,
@@ -184,9 +177,7 @@ fn test_rfc9112_robustness() {
   // Our detector should work with well-formed messages
 
   // Standard CRLF
-  assert!(FramingDetector::has_complete_headers(
-    b"HTTP/1.1 200 OK\r\n\r\n"
-  ));
+  assert!(FramingDetector::has_complete_headers(b"HTTP/1.1 200 OK\r\n\r\n"));
 
   // Headers with various field names and values
   let complex = b"HTTP/1.1 200 OK\r\n\

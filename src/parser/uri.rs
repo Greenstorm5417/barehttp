@@ -60,17 +60,20 @@ impl<'a> Uri<'a> {
       Ok(alloc::string::String::from(location))
     } else if location.starts_with('/') {
       let authority = self.authority.as_ref().ok_or(ParseError::InvalidUri)?;
-      let port = authority
-        .port
-        .unwrap_or_else(|| if self.scheme == "https" { 443 } else { 80 });
+      let port = authority.port.unwrap_or_else(|| {
+        if self.scheme == "https" {
+          443
+        } else {
+          80
+        }
+      });
 
       let host_str = match &authority.host {
         Host::RegName(name) => *name,
         Host::IpAddr(_) => return Err(ParseError::InvalidUri),
       };
 
-      if (self.scheme == "http" && port == 80) || (self.scheme == "https" && port == 443)
-      {
+      if (self.scheme == "http" && port == 80) || (self.scheme == "https" && port == 443) {
         Ok(alloc::format!(
           "{scheme}://{host}{location}",
           scheme = self.scheme,
@@ -113,7 +116,10 @@ impl<'a> Parser<'a> {
     self.input.as_bytes().get(self.pos).copied()
   }
 
-  fn peek_at(&self, offset: usize) -> Option<u8> {
+  fn peek_at(
+    &self,
+    offset: usize,
+  ) -> Option<u8> {
     let idx = self.pos.saturating_add(offset);
     self.input.as_bytes().get(idx).copied()
   }
@@ -124,11 +130,17 @@ impl<'a> Parser<'a> {
     }
   }
 
-  fn advance_by(&mut self, n: usize) {
+  fn advance_by(
+    &mut self,
+    n: usize,
+  ) {
     self.pos = self.pos.saturating_add(n).min(self.input.len());
   }
 
-  fn slice_from(&self, start: usize) -> &'a str {
+  fn slice_from(
+    &self,
+    start: usize,
+  ) -> &'a str {
     &self.input[start..self.pos]
   }
 
@@ -181,7 +193,7 @@ impl<'a> Parser<'a> {
       match ch {
         b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'-' | b'.' => {
           self.advance();
-        }
+        },
         _ => break,
       }
     }
@@ -239,14 +251,13 @@ impl<'a> Parser<'a> {
       None
     };
 
-    Ok(Authority {
-      userinfo,
-      host,
-      port,
-    })
+    Ok(Authority { userinfo, host, port })
   }
 
-  fn find_char_in_authority(&self, target: u8) -> bool {
+  fn find_char_in_authority(
+    &self,
+    target: u8,
+  ) -> bool {
     let mut pos = self.pos;
     let bytes = self.input.as_bytes();
     while let Some(&ch) = bytes.get(pos) {
@@ -273,14 +284,14 @@ impl<'a> Parser<'a> {
           b'.' => {
             dots = dots.saturating_add(1);
             self.advance();
-          }
+          },
           b'0'..=b'9' => {
             self.advance();
-          }
+          },
           _ if is_reg_name_char(ch) => {
             all_digits = false;
             self.advance();
-          }
+          },
           _ => break,
         }
       }
@@ -320,9 +331,7 @@ impl<'a> Parser<'a> {
     let addr_str = self.slice_from(start);
     self.advance();
 
-    parse_ipv6(addr_str).map_or(Err(ParseError::InvalidUri), |ipv6| {
-      Ok(Host::IpAddr(IpAddr::V6(ipv6)))
-    })
+    parse_ipv6(addr_str).map_or(Err(ParseError::InvalidUri), |ipv6| Ok(Host::IpAddr(IpAddr::V6(ipv6))))
   }
 
   fn parse_port(&mut self) -> Result<u16, ParseError> {
@@ -411,7 +420,7 @@ impl<'a> Parser<'a> {
         b'#' => break,
         _ if is_pchar(ch) || ch == b'/' || ch == b'?' => {
           self.advance();
-        }
+        },
         _ => return Err(ParseError::InvalidUri),
       }
     }
@@ -485,7 +494,7 @@ fn parse_ipv4(s: &str) -> Result<[u8; 4], ParseError> {
         if current > 255 {
           return Err(ParseError::InvalidUri);
         }
-      }
+      },
       b'.' => {
         if !has_digits || idx >= 3 {
           return Err(ParseError::InvalidUri);
@@ -499,7 +508,7 @@ fn parse_ipv4(s: &str) -> Result<[u8; 4], ParseError> {
         idx = idx.saturating_add(1);
         current = 0;
         has_digits = false;
-      }
+      },
       _ => return Err(ParseError::InvalidUri),
     }
   }

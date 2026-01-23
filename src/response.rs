@@ -73,7 +73,10 @@ mod tests {
   use crate::headers::Headers;
   use alloc::string::String;
 
-  fn make_response(status_code: u16, body: &[u8]) -> ParsedResponse {
+  fn make_response(
+    status_code: u16,
+    body: &[u8],
+  ) -> ParsedResponse {
     ParsedResponse {
       status_code,
       reason: String::from("Test"),

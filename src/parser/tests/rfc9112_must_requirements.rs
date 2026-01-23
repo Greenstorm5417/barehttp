@@ -41,10 +41,7 @@ fn test_must_handle_whitespace_before_first_header() {
   // Our implementation rejects (valid per RFC)
   let input = b"HTTP/1.1 200 OK\r\n \r\nContent-Length: 0\r\n\r\n";
   let result = Response::parse(input);
-  assert!(
-    result.is_err(),
-    "Whitespace before first header must be handled"
-  );
+  assert!(result.is_err(), "Whitespace before first header must be handled");
 }
 
 // ============================================================================
@@ -102,8 +99,7 @@ fn test_must_handle_obs_fold_multiple_lines() {
 #[test]
 fn test_must_parse_chunked_transfer_coding() {
   // MUST: Recipient can parse chunked transfer coding
-  let input =
-    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
+  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
   assert!(result.is_ok(), "Must be able to parse chunked encoding");
   let response = result.unwrap();
@@ -168,10 +164,7 @@ fn test_must_prioritize_transfer_encoding_over_content_length() {
   // Client MUST reject this combination (not prioritize one over the other)
   let input = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
-  assert!(
-    result.is_err(),
-    "Response with both TE and CL should be rejected"
-  );
+  assert!(result.is_err(), "Response with both TE and CL should be rejected");
 }
 
 #[test]
@@ -202,8 +195,7 @@ fn test_must_handle_1xx_no_body() {
 #[test]
 fn test_must_handle_204_no_body() {
   // MUST: 204 No Content never has a body
-  let input =
-    b"HTTP/1.1 204 No Content\r\nContent-Length: 100\r\n\r\nThis should be ignored";
+  let input = b"HTTP/1.1 204 No Content\r\nContent-Length: 100\r\n\r\nThis should be ignored";
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
@@ -240,10 +232,7 @@ fn test_must_require_space_after_status_code() {
   // MUST: Space between status code and reason phrase
   let input = b"HTTP/1.1 200\r\n\r\n";
   let result = Response::parse(input);
-  assert!(
-    result.is_err(),
-    "Missing space after status code must error"
-  );
+  assert!(result.is_err(), "Missing space after status code must error");
 }
 
 // ============================================================================
@@ -386,10 +375,7 @@ fn test_must_prevent_request_smuggling_te_cl_conflict() {
   let result = Response::parse(input);
 
   // Now properly implemented: reject the response
-  assert!(
-    result.is_err(),
-    "Response with both TE and CL should be rejected"
-  );
+  assert!(result.is_err(), "Response with both TE and CL should be rejected");
 }
 
 #[test]

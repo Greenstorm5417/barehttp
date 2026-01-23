@@ -36,11 +36,17 @@ impl BlockingSocket for MockSocket {
     })
   }
 
-  fn connect(&mut self, _addr: &SocketAddr<'_>) -> Result<(), SocketError> {
+  fn connect(
+    &mut self,
+    _addr: &SocketAddr<'_>,
+  ) -> Result<(), SocketError> {
     Ok(())
   }
 
-  fn read(&mut self, buf: &mut [u8]) -> Result<usize, SocketError> {
+  fn read(
+    &mut self,
+    buf: &mut [u8],
+  ) -> Result<usize, SocketError> {
     if self.read_pos >= self.read_data.len() {
       return Ok(0);
     }
@@ -51,7 +57,10 @@ impl BlockingSocket for MockSocket {
     Ok(to_read)
   }
 
-  fn write(&mut self, buf: &[u8]) -> Result<usize, SocketError> {
+  fn write(
+    &mut self,
+    buf: &[u8],
+  ) -> Result<usize, SocketError> {
     self.written.extend_from_slice(buf);
     Ok(buf.len())
   }
@@ -60,15 +69,24 @@ impl BlockingSocket for MockSocket {
     Ok(())
   }
 
-  fn set_flags(&mut self, _flags: SocketFlags) -> Result<(), SocketError> {
+  fn set_flags(
+    &mut self,
+    _flags: SocketFlags,
+  ) -> Result<(), SocketError> {
     Ok(())
   }
 
-  fn set_read_timeout(&mut self, _timeout_ms: u32) -> Result<(), SocketError> {
+  fn set_read_timeout(
+    &mut self,
+    _timeout_ms: u32,
+  ) -> Result<(), SocketError> {
     Ok(())
   }
 
-  fn set_write_timeout(&mut self, _timeout_ms: u32) -> Result<(), SocketError> {
+  fn set_write_timeout(
+    &mut self,
+    _timeout_ms: u32,
+  ) -> Result<(), SocketError> {
     Ok(())
   }
 }
@@ -82,10 +100,7 @@ fn send_request_writes_to_socket() {
   let result = conn.send_request(request);
 
   assert!(result.is_ok());
-  assert_eq!(
-    socket.get_written(),
-    "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
-  );
+  assert_eq!(socket.get_written(), "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n");
 }
 
 #[test]
@@ -114,16 +129,12 @@ fn read_response_no_body_expectation_ignores_content() {
   assert!(result.is_ok());
   let raw = result.unwrap();
   assert_eq!(raw.status_code, 200);
-  assert!(
-    raw.body_bytes.is_empty(),
-    "NoBody expectation should skip reading body"
-  );
+  assert!(raw.body_bytes.is_empty(), "NoBody expectation should skip reading body");
 }
 
 #[test]
 fn read_response_chunked_encoding() {
-  let response =
-    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
+  let response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let mut socket = MockSocket::new(response);
   let mut conn = Connection::new(&mut socket, 8192);
 
@@ -165,8 +176,7 @@ fn read_response_304_not_modified() {
 
 #[test]
 fn header_size_limit_enforced() {
-  let large_header =
-    "HTTP/1.1 200 OK\r\n".to_string() + "X-Large: " + &"A".repeat(10000) + "\r\n\r\n";
+  let large_header = "HTTP/1.1 200 OK\r\n".to_string() + "X-Large: " + &"A".repeat(10000) + "\r\n\r\n";
   let mut socket = MockSocket::new(&large_header);
   let mut conn = Connection::new(&mut socket, 1024);
 
@@ -178,8 +188,7 @@ fn header_size_limit_enforced() {
 
 #[test]
 fn read_response_with_multiple_headers() {
-  let response =
-    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK";
+  let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK";
   let mut socket = MockSocket::new(response);
   let mut conn = Connection::new(&mut socket, 8192);
 
@@ -222,18 +231,9 @@ fn read_response_handles_body_in_header_buffer() {
 
 #[test]
 fn response_body_expectation_enum_equality() {
-  assert_eq!(
-    ResponseBodyExpectation::NoBody,
-    ResponseBodyExpectation::NoBody
-  );
-  assert_eq!(
-    ResponseBodyExpectation::Normal,
-    ResponseBodyExpectation::Normal
-  );
-  assert_ne!(
-    ResponseBodyExpectation::NoBody,
-    ResponseBodyExpectation::Normal
-  );
+  assert_eq!(ResponseBodyExpectation::NoBody, ResponseBodyExpectation::NoBody);
+  assert_eq!(ResponseBodyExpectation::Normal, ResponseBodyExpectation::Normal);
+  assert_ne!(ResponseBodyExpectation::NoBody, ResponseBodyExpectation::Normal);
 }
 
 #[test]
@@ -286,11 +286,7 @@ fn read_response_redirect_with_location() {
 #[test]
 fn read_response_large_body_content_length() {
   let body = "A".repeat(10000);
-  let response = format!(
-    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
-    body.len(),
-    body
-  );
+  let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
   let mut socket = MockSocket::new(&response);
   let mut conn = Connection::new(&mut socket, 8192);
 

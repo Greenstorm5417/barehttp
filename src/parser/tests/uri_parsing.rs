@@ -383,10 +383,7 @@ fn test_rfc3986_example_telnet() {
 fn test_rfc3986_example_urn() {
   let uri = Uri::parse("urn:oasis:names:specification:docbook:dtd:xml:4.1.2").unwrap();
   assert_eq!(uri.scheme(), "urn");
-  assert_eq!(
-    uri.path(),
-    "oasis:names:specification:docbook:dtd:xml:4.1.2"
-  );
+  assert_eq!(uri.path(), "oasis:names:specification:docbook:dtd:xml:4.1.2");
 }
 
 #[test]
@@ -410,26 +407,17 @@ fn test_rfc3986_complex_example() {
 
 #[test]
 fn test_error_no_scheme() {
-  assert!(matches!(
-    Uri::parse("//example.com"),
-    Err(ParseError::InvalidUri)
-  ));
+  assert!(matches!(Uri::parse("//example.com"), Err(ParseError::InvalidUri)));
 }
 
 #[test]
 fn test_error_invalid_scheme_char() {
-  assert!(matches!(
-    Uri::parse("ht_tp://example.com"),
-    Err(ParseError::InvalidUri)
-  ));
+  assert!(matches!(Uri::parse("ht_tp://example.com"), Err(ParseError::InvalidUri)));
 }
 
 #[test]
 fn test_error_missing_colon_after_scheme() {
-  assert!(matches!(
-    Uri::parse("http//example.com"),
-    Err(ParseError::InvalidUri)
-  ));
+  assert!(matches!(Uri::parse("http//example.com"), Err(ParseError::InvalidUri)));
 }
 
 #[test]
@@ -456,18 +444,12 @@ fn test_error_ipv4_invalid_format() {
 
 #[test]
 fn test_error_ipv6_missing_bracket() {
-  assert!(matches!(
-    Uri::parse("http://::1"),
-    Err(ParseError::InvalidUri)
-  ));
+  assert!(matches!(Uri::parse("http://::1"), Err(ParseError::InvalidUri)));
 }
 
 #[test]
 fn test_error_ipv6_unclosed_bracket() {
-  assert!(matches!(
-    Uri::parse("http://[::1"),
-    Err(ParseError::InvalidUri)
-  ));
+  assert!(matches!(Uri::parse("http://[::1"), Err(ParseError::InvalidUri)));
 }
 
 #[test]

@@ -15,25 +15,18 @@ fn test_request_smuggling_both_te_and_cl() {
   // Client MUST reject this combination
   let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 10\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
-  assert!(
-    result.is_err(),
-    "Response with both TE and CL should be rejected"
-  );
+  assert!(result.is_err(), "Response with both TE and CL should be rejected");
 }
 
 #[test]
 fn test_request_smuggling_conflicting_content_lengths() {
   // RFC 9112 Section 6.3: Duplicate Content-Length headers with different values
   // should be rejected to prevent request smuggling attacks
-  let input =
-    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 10\r\n\r\nHelloWorld";
+  let input = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 10\r\n\r\nHelloWorld";
   let result = Response::parse(input);
   // Our parser uses the first Content-Length (5), but the body is 10 bytes,
   // so it correctly rejects the extra data after reading 5 bytes
-  assert!(
-    result.is_err(),
-    "Should reject conflicting Content-Length headers"
-  );
+  assert!(result.is_err(), "Should reject conflicting Content-Length headers");
 }
 
 #[test]
@@ -61,8 +54,7 @@ fn test_negative_content_length_rejected() {
 
 #[test]
 fn test_chunked_extension_dos_attack() {
-  let mut input =
-    Vec::from(&b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5"[..]);
+  let mut input = Vec::from(&b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5"[..]);
   for _ in 0..1000 {
     input.extend_from_slice(b";ext=val");
   }
@@ -87,7 +79,8 @@ fn test_bare_cr_in_header_value() {
 
 #[test]
 fn test_multiple_transfer_encoding_headers() {
-  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
+  let input =
+    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
   assert!(result.is_ok());
 }
@@ -101,8 +94,7 @@ fn test_whitespace_before_header_name() {
 
 #[test]
 fn test_chunked_smuggling_incomplete_chunk() {
-  let input =
-    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n5\r\nWorld";
+  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n5\r\nWorld";
   let result = Response::parse(input);
   assert!(result.is_err());
 }
@@ -113,10 +105,7 @@ fn test_te_cl_desync_attack_prevention() {
   // Client MUST reject responses with both headers
   let input = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
-  assert!(
-    result.is_err(),
-    "Response with both TE and CL should be rejected"
-  );
+  assert!(result.is_err(), "Response with both TE and CL should be rejected");
 }
 
 #[test]
@@ -142,8 +131,7 @@ fn test_header_value_with_embedded_crlf() {
 
 #[test]
 fn test_chunked_with_negative_size() {
-  let input =
-    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n-5\r\nHello\r\n0\r\n\r\n";
+  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n-5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
   assert!(result.is_err());
 }
@@ -168,8 +156,5 @@ fn test_chunked_zero_chunk_not_last() {
   // MUST NOT be processed as a separate response
   let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
-  assert!(
-    result.is_err(),
-    "Should reject extra data after chunked terminator"
-  );
+  assert!(result.is_err(), "Should reject extra data after chunked terminator");
 }

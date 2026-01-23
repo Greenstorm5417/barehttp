@@ -16,22 +16,33 @@ where
   S: BlockingSocket,
   D: DnsResolver,
 {
-  pub const fn new(socket: &'a mut S, dns: &'a D) -> Self {
+  pub const fn new(
+    socket: &'a mut S,
+    dns: &'a D,
+  ) -> Self {
     Self { socket, dns }
   }
 
   /// Establish a connection to the given URI
   ///
   /// Performs DNS resolution, socket connection, and timeout configuration
-  pub fn connect(self, uri: &Uri, config: &Config) -> Result<Connection<'a, S>, Error> {
+  pub fn connect(
+    self,
+    uri: &Uri,
+    config: &Config,
+  ) -> Result<Connection<'a, S>, Error> {
     let authority = uri.authority().ok_or(Error::InvalidUrl)?;
     let host_str = match authority.host() {
       Host::RegName(name) => name,
       Host::IpAddr(_) => return Err(Error::IpAddressNotSupported),
     };
-    let port = authority
-      .port()
-      .unwrap_or_else(|| if uri.scheme() == "https" { 443 } else { 80 });
+    let port = authority.port().unwrap_or_else(|| {
+      if uri.scheme() == "https" {
+        443
+      } else {
+        80
+      }
+    });
 
     let addresses = self.dns.resolve(host_str).map_err(Error::Dns)?;
     let addr = addresses.first().ok_or(Error::NoAddresses)?;
@@ -78,9 +89,6 @@ where
       }
     }
 
-    Ok(Connection::new(
-      self.socket,
-      config.max_response_header_size,
-    ))
+    Ok(Connection::new(self.socket, config.max_response_header_size))
   }
 }

@@ -22,7 +22,10 @@ pub enum SocketError {
 }
 
 impl core::fmt::Display for SocketError {
-  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+  fn fmt(
+    &self,
+    f: &mut core::fmt::Formatter<'_>,
+  ) -> core::fmt::Result {
     match self {
       Self::NotConnected => write!(f, "socket not connected"),
       Self::ConnectionRefused => write!(f, "connection refused"),

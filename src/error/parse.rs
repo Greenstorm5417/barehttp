@@ -65,6 +65,8 @@ pub enum ParseError {
   TransferEncodingRequiresHttp11,
   /// Chunked appears multiple times in Transfer-Encoding (RFC 9112 Section 6.1)
   ChunkedAppliedMultipleTimes,
+  /// Failed to decompress response body (gzip/deflate)
+  DecompressionFailed,
 }
 
 impl ParseError {
@@ -89,7 +91,10 @@ impl ParseError {
 }
 
 impl core::fmt::Display for ParseError {
-  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+  fn fmt(
+    &self,
+    f: &mut core::fmt::Formatter<'_>,
+  ) -> core::fmt::Result {
     match self {
       Self::InvalidHttpVersion => write!(f, "invalid HTTP version"),
       Self::InvalidMethod => write!(f, "invalid method"),
@@ -110,37 +115,38 @@ impl core::fmt::Display for ParseError {
       Self::InvalidState => write!(f, "invalid parser state"),
       Self::ConflictingFraming => {
         write!(f, "both Transfer-Encoding and Content-Length present")
-      }
+      },
       Self::ChunkedNotFinal => write!(f, "chunked must be the final Transfer-Encoding"),
       Self::WhitespaceBeforeHeaders => {
         write!(f, "whitespace found between start-line and first header")
-      }
+      },
       Self::ExtraDataAfterResponse => {
         write!(f, "extra data found after complete response")
-      }
+      },
       Self::MissingHostHeader => write!(f, "Host header required for HTTP/1.1 requests"),
       Self::BareCarriageReturnInHeader => {
         write!(f, "header value contains bare CR (not allowed)")
-      }
+      },
       Self::ObsoleteFoldInHeader => {
         write!(f, "header value contains obs-fold (not allowed)")
-      }
+      },
       Self::InvalidTransferEncodingForStatus => {
         write!(f, "Transfer-Encoding not allowed for this status code")
-      }
+      },
       Self::ChunkedInTeHeader => write!(f, "TE header must not contain 'chunked'"),
       Self::TeHeaderMissingConnection => {
         write!(f, "TE header requires 'TE' in Connection header")
-      }
+      },
       Self::MultipleHostHeaders => write!(f, "multiple Host headers present"),
       Self::InvalidHostHeaderValue => write!(f, "invalid Host header value format"),
       Self::UriTooLong => write!(f, "request-target URI exceeds maximum allowed length"),
       Self::TransferEncodingRequiresHttp11 => {
         write!(f, "Transfer-Encoding requires HTTP/1.1 or higher")
-      }
+      },
       Self::ChunkedAppliedMultipleTimes => {
         write!(f, "chunked transfer coding applied multiple times")
-      }
+      },
+      Self::DecompressionFailed => write!(f, "failed to decompress response body"),
     }
   }
 }

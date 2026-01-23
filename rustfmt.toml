@@ -1,19 +1,22 @@
-edition = "2021"
-
-# Line width
-max_width = 90
-
-# Indentation
+edition = "2024"
+max_width = 120
+newline_style = "Unix"
 hard_tabs = false
 tab_spaces = 2
-
-# Imports
 reorder_imports = true
-
-# Expressions
+reorder_modules = true
+merge_derives = true
 use_field_init_shorthand = true
 use_try_shorthand = true
+remove_nested_parens = true
+fn_params_layout = "Vertical"
+match_block_trailing_comma = true
 match_arm_leading_pipes = "Preserve"
-
-# Formatting behavior (stable-safe defaults)
-newline_style = "Unix"
+use_small_heuristics = "Default"
+chain_width = 60
+array_width = 60
+struct_lit_width = 24
+struct_variant_width = 40
+single_line_if_else_max_width = 0
+single_line_let_else_max_width = 0
+force_explicit_abi = true

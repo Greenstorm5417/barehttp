@@ -27,7 +27,10 @@ impl Default for OsDnsResolver {
 }
 
 impl DnsResolver for OsDnsResolver {
-  fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, DnsError> {
+  fn resolve(
+    &self,
+    host: &str,
+  ) -> Result<Vec<IpAddr>, DnsError> {
     os::resolve_host(host)
   }
 }

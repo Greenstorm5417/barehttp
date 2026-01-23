@@ -16,10 +16,7 @@ fn test_rfc9112_reject_multiple_host_headers() {
 
   let result = builder.build();
   assert!(result.is_err(), "Should reject multiple Host headers");
-  assert_eq!(
-    result.unwrap_err(),
-    crate::error::ParseError::MultipleHostHeaders
-  );
+  assert_eq!(result.unwrap_err(), crate::error::ParseError::MultipleHostHeaders);
 }
 
 #[test]
@@ -39,10 +36,7 @@ fn test_rfc9112_case_insensitive_host_detection() {
   builder = builder.header("host", "another.com");
 
   let result = builder.build();
-  assert!(
-    result.is_err(),
-    "Should detect duplicate Host regardless of case"
-  );
+  assert!(result.is_err(), "Should detect duplicate Host regardless of case");
 }
 
 // ============================================================================
@@ -60,10 +54,7 @@ fn test_rfc9112_valid_host_hostname_only() {
 fn test_rfc9112_valid_host_with_port() {
   let builder = RequestBuilder::new("GET", "/").header("Host", "example.com:8080");
 
-  assert!(
-    builder.build().is_ok(),
-    "Valid hostname with port should be accepted"
-  );
+  assert!(builder.build().is_ok(), "Valid hostname with port should be accepted");
 }
 
 #[test]
@@ -91,10 +82,7 @@ fn test_rfc9112_valid_host_ipv6_literal() {
 fn test_rfc9112_valid_host_ipv6_with_port() {
   let builder = RequestBuilder::new("GET", "/").header("Host", "[2001:db8::1]:8080");
 
-  assert!(
-    builder.build().is_ok(),
-    "IPv6 literal with port should be accepted"
-  );
+  assert!(builder.build().is_ok(), "IPv6 literal with port should be accepted");
 }
 
 #[test]
@@ -111,10 +99,7 @@ fn test_rfc9112_invalid_host_with_whitespace() {
 
   let result = builder.build();
   assert!(result.is_err(), "Host with whitespace should be rejected");
-  assert_eq!(
-    result.unwrap_err(),
-    crate::error::ParseError::InvalidHostHeaderValue
-  );
+  assert_eq!(result.unwrap_err(), crate::error::ParseError::InvalidHostHeaderValue);
 }
 
 #[test]
@@ -152,10 +137,7 @@ fn test_rfc9112_valid_host_subdomain() {
 fn test_rfc9112_valid_host_with_hyphen() {
   let builder = RequestBuilder::new("GET", "/").header("Host", "my-server.example.com");
 
-  assert!(
-    builder.build().is_ok(),
-    "Hostname with hyphen should be accepted"
-  );
+  assert!(builder.build().is_ok(), "Hostname with hyphen should be accepted");
 }
 
 // ============================================================================
@@ -170,10 +152,7 @@ fn test_rfc9112_reject_chunked_applied_multiple_times() {
     .header("Transfer-Encoding", "chunked, chunked");
 
   let result = builder.build();
-  assert!(
-    result.is_err(),
-    "Should reject chunked applied multiple times"
-  );
+  assert!(result.is_err(), "Should reject chunked applied multiple times");
   assert_eq!(
     result.unwrap_err(),
     crate::error::ParseError::ChunkedAppliedMultipleTimes
@@ -198,10 +177,7 @@ fn test_rfc9112_chunked_with_other_encoding() {
     .header("Transfer-Encoding", "gzip, chunked");
 
   let result = builder.build();
-  assert!(
-    result.is_ok(),
-    "Chunked as final encoding should be accepted"
-  );
+  assert!(result.is_ok(), "Chunked as final encoding should be accepted");
 }
 
 #[test]
@@ -214,10 +190,7 @@ fn test_rfc9112_reject_chunked_in_middle() {
   // Note: This test validates that chunked appears only once
   // The "chunked must be final" validation is in response parsing
   let result = builder.build();
-  assert!(
-    result.is_ok(),
-    "Single chunked occurrence is valid in request building"
-  );
+  assert!(result.is_ok(), "Single chunked occurrence is valid in request building");
 }
 
 #[test]
@@ -271,15 +244,9 @@ fn test_rfc9112_multiple_violations_first_error_returned() {
   builder = builder.header("Transfer-Encoding", "chunked, chunked"); // Duplicate chunked
 
   let result = builder.build();
-  assert!(
-    result.is_err(),
-    "Should reject request with multiple violations"
-  );
+  assert!(result.is_err(), "Should reject request with multiple violations");
   // Should get MultipleHostHeaders first since it's checked earlier
-  assert_eq!(
-    result.unwrap_err(),
-    crate::error::ParseError::MultipleHostHeaders
-  );
+  assert_eq!(result.unwrap_err(), crate::error::ParseError::MultipleHostHeaders);
 }
 
 // ============================================================================
@@ -315,10 +282,7 @@ fn test_rfc9112_host_localhost() {
 fn test_rfc9112_host_localhost_with_port() {
   let builder = RequestBuilder::new("GET", "/").header("Host", "localhost:8080");
 
-  assert!(
-    builder.build().is_ok(),
-    "localhost with port should be accepted"
-  );
+  assert!(builder.build().is_ok(), "localhost with port should be accepted");
 }
 
 #[test]
@@ -329,10 +293,7 @@ fn test_rfc9112_transfer_encoding_empty_value() {
 
   let result = builder.build();
   // Empty Transfer-Encoding is technically invalid but won't trigger our chunked checks
-  assert!(
-    result.is_ok(),
-    "Empty TE doesn't violate chunked duplication"
-  );
+  assert!(result.is_ok(), "Empty TE doesn't violate chunked duplication");
 }
 
 #[test]
@@ -342,10 +303,7 @@ fn test_rfc9112_transfer_encoding_whitespace_handling() {
     .header("Transfer-Encoding", "  chunked  ");
 
   let result = builder.build();
-  assert!(
-    result.is_ok(),
-    "Whitespace around chunked should be handled"
-  );
+  assert!(result.is_ok(), "Whitespace around chunked should be handled");
 }
 
 // ============================================================================
@@ -369,10 +327,7 @@ fn test_rfc9112_regression_multiple_non_host_headers() {
   builder = builder.header("Accept", "application/json");
 
   let result = builder.build();
-  assert!(
-    result.is_ok(),
-    "Multiple non-Host headers should be allowed"
-  );
+  assert!(result.is_ok(), "Multiple non-Host headers should be allowed");
 }
 
 #[test]

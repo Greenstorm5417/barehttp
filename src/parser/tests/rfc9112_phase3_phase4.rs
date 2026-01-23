@@ -8,10 +8,7 @@ fn test_response_with_connection_close_header() {
   let input = b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 5\r\n\r\nHello";
   let result = Response::parse(input);
 
-  assert!(
-    result.is_ok(),
-    "Response with Connection: close should parse"
-  );
+  assert!(result.is_ok(), "Response with Connection: close should parse");
   let response = result.unwrap();
 
   // Check that Connection header is present
@@ -50,11 +47,7 @@ fn test_body_read_strategy_no_body_for_1xx() {
   let headers = crate::headers::Headers::new();
   let strategy = Response::body_read_strategy(&headers, 100);
 
-  assert_eq!(
-    strategy,
-    BodyReadStrategy::NoBody,
-    "1xx responses should have no body"
-  );
+  assert_eq!(strategy, BodyReadStrategy::NoBody, "1xx responses should have no body");
 }
 
 #[test]
@@ -63,11 +56,7 @@ fn test_body_read_strategy_no_body_for_204() {
   let headers = crate::headers::Headers::new();
   let strategy = Response::body_read_strategy(&headers, 204);
 
-  assert_eq!(
-    strategy,
-    BodyReadStrategy::NoBody,
-    "204 should have no body"
-  );
+  assert_eq!(strategy, BodyReadStrategy::NoBody, "204 should have no body");
 }
 
 #[test]
@@ -76,11 +65,7 @@ fn test_body_read_strategy_no_body_for_304() {
   let headers = crate::headers::Headers::new();
   let strategy = Response::body_read_strategy(&headers, 304);
 
-  assert_eq!(
-    strategy,
-    BodyReadStrategy::NoBody,
-    "304 should have no body"
-  );
+  assert_eq!(strategy, BodyReadStrategy::NoBody, "304 should have no body");
 }
 
 #[test]
@@ -104,11 +89,7 @@ fn test_body_read_strategy_chunked() {
   headers.insert("Transfer-Encoding", "chunked");
   let strategy = Response::body_read_strategy(&headers, 200);
 
-  assert_eq!(
-    strategy,
-    BodyReadStrategy::Chunked,
-    "Should use Chunked strategy"
-  );
+  assert_eq!(strategy, BodyReadStrategy::Chunked, "Should use Chunked strategy");
 }
 
 #[test]
@@ -135,10 +116,7 @@ fn test_whitespace_before_colon_rejected() {
   let input = b"HTTP/1.1 200 OK\r\nContent-Type : text/plain\r\n\r\n";
   let result = Response::parse(input);
 
-  assert!(
-    result.is_err(),
-    "Header with space before colon should be rejected"
-  );
+  assert!(result.is_err(), "Header with space before colon should be rejected");
 }
 
 #[test]
@@ -147,10 +125,7 @@ fn test_tab_before_colon_rejected() {
   let input = b"HTTP/1.1 200 OK\r\nContent-Type\t: text/plain\r\n\r\n";
   let result = Response::parse(input);
 
-  assert!(
-    result.is_err(),
-    "Header with tab before colon should be rejected"
-  );
+  assert!(result.is_err(), "Header with tab before colon should be rejected");
 }
 
 #[test]
@@ -182,8 +157,7 @@ fn test_whitespace_after_colon_accepted() {
 #[test]
 fn test_single_chunked_encoding_accepted() {
   // Single chunked encoding should work
-  let input =
-    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
+  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
 
   assert!(result.is_ok(), "Single chunked encoding should be accepted");
@@ -194,22 +168,17 @@ fn test_single_chunked_encoding_accepted() {
 #[test]
 fn test_chunked_with_other_encoding_accepted() {
   // Chunked with other encodings is allowed (chunked must be last)
-  let input =
-    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
+  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
 
-  assert!(
-    result.is_ok(),
-    "Chunked with other encodings should be accepted"
-  );
+  assert!(result.is_ok(), "Chunked with other encodings should be accepted");
 }
 
 #[test]
 fn test_multiple_transfer_encoding_headers() {
   // Multiple Transfer-Encoding headers (if they exist) should be handled
   // Note: This is more about parsing multiple headers with same name
-  let input =
-    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
+  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
 
   assert!(result.is_ok(), "Should handle Transfer-Encoding correctly");
@@ -226,10 +195,7 @@ fn test_chunked_response_with_trailers() {
   let result = Response::parse(input);
 
   // Should parse successfully (trailers are part of chunked encoding)
-  assert!(
-    result.is_ok(),
-    "Chunked response with trailers should parse"
-  );
+  assert!(result.is_ok(), "Chunked response with trailers should parse");
   let response = result.unwrap();
   assert_eq!(response.body.as_bytes(), b"Hello");
 }
@@ -237,14 +203,10 @@ fn test_chunked_response_with_trailers() {
 #[test]
 fn test_chunked_response_without_trailers() {
   // Test chunked response without trailer fields
-  let input =
-    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
+  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
 
-  assert!(
-    result.is_ok(),
-    "Chunked response without trailers should parse"
-  );
+  assert!(result.is_ok(), "Chunked response without trailers should parse");
   let response = result.unwrap();
   assert_eq!(response.body.as_bytes(), b"Hello");
 }
@@ -274,10 +236,7 @@ fn test_response_with_all_phase4_validations() {
 
   assert!(result.is_ok(), "Response with valid headers should parse");
   let response = result.unwrap();
-  assert_eq!(
-    response.headers().get("Content-Type"),
-    Some("application/json")
-  );
+  assert_eq!(response.headers().get("Content-Type"), Some("application/json"));
   assert_eq!(response.body.as_bytes(), b"{\"ok\":true}");
 }
 

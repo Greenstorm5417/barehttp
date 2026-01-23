@@ -2,7 +2,6 @@ mod chunked;
 #[cfg(feature = "cookie-jar")]
 pub mod cookie;
 pub mod framing;
-pub mod header;
 mod headers;
 mod http;
 mod message;

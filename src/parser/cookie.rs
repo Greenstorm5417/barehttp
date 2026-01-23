@@ -30,12 +30,9 @@ impl SetCookie {
 
     let semicolon_pos = input_bytes.iter().position(|&b| b == b';');
 
-    let name_value_pair = semicolon_pos.map_or(input_bytes, |pos| {
-      input_bytes.get(..pos).unwrap_or(input_bytes)
-    });
+    let name_value_pair = semicolon_pos.map_or(input_bytes, |pos| input_bytes.get(..pos).unwrap_or(input_bytes));
 
-    let unparsed_attributes =
-      semicolon_pos.map_or(&[][..], |pos| input_bytes.get(pos..).unwrap_or(&[]));
+    let unparsed_attributes = semicolon_pos.map_or(&[][..], |pos| input_bytes.get(pos..).unwrap_or(&[]));
 
     let equals_pos = name_value_pair.iter().position(|&b| b == b'=')?;
 
@@ -77,98 +74,97 @@ struct CookieAttributes {
   http_only: bool,
 }
 
-fn parse_cookie_attributes(mut input: &[u8]) -> CookieAttributes {
-  let mut attrs = CookieAttributes::default();
+struct AttrIter<'a> {
+  input: &'a [u8],
+}
 
-  if input.is_empty() {
-    return attrs;
+impl<'a> AttrIter<'a> {
+  fn new(input: &'a [u8]) -> Self {
+    Self { input }
+  }
+}
+
+impl<'a> Iterator for AttrIter<'a> {
+  type Item = (&'a [u8], &'a [u8]);
+
+  fn next(&mut self) -> Option<Self::Item> {
+    while self.input.first() == Some(&b';') {
+      self.input = &self.input[1..];
+    }
+
+    if self.input.is_empty() {
+      return None;
+    }
+
+    let end = self
+      .input
+      .iter()
+      .position(|&b| b == b';')
+      .unwrap_or(self.input.len());
+
+    let av = &self.input[..end];
+    self.input = self.input.get(end..).unwrap_or(&[]);
+
+    let eq = av.iter().position(|&b| b == b'=');
+    Some(match eq {
+      Some(i) => (&av[..i], &av[i + 1..]),
+      None => (av, &[]),
+    })
+  }
+}
+
+fn eq_ignore_ascii(
+  a: &[u8],
+  b: &[u8],
+) -> bool {
+  a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_ascii_lowercase() == *y)
+}
+
+fn parse_domain(value: &[u8]) -> Option<String> {
+  if value.is_empty() {
+    return None;
   }
 
-  loop {
-    if input.is_empty() {
-      break;
-    }
+  let domain_value = if value.first() == Some(&b'.') {
+    value.get(1..).unwrap_or(&[])
+  } else {
+    value
+  };
 
-    if input.first() == Some(&b';') {
-      input = input.get(1..).unwrap_or(&[]);
-    } else {
-      break;
-    }
+  Some(String::from_utf8_lossy(domain_value).to_lowercase())
+}
 
-    let next_semicolon = input.iter().position(|&b| b == b';');
+fn parse_path(value: &[u8]) -> Option<String> {
+  if value.is_empty() || value.first() != Some(&b'/') {
+    return None;
+  }
 
-    let cookie_av = if let Some(pos) = next_semicolon {
-      let av = input.get(..pos).unwrap_or(input);
-      input = input.get(pos..).unwrap_or(&[]);
-      av
-    } else {
-      let av = input;
-      input = &[];
-      av
-    };
+  Some(String::from_utf8_lossy(value).into_owned())
+}
 
-    let equals_pos = cookie_av.iter().position(|&b| b == b'=');
+fn parse_cookie_attributes(input: &[u8]) -> CookieAttributes {
+  let mut attrs = CookieAttributes::default();
 
-    let (attr_name_raw, attr_value_raw) = equals_pos.map_or_else(
-      || (cookie_av, &[][..]),
-      |pos| {
-        let name = cookie_av.get(..pos).unwrap_or(&[]);
-        let value = cookie_av
-          .get(pos.checked_add(1).unwrap_or(pos)..)
-          .unwrap_or(&[]);
-        (name, value)
-      },
-    );
+  for (name, value) in AttrIter::new(input) {
+    let name = trim_wsp(name);
+    let value = trim_wsp(value);
 
-    let attr_name = trim_wsp(attr_name_raw);
-    let attr_value = trim_wsp(attr_value_raw);
-
-    let attr_name_lower = attr_name.to_ascii_lowercase();
-
-    match attr_name_lower.as_slice() {
-      b"expires" => {
-        let value_str = String::from_utf8_lossy(attr_value);
-        if let Some(date) = parse_cookie_date(&value_str) {
-          attrs.expires = Some(date);
-        }
+    if eq_ignore_ascii(name, b"secure") {
+      attrs.secure = true;
+    } else if eq_ignore_ascii(name, b"httponly") {
+      attrs.http_only = true;
+    } else if eq_ignore_ascii(name, b"expires") {
+      if let Ok(s) = core::str::from_utf8(value) {
+        attrs.expires = parse_cookie_date(s);
       }
-      b"max-age" => {
-        let value_str = String::from_utf8_lossy(attr_value);
-        if let Some(delta) = parse_max_age(&value_str) {
-          attrs.max_age = Some(delta);
-        }
+    } else if eq_ignore_ascii(name, b"max-age") {
+      if let Ok(s) = core::str::from_utf8(value) {
+        attrs.max_age = parse_max_age(s);
       }
-      b"domain" => {
-        if attr_value.is_empty() {
-          continue;
-        }
-
-        let domain_value = if attr_value.first() == Some(&b'.') {
-          attr_value.get(1..).unwrap_or(&[])
-        } else {
-          attr_value
-        };
-
-        let domain_str = String::from_utf8_lossy(domain_value).to_lowercase();
-        attrs.domain = Some(domain_str);
-      }
-      b"path" => {
-        let path_value = if attr_value.is_empty() || attr_value.first() != Some(&b'/') {
-          continue;
-        } else {
-          attr_value
-        };
-
-        let path_str = String::from_utf8_lossy(path_value).into_owned();
-        attrs.path = Some(path_str);
-      }
-      b"secure" => {
-        attrs.secure = true;
-      }
-      b"httponly" => {
-        attrs.http_only = true;
-      }
-      _ => {}
+    } else if eq_ignore_ascii(name, b"domain") {
+      attrs.domain = parse_domain(value);
+    } else if eq_ignore_ascii(name, b"path") {
+      attrs.path = parse_path(value);
     }
   }
 
@@ -208,51 +204,69 @@ fn parse_max_age(value: &str) -> Option<i64> {
   }
 }
 
+struct DateParts {
+  time: Option<(u8, u8, u8)>,
+  day: Option<u8>,
+  month: Option<u8>,
+  year: Option<u16>,
+}
+
+impl DateParts {
+  fn new() -> Self {
+    Self {
+      time: None,
+      day: None,
+      month: None,
+      year: None,
+    }
+  }
+
+  fn is_complete(&self) -> bool {
+    self.time.is_some() && self.day.is_some() && self.month.is_some() && self.year.is_some()
+  }
+}
+
 pub fn parse_cookie_date(input: &str) -> Option<CookieDate> {
   let tokens = tokenize_date(input);
-
-  let mut found_time = false;
-  let mut found_day = false;
-  let mut found_month = false;
-  let mut found_year = false;
-
-  let mut hour = 0u8;
-  let mut minute = 0u8;
-  let mut second = 0u8;
-  let mut day = 0u8;
-  let mut month = 0u8;
-  let mut year = 0u16;
+  let mut parts = DateParts::new();
 
   for token in tokens {
-    if !found_time && let Some((h, m, s)) = parse_time_token(token) {
-      hour = h;
-      minute = m;
-      second = s;
-      found_time = true;
-      continue;
+    if parts.time.is_none() {
+      if let Some(time) = parse_time_token(token) {
+        parts.time = Some(time);
+        continue;
+      }
     }
 
-    if !found_day && let Some(d) = parse_day_of_month(token) {
-      day = d;
-      found_day = true;
-      continue;
+    if parts.day.is_none() {
+      if let Some(d) = parse_day_of_month(token) {
+        parts.day = Some(d);
+        continue;
+      }
     }
 
-    if !found_month && let Some(m) = parse_month(token) {
-      month = m;
-      found_month = true;
-      continue;
+    if parts.month.is_none() {
+      if let Some(m) = parse_month(token) {
+        parts.month = Some(m);
+        continue;
+      }
     }
 
-    if !found_year && let Some(y) = parse_year(token) {
-      year = y;
-      found_year = true;
+    if parts.year.is_none() {
+      if let Some(y) = parse_year(token) {
+        parts.year = Some(y);
+      }
     }
   }
 
-  if !found_time || !found_day || !found_month || !found_year {
+  if !parts.is_complete() {
     return None;
   }
+
+  let (hour, minute, second) = parts.time.unwrap();
+  let day = parts.day.unwrap();
+  let month = parts.month.unwrap();
+  let mut year = parts.year.unwrap();
 
   if (70..=99).contains(&year) {
     year += 1900;
@@ -337,10 +351,8 @@ fn parse_time_token(token: &str) -> Option<(u8, u8, u8)> {
   }
 
   let hour_str = token.get(..parts.first().copied().unwrap_or(0))?;
-  let minute_str = token.get(
-    parts.first().copied().unwrap_or(0).checked_add(1)?
-      ..parts.get(1).copied().unwrap_or(0),
-  )?;
+  let minute_str =
+    token.get(parts.first().copied().unwrap_or(0).checked_add(1)?..parts.get(1).copied().unwrap_or(0))?;
   let second_str = token.get(parts.get(1).copied().unwrap_or(0).checked_add(1)?..)?;
 
   if hour_str.is_empty() || hour_str.len() > 2 {

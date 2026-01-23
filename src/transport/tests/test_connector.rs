@@ -48,30 +48,36 @@ impl BlockingSocket for MockSocket {
     })
   }
 
-  fn connect(&mut self, addr: &SocketAddr<'_>) -> Result<(), SocketError> {
+  fn connect(
+    &mut self,
+    addr: &SocketAddr<'_>,
+  ) -> Result<(), SocketError> {
     if self.should_fail_connect {
       return Err(SocketError::NotConnected);
     }
     match addr {
-      SocketAddr::Ip {
-        addr: ip_addr,
-        port,
-      } => {
+      SocketAddr::Ip { addr: ip_addr, port } => {
         self.connected_addr = Some(format!("{ip_addr:?}:{port}"));
-      }
+      },
       SocketAddr::Hostname { host, port } => {
         let host_str = core::str::from_utf8(host).unwrap_or("invalid");
         self.connected_addr = Some(format!("{host_str}:{port}"));
-      }
+      },
     }
     Ok(())
   }
 
-  fn read(&mut self, _buf: &mut [u8]) -> Result<usize, SocketError> {
+  fn read(
+    &mut self,
+    _buf: &mut [u8],
+  ) -> Result<usize, SocketError> {
     Ok(0)
   }
 
-  fn write(&mut self, _buf: &[u8]) -> Result<usize, SocketError> {
+  fn write(
+    &mut self,
+    _buf: &[u8],
+  ) -> Result<usize, SocketError> {
     Ok(0)
   }
 
@@ -79,16 +85,25 @@ impl BlockingSocket for MockSocket {
     Ok(())
   }
 
-  fn set_flags(&mut self, _flags: SocketFlags) -> Result<(), SocketError> {
+  fn set_flags(
+    &mut self,
+    _flags: SocketFlags,
+  ) -> Result<(), SocketError> {
     Ok(())
   }
 
-  fn set_read_timeout(&mut self, timeout_ms: u32) -> Result<(), SocketError> {
+  fn set_read_timeout(
+    &mut self,
+    timeout_ms: u32,
+  ) -> Result<(), SocketError> {
     self.read_timeout = Some(timeout_ms);
     Ok(())
   }
 
-  fn set_write_timeout(&mut self, timeout_ms: u32) -> Result<(), SocketError> {
+  fn set_write_timeout(
+    &mut self,
+    timeout_ms: u32,
+  ) -> Result<(), SocketError> {
     self.write_timeout = Some(timeout_ms);
     Ok(())
   }
@@ -104,14 +119,15 @@ impl MockDns {
   }
 
   fn empty() -> Self {
-    Self {
-      addresses: Vec::new(),
-    }
+    Self { addresses: Vec::new() }
   }
 }
 
 impl DnsResolver for MockDns {
-  fn resolve(&self, _hostname: &str) -> Result<Vec<IpAddr>, DnsError> {
+  fn resolve(
+    &self,
+    _hostname: &str,
+  ) -> Result<Vec<IpAddr>, DnsError> {
     if self.addresses.is_empty() {
       return Err(DnsError::ResolutionFailed(0));
     }
@@ -305,20 +321,14 @@ fn connector_returns_error_on_no_addresses() {
 #[test]
 fn connector_uses_first_resolved_address() {
   let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![
-    IpAddr::V4([127, 0, 0, 1]),
-    IpAddr::V4([192, 168, 1, 1]),
-  ]);
+  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1]), IpAddr::V4([192, 168, 1, 1])]);
   let connector = Connector::new(&mut socket, &dns);
 
   let uri = Uri::parse("http://example.com").unwrap();
   let _result = connector.connect(&uri, &Config::default());
 
   let addr = socket.connected_addr.unwrap();
-  assert!(
-    addr.contains("V4([127, 0, 0, 1])"),
-    "Should use first resolved address"
-  );
+  assert!(addr.contains("V4([127, 0, 0, 1])"), "Should use first resolved address");
 }
 
 #[test]

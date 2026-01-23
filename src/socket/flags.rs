@@ -30,28 +30,42 @@ impl SocketFlags {
   }
 
   pub const fn from_bits_truncate(bits: u32) -> Self {
-    Self {
-      bits: bits & 0b1111,
-    }
+    Self { bits: bits & 0b1111 }
   }
 
-  pub const fn contains(self, other: Self) -> bool {
+  pub const fn contains(
+    self,
+    other: Self,
+  ) -> bool {
     self.bits & other.bits == other.bits
   }
 
-  pub const fn insert(&mut self, other: Self) {
+  pub const fn insert(
+    &mut self,
+    other: Self,
+  ) {
     self.bits |= other.bits;
   }
 
-  pub const fn remove(&mut self, other: Self) {
+  pub const fn remove(
+    &mut self,
+    other: Self,
+  ) {
     self.bits &= !other.bits;
   }
 
-  pub const fn toggle(&mut self, other: Self) {
+  pub const fn toggle(
+    &mut self,
+    other: Self,
+  ) {
     self.bits ^= other.bits;
   }
 
-  pub const fn set(&mut self, other: Self, value: bool) {
+  pub const fn set(
+    &mut self,
+    other: Self,
+    value: bool,
+  ) {
     if value {
       self.bits |= other.bits;
     } else {
@@ -67,25 +81,37 @@ impl SocketFlags {
     self.bits == 0b1111
   }
 
-  pub const fn union(self, other: Self) -> Self {
+  pub const fn union(
+    self,
+    other: Self,
+  ) -> Self {
     Self {
       bits: self.bits | other.bits,
     }
   }
 
-  pub const fn intersection(self, other: Self) -> Self {
+  pub const fn intersection(
+    self,
+    other: Self,
+  ) -> Self {
     Self {
       bits: self.bits & other.bits,
     }
   }
 
-  pub const fn difference(self, other: Self) -> Self {
+  pub const fn difference(
+    self,
+    other: Self,
+  ) -> Self {
     Self {
       bits: self.bits & !other.bits,
     }
   }
 
-  pub const fn symmetric_difference(self, other: Self) -> Self {
+  pub const fn symmetric_difference(
+    self,
+    other: Self,
+  ) -> Self {
     Self {
       bits: self.bits ^ other.bits,
     }
@@ -95,13 +121,19 @@ impl SocketFlags {
 impl core::ops::BitOr for SocketFlags {
   type Output = Self;
 
-  fn bitor(self, other: Self) -> Self {
+  fn bitor(
+    self,
+    other: Self,
+  ) -> Self {
     self.union(other)
   }
 }
 
 impl core::ops::BitOrAssign for SocketFlags {
-  fn bitor_assign(&mut self, other: Self) {
+  fn bitor_assign(
+    &mut self,
+    other: Self,
+  ) {
     self.insert(other);
   }
 }
@@ -109,13 +141,19 @@ impl core::ops::BitOrAssign for SocketFlags {
 impl core::ops::BitAnd for SocketFlags {
   type Output = Self;
 
-  fn bitand(self, other: Self) -> Self {
+  fn bitand(
+    self,
+    other: Self,
+  ) -> Self {
     self.intersection(other)
   }
 }
 
 impl core::ops::BitAndAssign for SocketFlags {
-  fn bitand_assign(&mut self, other: Self) {
+  fn bitand_assign(
+    &mut self,
+    other: Self,
+  ) {
     *self = self.intersection(other);
   }
 }
@@ -123,13 +161,19 @@ impl core::ops::BitAndAssign for SocketFlags {
 impl core::ops::BitXor for SocketFlags {
   type Output = Self;
 
-  fn bitxor(self, other: Self) -> Self {
+  fn bitxor(
+    self,
+    other: Self,
+  ) -> Self {
     self.symmetric_difference(other)
   }
 }
 
 impl core::ops::BitXorAssign for SocketFlags {
-  fn bitxor_assign(&mut self, other: Self) {
+  fn bitxor_assign(
+    &mut self,
+    other: Self,
+  ) {
     self.toggle(other);
   }
 }

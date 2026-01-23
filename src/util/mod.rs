@@ -16,11 +16,11 @@ pub fn percent_encode(input: &str) -> alloc::string::String {
     match byte {
       b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
         result.push(byte as char);
-      }
+      },
       _ => {
         result.push('%');
         let _ = write!(result, "{byte:02X}");
-      }
+      },
     }
   }
   result

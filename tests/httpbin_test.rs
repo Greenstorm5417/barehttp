@@ -81,8 +81,7 @@ fn test_httpbin_status_404() {
   let mut client = HttpClient::with_config(config).unwrap();
 
   use barehttp::Request;
-  let result =
-    Request::get(format!("{}/status/404", httpbin_url())).send_with(&mut client);
+  let result = Request::get(format!("{}/status/404", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 404);
 }
@@ -96,8 +95,7 @@ fn test_httpbin_status_500() {
   let mut client = HttpClient::with_config(config).unwrap();
 
   use barehttp::Request;
-  let result =
-    Request::get(format!("{}/status/500", httpbin_url())).send_with(&mut client);
+  let result = Request::get(format!("{}/status/500", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 500);
 }
@@ -127,8 +125,7 @@ fn test_httpbin_status_301() {
   let mut client = HttpClient::with_config(config).unwrap();
 
   use barehttp::Request;
-  let result =
-    Request::get(format!("{}/status/301", httpbin_url())).send_with(&mut client);
+  let result = Request::get(format!("{}/status/301", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 301);
 }
@@ -142,8 +139,7 @@ fn test_httpbin_status_302() {
   let mut client = HttpClient::with_config(config).unwrap();
 
   use barehttp::Request;
-  let result =
-    Request::get(format!("{}/status/302", httpbin_url())).send_with(&mut client);
+  let result = Request::get(format!("{}/status/302", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 302);
 }
@@ -157,8 +153,7 @@ fn test_httpbin_status_400() {
   let mut client = HttpClient::with_config(config).unwrap();
 
   use barehttp::Request;
-  let result =
-    Request::get(format!("{}/status/400", httpbin_url())).send_with(&mut client);
+  let result = Request::get(format!("{}/status/400", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 400);
 }
@@ -172,8 +167,7 @@ fn test_httpbin_status_401() {
   let mut client = HttpClient::with_config(config).unwrap();
 
   use barehttp::Request;
-  let result =
-    Request::get(format!("{}/status/401", httpbin_url())).send_with(&mut client);
+  let result = Request::get(format!("{}/status/401", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 401);
 }
@@ -187,8 +181,7 @@ fn test_httpbin_status_403() {
   let mut client = HttpClient::with_config(config).unwrap();
 
   use barehttp::Request;
-  let result =
-    Request::get(format!("{}/status/403", httpbin_url())).send_with(&mut client);
+  let result = Request::get(format!("{}/status/403", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   assert_eq!(result.unwrap().status_code, 403);
 }
@@ -391,10 +384,7 @@ fn test_httpbin_absolute_redirect() {
 
 #[test]
 fn test_httpbin_redirect_to() {
-  let result = get(&format!(
-    "{}/redirect-to?url=http://httpbin.org/get",
-    httpbin_url()
-  ));
+  let result = get(&format!("{}/redirect-to?url=http://httpbin.org/get", httpbin_url()));
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
@@ -422,8 +412,7 @@ fn test_httpbin_cookies_set() {
   let mut client = HttpClient::with_config(config).unwrap();
 
   use barehttp::Request;
-  let result = Request::get(format!("{}/cookies/set?test=value", httpbin_url()))
-    .send_with(&mut client);
+  let result = Request::get(format!("{}/cookies/set?test=value", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 302);
@@ -438,8 +427,7 @@ fn test_httpbin_cookies_set_name_value() {
   let mut client = HttpClient::with_config(config).unwrap();
 
   use barehttp::Request;
-  let result = Request::get(format!("{}/cookies/set/session/abc123", httpbin_url()))
-    .send_with(&mut client);
+  let result = Request::get(format!("{}/cookies/set/session/abc123", httpbin_url())).send_with(&mut client);
   assert!(result.is_ok());
   let response = result.unwrap();
   assert_eq!(response.status_code, 302);
@@ -536,6 +524,91 @@ fn test_httpbin_anything_with_path() {
   let response = result.unwrap();
   assert_eq!(response.status_code, 200);
   assert!(response.text().unwrap().contains("/anything/foo/bar"));
+}
+
+// ============================================================================
+// Decompression
+// ============================================================================
+
+#[test]
+#[cfg(feature = "gzip-decompression")]
+fn test_httpbin_gzip_decompression() {
+  let result = get(&format!("{}/gzip", httpbin_url()));
+  if let Err(ref e) = result {
+    eprintln!("Error: {:?}", e);
+  }
+  assert!(result.is_ok(), "Request failed: {:?}", result.err());
+  let response = result.unwrap();
+  assert_eq!(response.status_code, 200);
+
+  let body_text = response.text().unwrap();
+  assert!(body_text.contains("\"gzipped\": true"));
+  assert!(body_text.contains("\"method\": \"GET\""));
+}
+
+#[test]
+#[cfg(feature = "gzip-decompression")]
+fn test_httpbin_deflate_decompression() {
+  let result = get(&format!("{}/deflate", httpbin_url()));
+  assert!(result.is_ok());
+  let response = result.unwrap();
+  assert_eq!(response.status_code, 200);
+
+  let body_text = response.text().unwrap();
+  assert!(body_text.contains("\"deflated\": true"));
+  assert!(body_text.contains("\"method\": \"GET\""));
+}
+
+#[test]
+#[cfg(feature = "gzip-decompression")]
+fn test_httpbin_gzip_with_client() {
+  let mut client = HttpClient::new().unwrap();
+  let response = client
+    .get(format!("{}/gzip", httpbin_url()))
+    .call()
+    .unwrap();
+
+  assert_eq!(response.status_code, 200);
+  let body_text = response.text().unwrap();
+  assert!(body_text.contains("\"gzipped\": true"));
+}
+
+#[test]
+#[cfg(feature = "gzip-decompression")]
+fn test_accept_encoding_header_automatically_sent() {
+  let mut client = HttpClient::new().unwrap();
+  let response = client
+    .get(format!("{}/headers", httpbin_url()))
+    .call()
+    .unwrap();
+
+  assert_eq!(response.status_code, 200);
+  let body_text = response.text().unwrap();
+
+  #[cfg(all(feature = "gzip-decompression", feature = "zstd-decompression"))]
+  assert!(body_text.contains("\"Accept-Encoding\": \"gzip, deflate, zstd\""));
+
+  #[cfg(all(feature = "gzip-decompression", not(feature = "zstd-decompression")))]
+  assert!(body_text.contains("\"Accept-Encoding\": \"gzip, deflate\""));
+
+  #[cfg(all(not(feature = "gzip-decompression"), feature = "zstd-decompression"))]
+  assert!(body_text.contains("\"Accept-Encoding\": \"zstd\""));
+}
+
+#[test]
+#[cfg(feature = "gzip-decompression")]
+fn test_manual_accept_encoding_not_overridden() {
+  use barehttp::Request;
+
+  let mut client = HttpClient::new().unwrap();
+  let response = Request::get(format!("{}/headers", httpbin_url()))
+    .header("Accept-Encoding", "custom")
+    .send_with(&mut client)
+    .unwrap();
+
+  assert_eq!(response.status_code, 200);
+  let body_text = response.text().unwrap();
+  assert!(body_text.contains("\"Accept-Encoding\": \"custom\""));
 }
 
 // ============================================================================

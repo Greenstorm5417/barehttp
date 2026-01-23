@@ -234,9 +234,8 @@ pub use socket::blocking::OsBlockingSocket;
 
 // Re-exports of request/response types
 pub use body::Body;
-pub use headers::Headers;
+pub use headers::{HeaderName, Headers};
 pub use method::Method;
-pub use parser::header::HeaderName;
 pub use parser::status::{StatusClass, StatusCode};
 pub use parser::version::Version;
 pub use request::Request;

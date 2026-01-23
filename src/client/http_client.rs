@@ -41,12 +41,7 @@ pub struct HttpClient<S, D> {
   cookie_store: CookieStore,
 }
 
-impl
-  HttpClient<
-    crate::socket::blocking::OsBlockingSocket,
-    crate::dns::resolver::OsDnsResolver,
-  >
-{
+impl HttpClient<crate::socket::blocking::OsBlockingSocket, crate::dns::resolver::OsDnsResolver> {
   /// Create a new HTTP client with OS adapters and default configuration
   ///
   /// Uses the operating system's default socket and DNS resolver.
@@ -110,7 +105,10 @@ where
   /// - `dns`: Custom DNS resolver for hostname resolution
   /// - `config`: Custom client configuration
   #[allow(clippy::missing_const_for_fn)]
-  pub fn with_adapters_and_config(dns: D, config: Config) -> Self {
+  pub fn with_adapters_and_config(
+    dns: D,
+    config: Config,
+  ) -> Self {
     Self {
       pool: ConnectionPool::new(config.max_idle_per_host, config.idle_timeout),
       dns,
@@ -122,7 +120,10 @@ where
 
   /// TODO: Per-request config should overlay, not mutate client state
   /// This is temporary until we implement proper config scoping
-  pub(crate) fn apply_request_config(&mut self, config: Config) {
+  pub(crate) fn apply_request_config(
+    &mut self,
+    config: Config,
+  ) {
     self.config = config;
   }
 
@@ -133,11 +134,7 @@ where
     &mut self,
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(
-      self,
-      crate::method::Method::Get,
-      url,
-    )
+    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(self, crate::method::Method::Get, url)
   }
 
   /// Start building a POST request
@@ -147,11 +144,7 @@ where
     &mut self,
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithBody>::new(
-      self,
-      crate::method::Method::Post,
-      url,
-    )
+    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithBody>::new(self, crate::method::Method::Post, url)
   }
 
   /// Start building a PUT request
@@ -161,11 +154,7 @@ where
     &mut self,
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithBody>::new(
-      self,
-      crate::method::Method::Put,
-      url,
-    )
+    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithBody>::new(self, crate::method::Method::Put, url)
   }
 
   /// Start building a DELETE request
@@ -175,11 +164,7 @@ where
     &mut self,
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(
-      self,
-      crate::method::Method::Delete,
-      url,
-    )
+    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(self, crate::method::Method::Delete, url)
   }
 
   /// Start building a HEAD request
@@ -189,11 +174,7 @@ where
     &mut self,
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(
-      self,
-      crate::method::Method::Head,
-      url,
-    )
+    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(self, crate::method::Method::Head, url)
   }
 
   /// Start building an OPTIONS request
@@ -217,11 +198,7 @@ where
     &mut self,
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithBody>::new(
-      self,
-      crate::method::Method::Patch,
-      url,
-    )
+    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithBody>::new(self, crate::method::Method::Patch, url)
   }
 
   /// Start building a TRACE request
@@ -231,11 +208,7 @@ where
     &mut self,
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
-    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(
-      self,
-      crate::method::Method::Trace,
-      url,
-    )
+    ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(self, crate::method::Method::Trace, url)
   }
 
   /// Start building a CONNECT request
@@ -272,7 +245,10 @@ where
   ///
   /// # Errors
   /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
-  pub fn run(&mut self, request: crate::request::Request) -> Result<Response, Error> {
+  pub fn run(
+    &mut self,
+    request: crate::request::Request,
+  ) -> Result<Response, Error> {
     let (method, url, headers, body) = request.into_parts();
     self.request(method, &url, &headers, body.map(Body::into_bytes))
   }
@@ -314,7 +290,7 @@ where
           .cookie_store
           .get_request_cookies(&current_url, is_secure);
         if !cookie_header.is_empty() {
-          headers_with_cookies.insert("Cookie", &cookie_header);
+          headers_with_cookies.insert(crate::headers::HeaderName::COOKIE, &cookie_header);
         }
       }
 
@@ -333,7 +309,7 @@ where
       {
         let set_cookie_headers: Vec<String> = raw
           .headers
-          .get_all("Set-Cookie")
+          .get_all(crate::headers::HeaderName::SET_COOKIE)
           .into_iter()
           .map(alloc::string::ToString::to_string)
           .collect();
@@ -346,13 +322,7 @@ where
       }
 
       // Process response and make policy decision
-      match policy.process_raw_response(
-        raw,
-        &uri,
-        &current_url,
-        current_method,
-        current_body,
-      )? {
+      match policy.process_raw_response(raw, &uri, &current_url, current_method, current_body)? {
         PolicyDecision::Return(response) => return Ok(response),
         PolicyDecision::Redirect {
           next_uri,
@@ -362,7 +332,7 @@ where
           current_url = next_uri;
           current_method = next_method;
           current_body = next_body;
-        }
+        },
       }
     }
   }

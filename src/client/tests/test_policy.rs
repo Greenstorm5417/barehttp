@@ -10,7 +10,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 extern crate alloc;
 
-fn make_redirect_response(status: u16, location: &str) -> RawResponse {
+fn make_redirect_response(
+  status: u16,
+  location: &str,
+) -> RawResponse {
   let mut headers = Headers::new();
   headers.insert("Location", location);
   RawResponse {
@@ -72,11 +75,8 @@ fn policy_drops_body_for_head_requests() {
   match decision {
     PolicyDecision::Return(resp) => {
       assert_eq!(resp.status_code, 200);
-      assert!(
-        resp.body.as_bytes().is_empty(),
-        "HEAD response body should be empty"
-      );
-    }
+      assert!(resp.body.as_bytes().is_empty(), "HEAD response body should be empty");
+    },
     PolicyDecision::Redirect { .. } => panic!("Expected PolicyDecision::Return"),
   }
 }
@@ -99,13 +99,11 @@ fn post_302_redirect_becomes_get() {
 
   match decision {
     PolicyDecision::Redirect {
-      next_method,
-      next_body,
-      ..
+      next_method, next_body, ..
     } => {
       assert_eq!(next_method, Method::Get, "POST 302 should become GET");
       assert!(next_body.is_none(), "GET should not have body");
-    }
+    },
     PolicyDecision::Return(_) => panic!("Expected PolicyDecision::Redirect"),
   }
 }
@@ -128,13 +126,11 @@ fn post_301_redirect_becomes_get() {
 
   match decision {
     PolicyDecision::Redirect {
-      next_method,
-      next_body,
-      ..
+      next_method, next_body, ..
     } => {
       assert_eq!(next_method, Method::Get);
       assert!(next_body.is_none());
-    }
+    },
     PolicyDecision::Return(_) => panic!("Expected PolicyDecision::Redirect"),
   }
 }
@@ -157,13 +153,11 @@ fn post_303_redirect_becomes_get() {
 
   match decision {
     PolicyDecision::Redirect {
-      next_method,
-      next_body,
-      ..
+      next_method, next_body, ..
     } => {
       assert_eq!(next_method, Method::Get);
       assert!(next_body.is_none());
-    }
+    },
     PolicyDecision::Return(_) => panic!("Expected PolicyDecision::Redirect"),
   }
 }
@@ -187,7 +181,7 @@ fn get_redirect_stays_get() {
   match decision {
     PolicyDecision::Redirect { next_method, .. } => {
       assert_eq!(next_method, Method::Get);
-    }
+    },
     PolicyDecision::Return(_) => panic!("Expected PolicyDecision::Redirect"),
   }
 }
@@ -356,6 +350,6 @@ fn no_follow_policy_returns_redirect_response() {
     PolicyDecision::Return(resp) => assert_eq!(resp.status_code, 302),
     PolicyDecision::Redirect { .. } => {
       panic!("Should not follow redirect with NoFollow policy")
-    }
+    },
   }
 }

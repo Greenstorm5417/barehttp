@@ -36,10 +36,11 @@ impl RequestPolicy {
   }
 
   /// Validate protocol restrictions (HTTPS-only enforcement)
-  pub fn validate_protocol(&self, uri: &Uri) -> Result<(), Error> {
-    if self.config.protocol_restriction == ProtocolRestriction::HttpsOnly
-      && uri.scheme() != "https"
-    {
+  pub fn validate_protocol(
+    &self,
+    uri: &Uri,
+  ) -> Result<(), Error> {
+    if self.config.protocol_restriction == ProtocolRestriction::HttpsOnly && uri.scheme() != "https" {
       return Err(Error::HttpsRequired);
     }
     Ok(())
@@ -65,8 +66,7 @@ impl RequestPolicy {
     let response_body = if is_head_request {
       Body::from_bytes(Vec::new())
     } else {
-      Response::parse_body_from_bytes(&raw.body_bytes, &raw.headers, raw.status_code)
-        .map_err(Error::Parse)?
+      Response::parse_body_from_bytes(&raw.body_bytes, &raw.headers, raw.status_code).map_err(Error::Parse)?
     };
 
     let response = Response {
@@ -115,8 +115,7 @@ impl RequestPolicy {
       self.visited_urls.push(String::from(current_url));
 
       let (next_method, next_body) = if response.status_code == 303
-        || (response.status_code == 301 || response.status_code == 302)
-          && current_method == Method::Post
+        || (response.status_code == 301 || response.status_code == 302) && current_method == Method::Post
       {
         (Method::Get, None)
       } else {

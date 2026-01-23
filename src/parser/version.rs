@@ -19,7 +19,10 @@ pub enum VersionParseError {
 impl Version {
   /// Create a new HTTP version
   #[must_use]
-  pub const fn new(major: u8, minor: u8) -> Self {
+  pub const fn new(
+    major: u8,
+    minor: u8,
+  ) -> Self {
     Self { major, minor }
   }
 

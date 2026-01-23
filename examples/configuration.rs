@@ -46,10 +46,7 @@ fn main() -> Result<(), Error> {
   let mut client = HttpClient::with_config(config)?;
 
   let response = client.get("http://httpbin.org/status/404").call()?;
-  println!(
-    "Status: {} (returned as response, not error)",
-    response.status_code
-  );
+  println!("Status: {} (returned as response, not error)", response.status_code);
   println!("Is client error: {}\n", response.is_client_error());
 
   // Example 4: Limit redirects

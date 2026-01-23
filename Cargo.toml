@@ -11,20 +11,34 @@ readme = "README.md"
 keywords = ["http", "client", "no_std", "blocking", "minimal"]
 categories = ["network-programming", "no-std", "web-programming::http-client"]
 
+[profile.test]
+debug = 2
+[profile.bench]
+debug = 2
+
+
+
 [lib]
 doctest = true
 
 [features]
 default = []
 cookie-jar = []
+decompression = ["gzip-decompression", "zstd-decompression"]
+
+gzip-decompression = ["dep:miniz_oxide"]
+zstd-decompression = ["dep:ruzstd"]
 
 [dependencies]
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"], optional = true }
+ruzstd = { version = "0.8.2", default-features = false, features = ["hash"], optional = true }
+
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = [
+windows-sys = { version = "0.61.2", default-features = false, features = [
     "Win32_Networking_WinSock",
     "Win32_Foundation",
     "Win32_System_SystemInformation",

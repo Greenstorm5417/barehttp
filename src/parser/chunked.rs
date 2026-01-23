@@ -48,7 +48,7 @@ impl ChunkedDecoder {
           } else {
             self.state = DecodeState::ChunkData(size);
           }
-        }
+        },
         DecodeState::ChunkData(size) => {
           if remaining.len() < size {
             return Err(ParseError::UnexpectedEndOfInput);
@@ -63,11 +63,11 @@ impl ChunkedDecoder {
             .get(size..)
             .ok_or(ParseError::UnexpectedEndOfInput)?;
           self.state = DecodeState::ChunkDataCrlf;
-        }
+        },
         DecodeState::ChunkDataCrlf => {
           remaining = Self::expect_crlf(remaining)?;
           self.state = DecodeState::ChunkSize;
-        }
+        },
         DecodeState::TrailerSection => {
           let (found_end, rest) = self.parse_trailer_section(remaining)?;
           remaining = rest;
@@ -76,10 +76,10 @@ impl ChunkedDecoder {
             self.state = DecodeState::Complete;
             return Ok(remaining);
           }
-        }
+        },
         DecodeState::Complete => {
           return Ok(remaining);
-        }
+        },
       }
     }
   }

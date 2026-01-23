@@ -1,13 +1,19 @@
 extern crate alloc;
 use crate::body::Body;
 use crate::error::ParseError;
-use crate::headers::Headers;
+use crate::headers::{HeaderName, Headers};
 use crate::parser::chunked::ChunkedDecoder;
 use crate::parser::headers::HeaderField;
 use crate::parser::http::StatusLine;
 use crate::parser::version::Version;
 use alloc::string::String;
 use alloc::vec::Vec;
+
+#[cfg(feature = "gzip-decompression")]
+use miniz_oxide::inflate::{decompress_to_vec, decompress_to_vec_zlib};
+
+#[cfg(feature = "zstd-decompression")]
+use ruzstd::decoding::StreamingDecoder;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
@@ -76,13 +82,59 @@ impl Response {
       })
       .collect();
 
+    let body = Self::decompress_body_if_needed(&Headers::from_vec(headers.clone()), body_bytes)?;
+
     Ok(Self {
       status_code: status_line.status.code(),
       reason: String::from_utf8_lossy(status_line.reason).into_owned(),
       headers: Headers::from_vec(headers),
-      body: Body::from_bytes(body_bytes),
+      body: Body::from_bytes(body),
       trailers,
     })
+  }
+
+  #[allow(clippy::unnecessary_wraps, unused_variables)]
+  fn decompress_body_if_needed(
+    headers: &Headers,
+    body_bytes: Vec<u8>,
+  ) -> Result<Vec<u8>, ParseError> {
+    if let Some(encoding) = headers.get("content-encoding") {
+      let encoding_lower = encoding.to_lowercase();
+
+      // Try gzip/deflate decompression
+      #[cfg(feature = "gzip-decompression")]
+      if encoding_lower.contains("gzip") {
+        // Gzip format: strip 10-byte header and 8-byte footer, decompress the middle
+        if body_bytes.len() < 18 {
+          return Err(ParseError::DecompressionFailed);
+        }
+        // Skip gzip header (10 bytes minimum) and footer (8 bytes)
+        // The actual compressed data is in between
+        let end_pos = body_bytes.len().saturating_sub(8);
+        let deflate_data = body_bytes
+          .get(10..end_pos)
+          .ok_or(ParseError::DecompressionFailed)?;
+        return decompress_to_vec(deflate_data).map_err(|_| ParseError::DecompressionFailed);
+      }
+
+      #[cfg(feature = "gzip-decompression")]
+      if encoding_lower.contains("deflate") {
+        return decompress_to_vec_zlib(&body_bytes).map_err(|_| ParseError::DecompressionFailed);
+      }
+
+      // Try zstd decompression
+      #[cfg(feature = "zstd-decompression")]
+      if encoding_lower.contains("zstd") {
+        use ruzstd::io_nostd::Read;
+        let mut decoder = StreamingDecoder::new(&body_bytes[..]).map_err(|_| ParseError::DecompressionFailed)?;
+        let mut decompressed = Vec::new();
+        decoder
+          .read_to_end(&mut decompressed)
+          .map_err(|_| ParseError::DecompressionFailed)?;
+        return Ok(decompressed);
+      }
+    }
+    Ok(body_bytes)
   }
 
   #[cfg(test)]
@@ -92,8 +144,7 @@ impl Response {
     status_code: u16,
     method: Option<&str>,
   ) -> Result<Vec<u8>, ParseError> {
-    let (body, _trailers) =
-      Self::parse_body_internal(input, headers, None, status_code, method)?;
+    let (body, _trailers) = Self::parse_body_internal(input, headers, None, status_code, method)?;
     Ok(body)
   }
 
@@ -107,7 +158,7 @@ impl Response {
     // Check if Transfer-Encoding is present
     let has_transfer_encoding = headers
       .iter()
-      .any(|(name, _)| name.eq_ignore_ascii_case(b"transfer-encoding"));
+      .any(|(name, _)| name.eq_ignore_ascii_case(HeaderName::TRANSFER_ENCODING.as_bytes()));
 
     // RFC 9112 Section 6.1: Transfer-Encoding is a feature of HTTP/1.1.
     // Reject TE in an HTTP/1.0 response.
@@ -143,11 +194,11 @@ impl Response {
 
     let has_content_length = headers
       .iter()
-      .any(|(name, _)| name.eq_ignore_ascii_case(b"content-length"));
+      .any(|(name, _)| name.eq_ignore_ascii_case(HeaderName::CONTENT_LENGTH.as_bytes()));
 
     let content_length = headers
       .iter()
-      .find(|(name, _)| name.eq_ignore_ascii_case(b"content-length"))
+      .find(|(name, _)| name.eq_ignore_ascii_case(HeaderName::CONTENT_LENGTH.as_bytes()))
       .and_then(|(_, value)| parse_content_length(value));
 
     // RFC 9112 Section 6.3: If both Transfer-Encoding and Content-Length are present,
@@ -161,7 +212,7 @@ impl Response {
       // RFC 9112 Section 6.3: chunked MUST be the final transfer coding
       let te_value = headers
         .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(b"transfer-encoding"))
+        .find(|(name, _)| name.eq_ignore_ascii_case(HeaderName::TRANSFER_ENCODING.as_bytes()))
         .map(|(_, value)| value);
 
       if let Some(te_bytes) = te_value {
@@ -224,15 +275,16 @@ impl Response {
     Ok((Vec::new(), Vec::new()))
   }
 
-  pub fn get_header(&self, name: &str) -> Option<&str> {
+  pub fn get_header(
+    &self,
+    name: &str,
+  ) -> Option<&str> {
     self.headers.get(name)
   }
 
   /// Parse response headers only (for two-phase reading)
   /// Returns (`status_code`, reason, headers, `remaining_bytes_after_headers`)
-  pub fn parse_headers_only(
-    input: &[u8],
-  ) -> Result<(u16, String, Headers, &[u8]), ParseError> {
+  pub fn parse_headers_only(input: &[u8]) -> Result<(u16, String, Headers, &[u8]), ParseError> {
     // Skip leading CRLF (RFC 9112 Section 2.2 robustness)
     let mut data = input;
     loop {
@@ -276,7 +328,10 @@ impl Response {
 
   /// Determine how many bytes to read for the response body
   /// Returns None for no body, Some(n) for Content-Length: n, or special handling for chunked
-  pub fn body_read_strategy(headers: &Headers, status_code: u16) -> BodyReadStrategy {
+  pub fn body_read_strategy(
+    headers: &Headers,
+    status_code: u16,
+  ) -> BodyReadStrategy {
     // No body for certain status codes
     if (100..200).contains(&status_code) || status_code == 204 || status_code == 304 {
       return BodyReadStrategy::NoBody;
@@ -284,17 +339,16 @@ impl Response {
 
     let has_transfer_encoding = headers
       .iter()
-      .any(|(name, _)| name.eq_ignore_ascii_case("transfer-encoding"));
+      .any(|(name, _)| name.eq_ignore_ascii_case(HeaderName::TRANSFER_ENCODING));
 
     let has_content_length = headers
       .iter()
-      .any(|(name, _)| name.eq_ignore_ascii_case("content-length"));
+      .any(|(name, _)| name.eq_ignore_ascii_case(HeaderName::CONTENT_LENGTH));
 
     // RFC 9112: Transfer-Encoding overrides Content-Length
     if has_transfer_encoding {
       let is_chunked = headers.iter().any(|(name, value)| {
-        name.eq_ignore_ascii_case("transfer-encoding")
-          && value.to_lowercase().contains("chunked")
+        name.eq_ignore_ascii_case(HeaderName::TRANSFER_ENCODING) && value.to_lowercase().contains("chunked")
       });
 
       if is_chunked {
@@ -307,7 +361,7 @@ impl Response {
     if has_content_length
       && let Some((_name, value)) = headers
         .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .find(|(name, _)| name.eq_ignore_ascii_case(HeaderName::CONTENT_LENGTH))
       && let Ok(len) = value.trim().parse::<usize>()
     {
       return BodyReadStrategy::ContentLength(len);
@@ -332,9 +386,11 @@ impl Response {
       .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
       .collect();
 
-    let (body_vec, _trailers) =
-      Self::parse_body_internal(body_bytes, &headers_bytes, None, status_code, None)?;
-    Ok(Body::from_bytes(body_vec))
+    let (body_vec, _trailers) = Self::parse_body_internal(body_bytes, &headers_bytes, None, status_code, None)?;
+
+    // Decompress if needed
+    let decompressed_body = Self::decompress_body_if_needed(headers, body_vec)?;
+    Ok(Body::from_bytes(decompressed_body))
   }
 
   #[must_use]
@@ -366,7 +422,7 @@ impl Response {
   pub fn has_connection_close(&self) -> bool {
     self
       .headers
-      .get("connection")
+      .get(HeaderName::CONNECTION)
       .is_some_and(|val| val.eq_ignore_ascii_case("close"))
   }
 }
@@ -420,7 +476,10 @@ pub struct RequestBuilder {
 }
 
 impl RequestBuilder {
-  pub fn new(method: &str, path: &str) -> Self {
+  pub fn new(
+    method: &str,
+    path: &str,
+  ) -> Self {
     Self {
       method: String::from(method),
       path: String::from(path),
@@ -429,30 +488,37 @@ impl RequestBuilder {
     }
   }
 
-  pub fn header(mut self, name: &str, value: &str) -> Self {
+  pub fn header(
+    mut self,
+    name: &str,
+    value: &str,
+  ) -> Self {
     self.headers.insert(name, value);
     self
   }
 
-  pub fn body(mut self, body: Vec<u8>) -> Self {
+  pub fn body(
+    mut self,
+    body: Vec<u8>,
+  ) -> Self {
     self.body = Some(Body::from_bytes(body));
     self
   }
 
   pub fn build(self) -> Result<Vec<u8>, ParseError> {
     // RFC 9112 Section 3.2: Client MUST send Host in every HTTP/1.1 request
-    if !self.headers.contains("host") {
+    if !self.headers.contains(HeaderName::HOST) {
       return Err(ParseError::MissingHostHeader);
     }
 
     // RFC 9112 Section 3.2: Server responds 400 if multiple Host headers present
-    let host_headers = self.headers.get_all("host");
+    let host_headers = self.headers.get_all(HeaderName::HOST);
     if host_headers.len() > 1 {
       return Err(ParseError::MultipleHostHeaders);
     }
 
     // RFC 9112 Section 3.2: Validate Host header value format
-    if let Some(host_value) = self.headers.get("host")
+    if let Some(host_value) = self.headers.get(HeaderName::HOST)
       && !Self::is_valid_host_value(host_value)
     {
       return Err(ParseError::InvalidHostHeaderValue);
@@ -471,13 +537,13 @@ impl RequestBuilder {
       }
 
       // RFC 9112 Section 7.4: Client MUST NOT send "chunked" in TE
-      if name.eq_ignore_ascii_case("te") && value.to_lowercase().contains("chunked") {
+      if name.eq_ignore_ascii_case(HeaderName::TE) && value.to_lowercase().contains("chunked") {
         return Err(ParseError::ChunkedInTeHeader);
       }
 
       // RFC 9112 Section 7.4: Sender of TE MUST also send "TE" in Connection
-      if name.eq_ignore_ascii_case("te") {
-        if let Some(conn_value) = self.headers.get("connection") {
+      if name.eq_ignore_ascii_case(HeaderName::TE) {
+        if let Some(conn_value) = self.headers.get(HeaderName::CONNECTION) {
           if !conn_value.to_lowercase().contains("te") {
             return Err(ParseError::TeHeaderMissingConnection);
           }
@@ -488,7 +554,7 @@ impl RequestBuilder {
 
       // RFC 9112 Section 6.1: Client MUST NOT send Transfer-Encoding unless server supports HTTP/1.1+
       // Since we always use HTTP/1.1, this is implicitly satisfied, but validate the header
-      if name.eq_ignore_ascii_case("transfer-encoding") {
+      if name.eq_ignore_ascii_case(HeaderName::TRANSFER_ENCODING) {
         // RFC 9112 Section 6.1: MUST NOT apply chunked more than once
         let te_lower = value.to_lowercase();
         let chunked_count = te_lower.matches("chunked").count();
@@ -499,8 +565,8 @@ impl RequestBuilder {
     }
 
     // RFC 9112 Section 6.2: Sender MUST NOT send CL when TE present
-    let has_te = self.headers.contains("transfer-encoding");
-    let has_cl = self.headers.contains("content-length");
+    let has_te = self.headers.contains(HeaderName::TRANSFER_ENCODING);
+    let has_cl = self.headers.contains(HeaderName::CONTENT_LENGTH);
     if has_te && has_cl {
       return Err(ParseError::ConflictingFraming);
     }
@@ -527,7 +593,7 @@ impl RequestBuilder {
     }
 
     if let Some(body) = &self.body
-      && !self.headers.contains("content-length")
+      && !self.headers.contains(HeaderName::CONTENT_LENGTH)
     {
       use alloc::string::ToString;
       request.extend_from_slice(b"Content-Length: ");
@@ -628,8 +694,7 @@ impl RequestBuilder {
     if hostname.starts_with('[') && hostname.ends_with(']') {
       // Basic IPv6 validation - just check it has hex digits and colons
       let inner = &hostname[1..hostname.len() - 1];
-      return !inner.is_empty()
-        && inner.chars().all(|c| c.is_ascii_hexdigit() || c == ':');
+      return !inner.is_empty() && inner.chars().all(|c| c.is_ascii_hexdigit() || c == ':');
     }
 
     // Regular hostname or IPv4

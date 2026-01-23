@@ -63,7 +63,10 @@ impl Request {
 
   /// Create a new request with the given method and URL
   #[must_use]
-  pub fn new(method: Method, url: impl Into<String>) -> Self {
+  pub fn new(
+    method: Method,
+    url: impl Into<String>,
+  ) -> Self {
     Self {
       method,
       url: url.into(),
@@ -74,14 +77,21 @@ impl Request {
 
   /// Add a header to the request
   #[must_use]
-  pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+  pub fn header(
+    mut self,
+    name: impl Into<String>,
+    value: impl Into<String>,
+  ) -> Self {
     self.headers.insert(name, value);
     self
   }
 
   /// Set the request body
   #[must_use]
-  pub fn body(mut self, data: impl Into<Body>) -> Self {
+  pub fn body(
+    mut self,
+    data: impl Into<Body>,
+  ) -> Self {
     self.body = Some(data.into());
     self
   }

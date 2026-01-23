@@ -13,14 +13,8 @@ impl<'a> HeaderField<'a> {
   /// This function collects all header fields, handling obs-fold by replacing CRLF+whitespace
   /// with a single space character.
   pub fn parse(
-    input: &'a [u8],
-  ) -> Result<
-    (
-      alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)>,
-      &'a [u8],
-    ),
-    ParseError,
-  > {
+    input: &'a [u8]
+  ) -> Result<(alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)>, &'a [u8]), ParseError> {
     use alloc::vec::Vec;
 
     let mut headers = Vec::new();
@@ -139,9 +133,7 @@ impl<'a> HeaderField<'a> {
         }
 
         // Check for obs-fold: LF followed by SP or HTAB
-        if remaining.len() >= 2
-          && next_byte0 == Some(b'\n')
-          && (next_byte1 == Some(b' ') || next_byte1 == Some(b'\t'))
+        if remaining.len() >= 2 && next_byte0 == Some(b'\n') && (next_byte1 == Some(b' ') || next_byte1 == Some(b'\t'))
         {
           // RFC 9112 Section 5.2: Replace obs-fold with SP
           value_bytes.push(b' ');
@@ -159,8 +151,7 @@ impl<'a> HeaderField<'a> {
         }
 
         // Normal end of header field
-        if remaining.len() >= 2 && next_byte0 == Some(b'\r') && next_byte1 == Some(b'\n')
-        {
+        if remaining.len() >= 2 && next_byte0 == Some(b'\r') && next_byte1 == Some(b'\n') {
           remaining = remaining.get(2..).ok_or(ParseError::MissingCrlf)?;
           break;
         }

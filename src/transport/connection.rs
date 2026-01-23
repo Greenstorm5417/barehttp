@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::headers::Headers;
+use crate::headers::{HeaderName, Headers};
 use crate::parser::framing::FramingDetector;
 use crate::parser::{BodyReadStrategy, Response};
 use crate::socket::BlockingSocket;
@@ -33,7 +33,10 @@ pub struct Connection<'a, S> {
 }
 
 impl<'a, S: BlockingSocket> Connection<'a, S> {
-  pub const fn new(socket: &'a mut S, max_header_size: usize) -> Self {
+  pub const fn new(
+    socket: &'a mut S,
+    max_header_size: usize,
+  ) -> Self {
     Self {
       socket,
       max_header_size,
@@ -43,7 +46,10 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
 
   /// Send HTTP request bytes to the socket
   ///
-  pub fn send_request(&mut self, request_bytes: &[u8]) -> Result<(), Error> {
+  pub fn send_request(
+    &mut self,
+    request_bytes: &[u8],
+  ) -> Result<(), Error> {
     self.socket.write(request_bytes).map_err(Error::Socket)?;
 
     // RFC 9112 Section 9.6: If the client sends "Connection: close", it MUST NOT
@@ -86,7 +92,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
             let _ = self.socket.shutdown();
           }
           return Err(Error::Socket(e));
-        }
+        },
       };
       if n == 0 {
         break;
@@ -114,11 +120,11 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
       ResponseBodyExpectation::Normal => {
         let body_strategy = Response::body_read_strategy(&headers, status_code);
         self.read_body(body_strategy, remaining_after_headers)?
-      }
+      },
     };
 
     // RFC 9112 Section 9.6: Check if server sent Connection: close
-    if let Some(conn_value) = headers.get("connection")
+    if let Some(conn_value) = headers.get(HeaderName::CONNECTION)
       && conn_value.eq_ignore_ascii_case("close")
     {
       self.state.mark_received_close();
@@ -157,7 +163,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
                     let _ = self.socket.shutdown();
                   }
                   return Err(Error::Socket(e));
-                }
+                },
               };
 
               if n == 0 {
@@ -173,7 +179,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         }
 
         Ok(body_bytes)
-      }
+      },
       BodyReadStrategy::Chunked => {
         let mut raw_bytes = Vec::from(initial_bytes);
         let mut chunk_buffer = alloc::vec![0u8; 8192];
@@ -190,7 +196,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
                 let _ = self.socket.shutdown();
               }
               return Err(Error::Socket(e));
-            }
+            },
           };
           if n == 0 {
             return Err(Error::Socket(crate::error::SocketError::NotConnected));
@@ -201,7 +207,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         }
 
         Ok(raw_bytes)
-      }
+      },
       BodyReadStrategy::UntilClose => {
         let mut body_bytes = Vec::from(initial_bytes);
         let mut read_buffer = alloc::vec![0u8; 8192];
@@ -214,7 +220,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
                 let _ = self.socket.shutdown();
               }
               return Err(Error::Socket(e));
-            }
+            },
           };
           if n == 0 {
             break;
@@ -225,7 +231,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         }
 
         Ok(body_bytes)
-      }
+      },
     }
   }
 

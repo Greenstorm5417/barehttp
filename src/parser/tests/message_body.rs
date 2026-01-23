@@ -60,10 +60,7 @@ fn test_body_both_transfer_encoding_and_content_length() {
   // Client MUST reject this combination
   let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 100\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
-  assert!(
-    result.is_err(),
-    "Response with both TE and CL should be rejected"
-  );
+  assert!(result.is_err(), "Response with both TE and CL should be rejected");
 }
 
 #[test]
@@ -81,10 +78,7 @@ fn test_body_content_length_with_extra_data() {
   // after a complete response as a separate response
   let input = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHelloExtraData";
   let result = Response::parse(input);
-  assert!(
-    result.is_err(),
-    "Should reject extra data after Content-Length body"
-  );
+  assert!(result.is_err(), "Should reject extra data after Content-Length body");
 }
 
 #[test]

@@ -14,7 +14,10 @@ pub enum DnsError {
 }
 
 impl core::fmt::Display for DnsError {
-  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+  fn fmt(
+    &self,
+    f: &mut core::fmt::Formatter<'_>,
+  ) -> core::fmt::Result {
     match self {
       Self::ResolutionFailed(code) => write!(f, "DNS resolution failed: {code}"),
       Self::NoAddressesFound => write!(f, "no addresses found for hostname"),

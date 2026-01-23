@@ -9,14 +9,12 @@
 use crate::config::Config;
 use crate::dns::DnsResolver;
 use crate::error::Error;
-use crate::headers::Headers;
+use crate::headers::{HeaderName, Headers};
 use crate::method::Method;
 use crate::parser::RequestBuilder as ParserRequestBuilder;
 use crate::parser::uri::Uri;
 use crate::socket::BlockingSocket;
-use crate::transport::{
-  ConnectionPool, Connector, PoolKey, RawResponse, ResponseBodyExpectation,
-};
+use crate::transport::{ConnectionPool, Connector, PoolKey, RawResponse, ResponseBodyExpectation};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -61,8 +59,7 @@ where
     let mut conn = connector.connect(uri, self.config)?;
 
     // Build and send request
-    let request_bytes =
-      self.build_request(uri, method, &host_str, custom_headers, body)?;
+    let request_bytes = self.build_request(uri, method, &host_str, custom_headers, body)?;
     conn.send_request(&request_bytes)?;
 
     // Read response
@@ -96,11 +93,20 @@ where
     uri
       .authority()
       .and_then(super::super::parser::uri::Authority::port)
-      .unwrap_or_else(|| if uri.scheme() == "https" { 443 } else { 80 })
+      .unwrap_or_else(|| {
+        if uri.scheme() == "https" {
+          443
+        } else {
+          80
+        }
+      })
   }
 
   /// Get socket from pool or create new one
-  fn get_or_create_socket(&mut self, pool_key: &PoolKey) -> Result<S, Error> {
+  fn get_or_create_socket(
+    &mut self,
+    pool_key: &PoolKey,
+  ) -> Result<S, Error> {
     if self.config.connection_pooling {
       self
         .pool
@@ -120,21 +126,42 @@ where
     custom_headers: &Headers,
     body: Option<&[u8]>,
   ) -> Result<Vec<u8>, Error> {
-    let mut builder = ParserRequestBuilder::new(method.as_str(), &uri.path_and_query())
-      .header("Host", host_str);
+    let mut builder =
+      ParserRequestBuilder::new(method.as_str(), &uri.path_and_query()).header(HeaderName::HOST, host_str);
 
     // RFC 9112 Section 9.3: Send Connection: close if pooling is disabled
     if !self.config.connection_pooling {
-      builder = builder.header("Connection", "close");
+      builder = builder.header(HeaderName::CONNECTION, "close");
     }
 
     // Add default headers from config
     if let Some(ref user_agent) = self.config.user_agent {
-      builder = builder.header("User-Agent", user_agent.as_str());
+      builder = builder.header(HeaderName::USER_AGENT, user_agent.as_str());
     }
 
     if let Some(ref accept) = self.config.accept {
-      builder = builder.header("Accept", accept.as_str());
+      builder = builder.header(HeaderName::ACCEPT, accept.as_str());
+    }
+
+    // Add Accept-Encoding header based on enabled decompression features
+    // Only add if user hasn't specified it in custom headers
+    if !custom_headers.contains(HeaderName::ACCEPT_ENCODING) {
+      #[allow(unused_mut)]
+      let mut encodings: Vec<&str> = Vec::new();
+
+      #[cfg(feature = "gzip-decompression")]
+      {
+        encodings.push("gzip");
+        encodings.push("deflate");
+      }
+
+      #[cfg(feature = "zstd-decompression")]
+      encodings.push("zstd");
+
+      if !encodings.is_empty() {
+        let accept_encoding = encodings.join(", ");
+        builder = builder.header(HeaderName::ACCEPT_ENCODING, accept_encoding.as_str());
+      }
     }
 
     // Add custom headers
@@ -151,7 +178,12 @@ where
   }
 
   /// Handle connection reuse based on pooling config
-  fn handle_connection_reuse(&mut self, is_reusable: bool, pool_key: PoolKey, socket: S) {
+  fn handle_connection_reuse(
+    &mut self,
+    is_reusable: bool,
+    pool_key: PoolKey,
+    socket: S,
+  ) {
     if self.config.connection_pooling && is_reusable {
       self.pool.return_connection(pool_key, socket);
     }

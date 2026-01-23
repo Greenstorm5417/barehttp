@@ -28,7 +28,10 @@ pub enum Method {
 pub struct InvalidMethod;
 
 impl core::fmt::Display for InvalidMethod {
-  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+  fn fmt(
+    &self,
+    f: &mut core::fmt::Formatter<'_>,
+  ) -> core::fmt::Result {
     f.write_str("invalid HTTP method")
   }
 }

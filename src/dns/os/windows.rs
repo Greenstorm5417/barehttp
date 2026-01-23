@@ -4,8 +4,7 @@ use crate::util::IpAddr;
 use alloc::vec::Vec;
 use core::ptr;
 use windows_sys::Win32::Networking::WinSock::{
-  ADDRINFOA, AF_INET, AF_INET6, SOCKADDR_IN, SOCKADDR_IN6, WSAGetLastError, freeaddrinfo,
-  getaddrinfo,
+  ADDRINFOA, AF_INET, AF_INET6, SOCKADDR_IN, SOCKADDR_IN6, WSAGetLastError, freeaddrinfo, getaddrinfo,
 };
 
 pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {

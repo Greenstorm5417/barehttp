@@ -117,98 +117,140 @@ impl ConfigBuilder {
 
   /// Set the general request timeout
   #[must_use]
-  pub const fn timeout(mut self, duration: Duration) -> Self {
+  pub const fn timeout(
+    mut self,
+    duration: Duration,
+  ) -> Self {
     self.config.timeout = Some(duration);
     self
   }
 
   /// Set the User-Agent header
   #[must_use]
-  pub fn user_agent(mut self, agent: impl Into<alloc::string::String>) -> Self {
+  pub fn user_agent(
+    mut self,
+    agent: impl Into<alloc::string::String>,
+  ) -> Self {
     self.config.user_agent = Some(agent.into());
     self
   }
 
   /// Set the redirect following policy
   #[must_use]
-  pub const fn redirect_policy(mut self, policy: RedirectPolicy) -> Self {
+  pub const fn redirect_policy(
+    mut self,
+    policy: RedirectPolicy,
+  ) -> Self {
     self.config.redirect_policy = policy;
     self
   }
 
   /// Set the maximum number of redirects to follow
   #[must_use]
-  pub const fn max_redirects(mut self, max: u32) -> Self {
+  pub const fn max_redirects(
+    mut self,
+    max: u32,
+  ) -> Self {
     self.config.max_redirects = max;
     self
   }
 
   /// Set how to handle HTTP error status codes
   #[must_use]
-  pub const fn http_status_handling(mut self, handling: HttpStatusHandling) -> Self {
+  pub const fn http_status_handling(
+    mut self,
+    handling: HttpStatusHandling,
+  ) -> Self {
     self.config.http_status_handling = handling;
     self
   }
 
   /// Set the policy for forwarding authorization headers on redirects
   #[must_use]
-  pub const fn redirect_auth_headers(mut self, policy: RedirectAuthHeaders) -> Self {
+  pub const fn redirect_auth_headers(
+    mut self,
+    policy: RedirectAuthHeaders,
+  ) -> Self {
     self.config.redirect_auth_headers = policy;
     self
   }
 
   /// Set the maximum response header size in bytes
   #[must_use]
-  pub const fn max_response_header_size(mut self, size: usize) -> Self {
+  pub const fn max_response_header_size(
+    mut self,
+    size: usize,
+  ) -> Self {
     self.config.max_response_header_size = size;
     self
   }
 
   /// Set the connection timeout
   #[must_use]
-  pub const fn timeout_connect(mut self, duration: Duration) -> Self {
+  pub const fn timeout_connect(
+    mut self,
+    duration: Duration,
+  ) -> Self {
     self.config.timeout_connect = Some(duration);
     self
   }
 
   /// Set the read timeout
   #[must_use]
-  pub const fn timeout_read(mut self, duration: Duration) -> Self {
+  pub const fn timeout_read(
+    mut self,
+    duration: Duration,
+  ) -> Self {
     self.config.timeout_read = Some(duration);
     self
   }
 
   #[must_use]
   /// Set the Accept header value
-  pub fn accept(mut self, value: impl Into<alloc::string::String>) -> Self {
+  pub fn accept(
+    mut self,
+    value: impl Into<alloc::string::String>,
+  ) -> Self {
     self.config.accept = Some(value.into());
     self
   }
 
   #[must_use]
   /// Set protocol restrictions (HTTP/HTTPS only)
-  pub const fn protocol_restriction(mut self, restriction: ProtocolRestriction) -> Self {
+  pub const fn protocol_restriction(
+    mut self,
+    restriction: ProtocolRestriction,
+  ) -> Self {
     self.config.protocol_restriction = restriction;
     self
   }
 
   #[must_use]
   /// Enable or disable connection pooling
-  pub const fn connection_pooling(mut self, enabled: bool) -> Self {
+  pub const fn connection_pooling(
+    mut self,
+    enabled: bool,
+  ) -> Self {
     self.config.connection_pooling = enabled;
     self
   }
 
   #[must_use]
   /// Set maximum idle connections to keep per host
-  pub const fn max_idle_per_host(mut self, max: usize) -> Self {
+  pub const fn max_idle_per_host(
+    mut self,
+    max: usize,
+  ) -> Self {
     self.config.max_idle_per_host = max;
     self
   }
 
   #[must_use]
   /// Set idle timeout for pooled connections
-  pub const fn idle_timeout(mut self, duration: Duration) -> Self {
+  pub const fn idle_timeout(
+    mut self,
+    duration: Duration,
+  ) -> Self {
     self.config.idle_timeout = Some(duration);
     self
   }
@@ -235,10 +277,7 @@ mod tests {
     let config = Config::default();
 
     assert!(config.timeout.is_none());
-    assert_eq!(
-      config.user_agent,
-      Some(alloc::string::String::from("barehttp/1.0"))
-    );
+    assert_eq!(config.user_agent, Some(alloc::string::String::from("barehttp/1.0")));
     assert_eq!(config.redirect_policy, RedirectPolicy::Follow);
     assert_eq!(config.max_redirects, 10);
     assert_eq!(config.http_status_handling, HttpStatusHandling::AsError);
@@ -263,10 +302,7 @@ mod tests {
   fn config_builder_user_agent() {
     let config = ConfigBuilder::new().user_agent("MyClient/1.0").build();
 
-    assert_eq!(
-      config.user_agent,
-      Some(alloc::string::String::from("MyClient/1.0"))
-    );
+    assert_eq!(config.user_agent, Some(alloc::string::String::from("MyClient/1.0")));
   }
 
   #[test]
@@ -332,9 +368,6 @@ mod tests {
   fn config_builder_accept_header() {
     let config = ConfigBuilder::new().accept("application/json").build();
 
-    assert_eq!(
-      config.accept,
-      Some(alloc::string::String::from("application/json"))
-    );
+    assert_eq!(config.accept, Some(alloc::string::String::from("application/json")));
   }
 }

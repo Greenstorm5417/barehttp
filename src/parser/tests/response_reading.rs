@@ -36,8 +36,7 @@ fn test_rfc9112_section_6_3_chunked_response() {
     .expect("feed failed");
   assert!(reader.has_complete_headers());
 
-  let (status, _reason, headers, strategy) =
-    reader.parse_headers().expect("parse failed");
+  let (status, _reason, headers, strategy) = reader.parse_headers().expect("parse failed");
   assert_eq!(strategy, BodyReadStrategy::Chunked);
 
   // Feed chunked body: "hello"
@@ -63,8 +62,7 @@ fn test_rfc9112_section_6_no_body_responses() {
     .feed(b"HTTP/1.1 204 No Content\r\n\r\n")
     .expect("feed failed");
 
-  let (status, _reason, headers, strategy) =
-    reader.parse_headers().expect("parse failed");
+  let (status, _reason, headers, strategy) = reader.parse_headers().expect("parse failed");
   assert_eq!(status, 204);
   assert_eq!(strategy, BodyReadStrategy::NoBody);
   assert!(reader.is_body_complete());
@@ -78,8 +76,7 @@ fn test_rfc9112_section_6_no_body_responses() {
     .feed(b"HTTP/1.1 304 Not Modified\r\n\r\n")
     .expect("feed failed");
 
-  let (status2, _reason2, headers2, strategy2) =
-    reader2.parse_headers().expect("parse failed");
+  let (status2, _reason2, headers2, strategy2) = reader2.parse_headers().expect("parse failed");
   assert_eq!(status2, 304);
   assert_eq!(strategy2, BodyReadStrategy::NoBody);
 
@@ -108,8 +105,7 @@ fn test_rfc9112_incremental_header_reading() {
   reader.feed(b"\r\n").expect("feed failed");
   assert!(reader.has_complete_headers());
 
-  let (_status, _reason, _headers, strategy) =
-    reader.parse_headers().expect("parse failed");
+  let (_status, _reason, _headers, strategy) = reader.parse_headers().expect("parse failed");
   assert_eq!(strategy, BodyReadStrategy::ContentLength(4));
 }
 
@@ -141,8 +137,7 @@ fn test_bytes_needed_tracking() {
   reader
     .feed(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n")
     .expect("feed failed");
-  let (_status, _reason, _headers, strategy) =
-    reader.parse_headers().expect("parse failed");
+  let (_status, _reason, _headers, strategy) = reader.parse_headers().expect("parse failed");
   assert_eq!(strategy, BodyReadStrategy::ContentLength(20));
 
   // No body yet
@@ -168,8 +163,7 @@ fn test_multiple_chunk_response() {
   reader
     .feed(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
     .expect("feed failed");
-  let (status, _reason, headers, strategy) =
-    reader.parse_headers().expect("parse failed");
+  let (status, _reason, headers, strategy) = reader.parse_headers().expect("parse failed");
   assert_eq!(strategy, BodyReadStrategy::Chunked);
 
   // First chunk: "Hello"
@@ -202,8 +196,7 @@ fn test_response_with_no_content_length() {
   reader
     .feed(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n")
     .expect("feed failed");
-  let (status, _reason, headers, strategy) =
-    reader.parse_headers().expect("parse failed");
+  let (status, _reason, headers, strategy) = reader.parse_headers().expect("parse failed");
 
   // Without Content-Length or Transfer-Encoding, assume no body
   assert_eq!(strategy, BodyReadStrategy::NoBody);
@@ -221,8 +214,7 @@ fn test_1xx_informational_responses() {
     let response = format!("HTTP/1.1 {code} Continue\r\n\r\n");
     reader.feed(response.as_bytes()).expect("feed failed");
 
-    let (status, _reason, headers, strategy) =
-      reader.parse_headers().expect("parse failed");
+    let (status, _reason, headers, strategy) = reader.parse_headers().expect("parse failed");
     assert_eq!(status, code);
     assert_eq!(strategy, BodyReadStrategy::NoBody);
 
@@ -240,8 +232,7 @@ fn test_chunked_with_extensions() {
   reader
     .feed(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
     .expect("feed failed");
-  let (status, _reason, headers, _strategy) =
-    reader.parse_headers().expect("parse failed");
+  let (status, _reason, headers, _strategy) = reader.parse_headers().expect("parse failed");
 
   // Chunk with extension (should still work)
   reader
