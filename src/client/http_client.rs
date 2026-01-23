@@ -254,7 +254,8 @@ where
   ///
   /// Returns a reference to the Arc-wrapped cookie store.
   #[cfg(feature = "cookie-jar")]
-  pub fn cookie_store(&self) -> &Arc<CookieStore> {
+  #[must_use]
+  pub const fn cookie_store(&self) -> &Arc<CookieStore> {
     &self.cookie_store
   }
 
@@ -285,9 +286,9 @@ where
     url: &str,
     custom_headers: &crate::headers::Headers,
     body: Option<Vec<u8>>,
-    request_config: Option<Config>,
+    request_config: Option<&Config>,
   ) -> Result<Response, Error> {
-    let config = request_config.as_ref().unwrap_or(self.config.as_ref());
+    let config = request_config.unwrap_or_else(|| self.config.as_ref());
     let mut current_url = String::from(url);
     let mut current_method = method;
     let mut current_body = body;
@@ -319,7 +320,7 @@ where
       let headers_to_use = custom_headers;
 
       // Execute single HTTP request
-      let mut executor = RequestExecutor::new(&self.pool, self.dns.as_ref(), config);
+      let executor = RequestExecutor::new(&self.pool, self.dns.as_ref(), config);
       let body_slice = current_body.as_deref();
       let raw = executor.execute(&uri, current_method, headers_to_use, body_slice)?;
 

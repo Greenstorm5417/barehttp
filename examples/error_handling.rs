@@ -9,7 +9,7 @@ use barehttp::{Error, HttpClient};
 fn main() -> Result<(), Error> {
   println!("=== Error Handling Examples ===\n");
 
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
 
   // Example 1: Handling HTTP status errors
   println!("1. HTTP status error (404):");
@@ -55,7 +55,7 @@ fn main() -> Result<(), Error> {
     .http_status_handling(HttpStatusHandling::AsResponse)
     .build();
 
-  let mut client = HttpClient::with_config(config)?;
+  let client = HttpClient::with_config(config)?;
 
   match client.get("http://httpbin.org/status/500").call() {
     Ok(response) => {

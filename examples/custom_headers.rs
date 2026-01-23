@@ -8,7 +8,7 @@ use barehttp::{Error, HttpClient};
 fn main() -> Result<(), Error> {
   println!("=== Custom Headers Examples ===\n");
 
-  let mut client = HttpClient::new()?;
+  let client = HttpClient::new()?;
 
   // Example 1: Single custom header
   println!("1. Single custom header:");

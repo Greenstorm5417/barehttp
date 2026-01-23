@@ -562,7 +562,7 @@ fn test_httpbin_deflate_decompression() {
 #[test]
 #[cfg(feature = "gzip-decompression")]
 fn test_httpbin_gzip_with_client() {
-  let mut client = HttpClient::new().unwrap();
+  let client = HttpClient::new().unwrap();
   let response = client
     .get(format!("{}/gzip", httpbin_url()))
     .call()
@@ -576,7 +576,7 @@ fn test_httpbin_gzip_with_client() {
 #[test]
 #[cfg(feature = "gzip-decompression")]
 fn test_accept_encoding_header_automatically_sent() {
-  let mut client = HttpClient::new().unwrap();
+  let client = HttpClient::new().unwrap();
   let response = client
     .get(format!("{}/headers", httpbin_url()))
     .call()

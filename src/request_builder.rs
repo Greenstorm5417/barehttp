@@ -365,7 +365,7 @@ where
 
     self
       .client
-      .request(self.method, &url, &self.headers, body, self.request_config)
+      .request(self.method, &url, &self.headers, body, self.request_config.as_ref())
   }
 
   /// Force this request to allow a body (e.g., for DELETE with body)
@@ -434,7 +434,7 @@ where
 
     self
       .client
-      .request(self.method, &url, &self.headers, body, self.request_config)
+      .request(self.method, &url, &self.headers, body, self.request_config.as_ref())
   }
 
   /// # Errors

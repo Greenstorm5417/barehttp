@@ -56,10 +56,6 @@ impl CookieStore {
     }
   }
 
-  fn current_time(&self) -> u64 {
-    self.counter.fetch_add(1, Ordering::SeqCst)
-  }
-
   /// Stores cookies from Set-Cookie response headers
   ///
   /// Parses and stores cookies according to RFC 6265 rules, including
@@ -225,7 +221,7 @@ impl CookieStore {
     let cookies = self.cookies.lock();
     cookies
       .iter()
-      .filter(|c| c.expiry_time.map_or(true, |expiry| expiry > current))
+      .filter(|c| c.expiry_time.is_none_or(|expiry| expiry > current))
       .cloned()
       .collect()
   }
@@ -393,7 +389,7 @@ mod tests {
 
   #[test]
   fn test_store_and_retrieve_cookie() {
-    let mut store = CookieStore::new();
+    let store = CookieStore::new();
 
     let set_cookie = alloc::vec!["session=abc123".to_string()];
     store.store_response_cookies("http://example.com/", &set_cookie);
@@ -404,7 +400,7 @@ mod tests {
 
   #[test]
   fn test_cookie_path_matching() {
-    let mut store = CookieStore::new();
+    let store = CookieStore::new();
 
     let set_cookie = alloc::vec!["id=123; Path=/admin".to_string()];
     store.store_response_cookies("http://example.com/admin/panel", &set_cookie);
@@ -418,7 +414,7 @@ mod tests {
 
   #[test]
   fn test_cookie_domain_matching() {
-    let mut store = CookieStore::new();
+    let store = CookieStore::new();
 
     let set_cookie = alloc::vec!["id=123; Domain=example.com".to_string()];
     store.store_response_cookies("http://www.example.com/", &set_cookie);
@@ -435,7 +431,7 @@ mod tests {
 
   #[test]
   fn test_secure_cookie() {
-    let mut store = CookieStore::new();
+    let store = CookieStore::new();
 
     let set_cookie = alloc::vec!["token=secret; Secure".to_string()];
     store.store_response_cookies("https://example.com/", &set_cookie);
@@ -449,7 +445,7 @@ mod tests {
 
   #[test]
   fn test_cookie_replacement() {
-    let mut store = CookieStore::new();
+    let store = CookieStore::new();
 
     store.store_response_cookies("http://example.com/", &alloc::vec!["id=first".to_string()]);
     let cookies_first = store.get_request_cookies("http://example.com/", false);
@@ -462,7 +458,7 @@ mod tests {
 
   #[test]
   fn test_multiple_cookies() {
-    let mut store = CookieStore::new();
+    let store = CookieStore::new();
 
     store.store_response_cookies(
       "http://example.com/",

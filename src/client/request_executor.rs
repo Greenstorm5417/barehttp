@@ -41,7 +41,7 @@ where
 
   /// Execute a single HTTP request and return raw response
   pub fn execute(
-    &mut self,
+    &self,
     uri: &Uri,
     method: Method,
     custom_headers: &Headers,
