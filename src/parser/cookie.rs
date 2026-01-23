@@ -79,7 +79,7 @@ struct AttrIter<'a> {
 }
 
 impl<'a> AttrIter<'a> {
-  fn new(input: &'a [u8]) -> Self {
+  const fn new(input: &'a [u8]) -> Self {
     Self { input }
   }
 }
@@ -89,7 +89,7 @@ impl<'a> Iterator for AttrIter<'a> {
 
   fn next(&mut self) -> Option<Self::Item> {
     while self.input.first() == Some(&b';') {
-      self.input = &self.input[1..];
+      self.input = self.input.get(1..).unwrap_or(&[]);
     }
 
     if self.input.is_empty() {
@@ -102,14 +102,15 @@ impl<'a> Iterator for AttrIter<'a> {
       .position(|&b| b == b';')
       .unwrap_or(self.input.len());
 
-    let av = &self.input[..end];
+    let av = self.input.get(..end)?;
     self.input = self.input.get(end..).unwrap_or(&[]);
 
     let eq = av.iter().position(|&b| b == b'=');
-    Some(match eq {
-      Some(i) => (&av[..i], &av[i + 1..]),
-      None => (av, &[]),
-    })
+    Some(eq.map_or((av, &[]), |i| {
+      let name = av.get(..i).unwrap_or(&[]);
+      let value = av.get(i.checked_add(1).unwrap_or(i)..).unwrap_or(&[]);
+      (name, value)
+    }))
   }
 }
 
@@ -146,25 +147,29 @@ fn parse_cookie_attributes(input: &[u8]) -> CookieAttributes {
   let mut attrs = CookieAttributes::default();
 
   for (name, value) in AttrIter::new(input) {
-    let name = trim_wsp(name);
-    let value = trim_wsp(value);
+    let name_trimmed = trim_wsp(name);
+    let value_trimmed = trim_wsp(value);
 
-    if eq_ignore_ascii(name, b"secure") {
-      attrs.secure = true;
-    } else if eq_ignore_ascii(name, b"httponly") {
-      attrs.http_only = true;
-    } else if eq_ignore_ascii(name, b"expires") {
-      if let Ok(s) = core::str::from_utf8(value) {
-        attrs.expires = parse_cookie_date(s);
-      }
-    } else if eq_ignore_ascii(name, b"max-age") {
-      if let Ok(s) = core::str::from_utf8(value) {
-        attrs.max_age = parse_max_age(s);
-      }
-    } else if eq_ignore_ascii(name, b"domain") {
-      attrs.domain = parse_domain(value);
-    } else if eq_ignore_ascii(name, b"path") {
-      attrs.path = parse_path(value);
+    match name_trimmed {
+      _ if eq_ignore_ascii(name_trimmed, b"secure") => attrs.secure = true,
+      _ if eq_ignore_ascii(name_trimmed, b"httponly") => attrs.http_only = true,
+      _ if eq_ignore_ascii(name_trimmed, b"expires") => {
+        if let Ok(s) = core::str::from_utf8(value_trimmed) {
+          attrs.expires = parse_cookie_date(s);
+        }
+      },
+      _ if eq_ignore_ascii(name_trimmed, b"max-age") => {
+        if let Ok(s) = core::str::from_utf8(value_trimmed) {
+          attrs.max_age = parse_max_age(s);
+        }
+      },
+      _ if eq_ignore_ascii(name_trimmed, b"domain") => {
+        attrs.domain = parse_domain(value_trimmed);
+      },
+      _ if eq_ignore_ascii(name_trimmed, b"path") => {
+        attrs.path = parse_path(value_trimmed);
+      },
+      _ => {},
     }
   }
 
@@ -212,17 +217,13 @@ struct DateParts {
 }
 
 impl DateParts {
-  fn new() -> Self {
+  const fn new() -> Self {
     Self {
       time: None,
       day: None,
       month: None,
       year: None,
     }
-  }
-
-  fn is_complete(&self) -> bool {
-    self.time.is_some() && self.day.is_some() && self.month.is_some() && self.year.is_some()
   }
 }
 
@@ -231,42 +232,40 @@ pub fn parse_cookie_date(input: &str) -> Option<CookieDate> {
   let mut parts = DateParts::new();
 
   for token in tokens {
-    if parts.time.is_none() {
-      if let Some(time) = parse_time_token(token) {
-        parts.time = Some(time);
-        continue;
-      }
+    if parts.time.is_none()
+      && let Some(time) = parse_time_token(token)
+    {
+      parts.time = Some(time);
+      continue;
     }
 
-    if parts.day.is_none() {
-      if let Some(d) = parse_day_of_month(token) {
-        parts.day = Some(d);
-        continue;
-      }
+    if parts.day.is_none()
+      && let Some(d) = parse_day_of_month(token)
+    {
+      parts.day = Some(d);
+      continue;
     }
 
-    if parts.month.is_none() {
-      if let Some(m) = parse_month(token) {
-        parts.month = Some(m);
-        continue;
-      }
+    if parts.month.is_none()
+      && let Some(m) = parse_month(token)
+    {
+      parts.month = Some(m);
+      continue;
     }
 
-    if parts.year.is_none() {
-      if let Some(y) = parse_year(token) {
-        parts.year = Some(y);
-      }
+    if parts.year.is_none()
+      && let Some(y) = parse_year(token)
+    {
+      parts.year = Some(y);
     }
   }
 
-  if !parts.is_complete() {
-    return None;
-  }
+  let time = parts.time?;
+  let day = parts.day?;
+  let month = parts.month?;
+  let mut year = parts.year?;
 
-  let (hour, minute, second) = parts.time.unwrap();
-  let day = parts.day.unwrap();
-  let month = parts.month.unwrap();
-  let mut year = parts.year.unwrap();
+  let (hour, minute, second) = time;
 
   if (70..=99).contains(&year) {
     year += 1900;
