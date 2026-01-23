@@ -85,11 +85,11 @@ impl<S: BlockingSocket> ConnectionPool<S> {
     #[cfg(unix)]
     {
       unsafe {
-        let mut ts = core::mem::MaybeUninit::<libc::timespec>::uninit();
-        libc::clock_gettime(libc::CLOCK_MONOTONIC, ts.as_mut_ptr());
-        let ts = ts.assume_init();
-        Duration::from_secs(ts.tv_sec as u64)
-          .saturating_add(Duration::from_nanos(ts.tv_nsec as u64))
+        let mut ts_uninit = core::mem::MaybeUninit::<libc::timespec>::uninit();
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, ts_uninit.as_mut_ptr());
+        let ts = ts_uninit.assume_init();
+        Duration::from_secs(ts.tv_sec.cast_unsigned())
+          .saturating_add(Duration::from_nanos(ts.tv_nsec.cast_unsigned()))
       }
     }
     #[cfg(not(any(windows, unix)))]
