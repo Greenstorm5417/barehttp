@@ -201,17 +201,13 @@ fn test_missing_version_check_for_chunked() {
 fn test_missing_version_check_for_te() {
   // RFC 9112 Section 6.1: Server MUST NOT send TE unless request indicates HTTP/1.1+
   // This is a response parsing requirement
-  // Currently: Response parser doesn't validate version before accepting TE
+  // Our implementation rejects TE in HTTP/1.0 responses
 
   let input =
     b"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
 
-  // Should reject TE in HTTP/1.0 response but currently accepts it
-  assert!(
-    result.is_ok(),
-    "MISSING: Should reject TE in HTTP/1.0 responses (currently accepts)"
-  );
+  assert!(result.is_err(), "Should reject TE in HTTP/1.0 responses");
 }
 
 // ============================================================================

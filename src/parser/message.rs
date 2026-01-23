@@ -5,6 +5,7 @@ use crate::headers::Headers;
 use crate::parser::chunked::ChunkedDecoder;
 use crate::parser::headers::HeaderField;
 use crate::parser::http::StatusLine;
+use crate::parser::version::Version;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -60,6 +61,7 @@ impl Response {
     let (body_bytes, trailer_bytes) = Self::parse_body_internal(
       remaining,
       &headers_bytes,
+      Some(status_line.version),
       status_line.status.code(),
       None,
     )?;
@@ -91,13 +93,14 @@ impl Response {
     method: Option<&str>,
   ) -> Result<Vec<u8>, ParseError> {
     let (body, _trailers) =
-      Self::parse_body_internal(input, headers, status_code, method)?;
+      Self::parse_body_internal(input, headers, None, status_code, method)?;
     Ok(body)
   }
 
   fn parse_body_internal(
     input: &[u8],
     headers: &[(Vec<u8>, Vec<u8>)],
+    version: Option<Version>,
     status_code: u16,
     method: Option<&str>,
   ) -> Result<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>), ParseError> {
@@ -105,6 +108,15 @@ impl Response {
     let has_transfer_encoding = headers
       .iter()
       .any(|(name, _)| name.eq_ignore_ascii_case(b"transfer-encoding"));
+
+    // RFC 9112 Section 6.1: Transfer-Encoding is a feature of HTTP/1.1.
+    // Reject TE in an HTTP/1.0 response.
+    if has_transfer_encoding
+      && let Some(v) = version
+      && v != Version::HTTP_11
+    {
+      return Err(ParseError::TransferEncodingRequiresHttp11);
+    }
 
     // RFC 9112 Section 6.1: Server MUST NOT send Transfer-Encoding in:
     // - Any 1xx (informational) response
@@ -321,7 +333,7 @@ impl Response {
       .collect();
 
     let (body_vec, _trailers) =
-      Self::parse_body_internal(body_bytes, &headers_bytes, status_code, None)?;
+      Self::parse_body_internal(body_bytes, &headers_bytes, None, status_code, None)?;
     Ok(Body::from_bytes(body_vec))
   }
 

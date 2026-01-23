@@ -43,14 +43,20 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
 
   /// Send HTTP request bytes to the socket
   ///
-  /// RFC 9112 Section 9.3: Since we always send "Connection: close" in requests
-  /// (added by `RequestBuilder`), mark the connection state accordingly
   pub fn send_request(&mut self, request_bytes: &[u8]) -> Result<(), Error> {
     self.socket.write(request_bytes).map_err(Error::Socket)?;
 
-    // RFC 9112 Section 9.6: Mark that we sent Connection: close
-    // RequestBuilder always adds this header unless explicitly overridden
-    self.state.mark_sent_close();
+    // RFC 9112 Section 9.6: If the client sends "Connection: close", it MUST NOT
+    // send further requests on that connection.
+    //
+    // We only mark this state if the actual request bytes contain the
+    // "Connection: close" header field.
+    if request_bytes
+      .windows("connection: close".len())
+      .any(|w| w.eq_ignore_ascii_case(b"connection: close"))
+    {
+      self.state.mark_sent_close();
+    }
 
     Ok(())
   }
