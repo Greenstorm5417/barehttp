@@ -1,13 +1,14 @@
 use crate::body::Body;
 use crate::client::policy::{PolicyDecision, RequestPolicy};
+use crate::client::request_executor::RequestExecutor;
 use crate::config::Config;
 use crate::dns::DnsResolver;
 use crate::error::Error;
+use crate::parser::Response;
 use crate::parser::uri::Uri;
-use crate::parser::{RequestBuilder as ParserRequestBuilder, Response};
 use crate::request_builder::ClientRequestBuilder;
 use crate::socket::BlockingSocket;
-use crate::transport::{ConnectionPool, Connector, PoolKey, ResponseBodyExpectation};
+use crate::transport::ConnectionPool;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -247,7 +248,12 @@ where
     self.request(method, &url, &headers, body.map(Body::into_bytes))
   }
 
-  /// Internal request execution with thin orchestration
+  /// Internal request execution with clean orchestration
+  ///
+  /// This method orchestrates the high-level request flow:
+  /// - Redirect loop handling
+  /// - Policy validation and decisions
+  /// - Delegation to `RequestExecutor` for actual HTTP execution
   ///
   /// # Errors
   /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
@@ -265,85 +271,16 @@ where
     let mut policy = RequestPolicy::new(&self.config);
 
     loop {
+      // Parse and validate URL
       let uri = Uri::parse(&current_url).map_err(Error::Parse)?;
       policy.validate_protocol(&uri)?;
 
-      // RFC 9112 Section 3.2: Host header handling
-      let authority = uri.authority();
-      let host_str = if let Some(auth) = authority {
-        match auth.host() {
-          crate::parser::uri::Host::RegName(name) => name,
-          crate::parser::uri::Host::IpAddr(_) => {
-            return Err(Error::IpAddressNotSupported);
-          }
-        }
-      } else {
-        // RFC 9112 Section 3.2: If authority missing, send empty Host
-        ""
-      };
+      // Execute single HTTP request
+      let mut executor = RequestExecutor::new(&mut self.pool, &self.dns, &self.config);
+      let body_slice = current_body.as_deref();
+      let raw = executor.execute(&uri, current_method, custom_headers, body_slice)?;
 
-      let port = authority
-        .and_then(super::super::parser::uri::Authority::port)
-        .unwrap_or_else(|| if uri.scheme() == "https" { 443 } else { 80 });
-
-      let pool_key = PoolKey::new(String::from(host_str), port);
-
-      // Get socket from pool or create new
-      let mut socket = if self.config.connection_pooling {
-        match self.pool.get(&pool_key) {
-          Some(s) => s,
-          None => S::new().map_err(Error::Socket)?,
-        }
-      } else {
-        S::new().map_err(Error::Socket)?
-      };
-
-      let connector = Connector::new(&mut socket, &self.dns);
-      let mut conn = connector.connect(&uri, &self.config)?;
-
-      let mut builder =
-        ParserRequestBuilder::new(current_method.as_str(), &uri.path_and_query())
-          .header("Host", host_str);
-
-      // RFC 9112 Section 9.3: Send Connection: close if pooling is disabled
-      if !self.config.connection_pooling {
-        builder = builder.header("Connection", "close");
-      }
-
-      if let Some(ref user_agent) = self.config.user_agent {
-        builder = builder.header("User-Agent", user_agent.as_str());
-      }
-
-      if let Some(ref accept) = self.config.accept {
-        builder = builder.header("Accept", accept.as_str());
-      }
-
-      for (name, value) in custom_headers {
-        builder = builder.header(name.as_str(), value.as_str());
-      }
-
-      if let Some(ref body_data) = current_body {
-        builder = builder.body(body_data.clone());
-      }
-
-      let request_bytes = builder.build()?;
-      conn.send_request(&request_bytes)?;
-
-      let expectation = if current_method == crate::method::Method::Head {
-        ResponseBodyExpectation::NoBody
-      } else {
-        ResponseBodyExpectation::Normal
-      };
-      let raw = conn.read_raw_response(expectation)?;
-
-      // Check if connection can be reused
-      let is_reusable = conn.is_reusable();
-
-      // Return socket to pool if pooling is enabled and connection is reusable
-      if self.config.connection_pooling && is_reusable {
-        self.pool.return_connection(pool_key, socket);
-      }
-
+      // Process response and make policy decision
       match policy.process_raw_response(
         raw,
         &uri,

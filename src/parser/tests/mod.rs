@@ -12,6 +12,7 @@ mod incomplete_messages;
 mod message_body;
 mod message_parsing;
 mod response_reading;
+mod rfc9112_compliance_validation;
 mod rfc9112_missing_requirements;
 mod rfc9112_must_requirements;
 mod rfc9112_phase1_phase2;

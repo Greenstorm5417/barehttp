@@ -55,6 +55,16 @@ pub enum ParseError {
   ChunkedInTeHeader,
   /// TE header present but Connection header missing "TE" (RFC 9112 Section 7.4)
   TeHeaderMissingConnection,
+  /// Multiple Host headers present (RFC 9112 Section 3.2)
+  MultipleHostHeaders,
+  /// Invalid Host header value format (RFC 9112 Section 3.2)
+  InvalidHostHeaderValue,
+  /// Request-target URI exceeds maximum allowed length (RFC 9112 Section 3)
+  UriTooLong,
+  /// Transfer-Encoding used with HTTP version < 1.1 (RFC 9112 Section 6.1)
+  TransferEncodingRequiresHttp11,
+  /// Chunked appears multiple times in Transfer-Encoding (RFC 9112 Section 6.1)
+  ChunkedAppliedMultipleTimes,
 }
 
 impl ParseError {
@@ -121,6 +131,15 @@ impl core::fmt::Display for ParseError {
       Self::ChunkedInTeHeader => write!(f, "TE header must not contain 'chunked'"),
       Self::TeHeaderMissingConnection => {
         write!(f, "TE header requires 'TE' in Connection header")
+      }
+      Self::MultipleHostHeaders => write!(f, "multiple Host headers present"),
+      Self::InvalidHostHeaderValue => write!(f, "invalid Host header value format"),
+      Self::UriTooLong => write!(f, "request-target URI exceeds maximum allowed length"),
+      Self::TransferEncodingRequiresHttp11 => {
+        write!(f, "Transfer-Encoding requires HTTP/1.1 or higher")
+      }
+      Self::ChunkedAppliedMultipleTimes => {
+        write!(f, "chunked transfer coding applied multiple times")
       }
     }
   }

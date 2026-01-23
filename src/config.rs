@@ -71,6 +71,10 @@ pub struct Config {
   pub max_idle_per_host: usize,
   /// Timeout for idle connections in the pool (in seconds)
   pub idle_timeout: Option<Duration>,
+  /// Maximum allowed URI length in bytes (RFC 9112 Section 3)
+  /// Server should respond with 414 (URI Too Long) if exceeded
+  /// None means no limit
+  pub max_uri_length: Option<usize>,
 }
 
 impl Default for Config {
@@ -90,6 +94,7 @@ impl Default for Config {
       connection_pooling: true,
       max_idle_per_host: 5,
       idle_timeout: Some(Duration::from_secs(90)),
+      max_uri_length: Some(8192), // RFC 9112 Section 3: reasonable default
     }
   }
 }

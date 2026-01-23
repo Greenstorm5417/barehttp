@@ -433,6 +433,19 @@ impl RequestBuilder {
       return Err(ParseError::MissingHostHeader);
     }
 
+    // RFC 9112 Section 3.2: Server responds 400 if multiple Host headers present
+    let host_headers = self.headers.get_all("host");
+    if host_headers.len() > 1 {
+      return Err(ParseError::MultipleHostHeaders);
+    }
+
+    // RFC 9112 Section 3.2: Validate Host header value format
+    if let Some(host_value) = self.headers.get("host")
+      && !Self::is_valid_host_value(host_value)
+    {
+      return Err(ParseError::InvalidHostHeaderValue);
+    }
+
     // Validate all header values for RFC 9112 compliance
     for (name, value) in &self.headers {
       // RFC 9112 Section 2.2: Sender MUST NOT generate bare CR
@@ -458,6 +471,17 @@ impl RequestBuilder {
           }
         } else {
           return Err(ParseError::TeHeaderMissingConnection);
+        }
+      }
+
+      // RFC 9112 Section 6.1: Client MUST NOT send Transfer-Encoding unless server supports HTTP/1.1+
+      // Since we always use HTTP/1.1, this is implicitly satisfied, but validate the header
+      if name.eq_ignore_ascii_case("transfer-encoding") {
+        // RFC 9112 Section 6.1: MUST NOT apply chunked more than once
+        let te_lower = value.to_lowercase();
+        let chunked_count = te_lower.matches("chunked").count();
+        if chunked_count > 1 {
+          return Err(ParseError::ChunkedAppliedMultipleTimes);
         }
       }
     }
@@ -506,5 +530,100 @@ impl RequestBuilder {
     }
 
     Ok(request)
+  }
+
+  /// Validate Host header value format per RFC 9112 Section 3.2
+  /// Host = uri-host [ ":" port ]
+  /// uri-host = <host from URI syntax>
+  fn is_valid_host_value(host: &str) -> bool {
+    if host.is_empty() {
+      // Empty Host is valid per RFC 9112 Section 3.2
+      return true;
+    }
+
+    // Check for invalid characters
+    if host.contains(char::is_whitespace) {
+      return false;
+    }
+
+    // Handle IPv6 literals specially (they contain colons)
+    if host.starts_with('[') {
+      // IPv6 literal format: [ipv6]:port or [ipv6]
+      if let Some(bracket_end) = host.find(']') {
+        let ipv6_part = &host[..=bracket_end];
+        let after_bracket = &host[bracket_end + 1..];
+
+        if after_bracket.is_empty() {
+          // Just [ipv6]
+          return Self::is_valid_hostname(ipv6_part);
+        } else if let Some(port_str) = after_bracket.strip_prefix(':') {
+          // [ipv6]:port
+          if port_str.is_empty() || !port_str.chars().all(|c| c.is_ascii_digit()) {
+            return false;
+          }
+          if let Ok(port) = port_str.parse::<u16>() {
+            if port == 0 {
+              return false;
+            }
+          } else {
+            return false;
+          }
+          return Self::is_valid_hostname(ipv6_part);
+        }
+        return false;
+      }
+      return false;
+    }
+
+    // Split host and port if present (for non-IPv6)
+    let parts: Vec<&str> = host.rsplitn(2, ':').collect();
+
+    if parts.len() == 2 {
+      // Has port - validate it
+      let Some(port_str) = parts.first() else {
+        return false;
+      };
+      if port_str.is_empty() || !port_str.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+      }
+      // Check port range
+      if let Ok(port) = port_str.parse::<u16>() {
+        if port == 0 {
+          return false;
+        }
+      } else {
+        return false;
+      }
+
+      // Validate hostname part
+      let Some(hostname) = parts.get(1) else {
+        return false;
+      };
+      Self::is_valid_hostname(hostname)
+    } else {
+      // No port, just validate hostname
+      Self::is_valid_hostname(host)
+    }
+  }
+
+  /// Validate hostname format (simplified check for common cases)
+  fn is_valid_hostname(hostname: &str) -> bool {
+    if hostname.is_empty() {
+      return false;
+    }
+
+    // Check for IPv6 literal
+    if hostname.starts_with('[') && hostname.ends_with(']') {
+      // Basic IPv6 validation - just check it has hex digits and colons
+      let inner = &hostname[1..hostname.len() - 1];
+      return !inner.is_empty()
+        && inner.chars().all(|c| c.is_ascii_hexdigit() || c == ':');
+    }
+
+    // Regular hostname or IPv4
+    // Allow alphanumeric, dots, hyphens
+    hostname
+      .chars()
+      .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
   }
 }
