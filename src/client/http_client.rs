@@ -12,6 +12,9 @@ use crate::transport::ConnectionPool;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+#[cfg(feature = "cookie-jar")]
+use crate::cookie_jar::CookieStore;
+
 /// Generic HTTP client with customizable socket and DNS adapters
 ///
 /// This client supports `no_std` environments and allows complete control over
@@ -34,6 +37,8 @@ pub struct HttpClient<S, D> {
   pool: ConnectionPool<S>,
   dns: D,
   config: Config,
+  #[cfg(feature = "cookie-jar")]
+  cookie_store: CookieStore,
 }
 
 impl
@@ -54,6 +59,8 @@ impl
       pool: ConnectionPool::new(config.max_idle_per_host, config.idle_timeout),
       dns: crate::dns::resolver::OsDnsResolver::new(),
       config,
+      #[cfg(feature = "cookie-jar")]
+      cookie_store: CookieStore::new(),
     })
   }
 
@@ -68,6 +75,8 @@ impl
       pool: ConnectionPool::new(config.max_idle_per_host, config.idle_timeout),
       dns: crate::dns::resolver::OsDnsResolver::new(),
       config,
+      #[cfg(feature = "cookie-jar")]
+      cookie_store: CookieStore::new(),
     })
   }
 }
@@ -90,6 +99,8 @@ where
       pool: ConnectionPool::new(config.max_idle_per_host, config.idle_timeout),
       dns,
       config,
+      #[cfg(feature = "cookie-jar")]
+      cookie_store: CookieStore::new(),
     }
   }
 
@@ -104,6 +115,8 @@ where
       pool: ConnectionPool::new(config.max_idle_per_host, config.idle_timeout),
       dns,
       config,
+      #[cfg(feature = "cookie-jar")]
+      cookie_store: CookieStore::new(),
     }
   }
 
@@ -239,6 +252,22 @@ where
     )
   }
 
+  /// Get mutable reference to the cookie store (requires cookie-jar feature)
+  ///
+  /// Allows direct access to the cookie store for custom cookie management.
+  #[cfg(feature = "cookie-jar")]
+  pub const fn cookie_store_mut(&mut self) -> &mut CookieStore {
+    &mut self.cookie_store
+  }
+
+  /// Get reference to the cookie store (requires cookie-jar feature)
+  ///
+  /// Allows read-only access to the cookie store.
+  #[cfg(feature = "cookie-jar")]
+  pub const fn cookie_store(&self) -> &CookieStore {
+    &self.cookie_store
+  }
+
   /// Execute a `Request` object
   ///
   /// # Errors
@@ -275,10 +304,46 @@ where
       let uri = Uri::parse(&current_url).map_err(Error::Parse)?;
       policy.validate_protocol(&uri)?;
 
+      // Add cookies to request headers if cookie-jar feature is enabled
+      #[cfg(feature = "cookie-jar")]
+      let mut headers_with_cookies = custom_headers.clone();
+      #[cfg(feature = "cookie-jar")]
+      {
+        let is_secure = current_url.starts_with("https://");
+        let cookie_header = self
+          .cookie_store
+          .get_request_cookies(&current_url, is_secure);
+        if !cookie_header.is_empty() {
+          headers_with_cookies.insert("Cookie", &cookie_header);
+        }
+      }
+
+      #[cfg(feature = "cookie-jar")]
+      let headers_to_use = &headers_with_cookies;
+      #[cfg(not(feature = "cookie-jar"))]
+      let headers_to_use = custom_headers;
+
       // Execute single HTTP request
       let mut executor = RequestExecutor::new(&mut self.pool, &self.dns, &self.config);
       let body_slice = current_body.as_deref();
-      let raw = executor.execute(&uri, current_method, custom_headers, body_slice)?;
+      let raw = executor.execute(&uri, current_method, headers_to_use, body_slice)?;
+
+      // Store cookies from response if cookie-jar feature is enabled
+      #[cfg(feature = "cookie-jar")]
+      {
+        let set_cookie_headers: Vec<String> = raw
+          .headers
+          .get_all("Set-Cookie")
+          .into_iter()
+          .map(alloc::string::ToString::to_string)
+          .collect();
+
+        if !set_cookie_headers.is_empty() {
+          self
+            .cookie_store
+            .store_response_cookies(&current_url, &set_cookie_headers);
+        }
+      }
 
       // Process response and make policy decision
       match policy.process_raw_response(

@@ -217,6 +217,13 @@
 
 extern crate alloc;
 
+#[cfg(feature = "cookie-jar")]
+/// RFC 6265 compliant cookie storage and management
+///
+/// This module provides a `CookieStore` for automatic cookie handling
+/// in HTTP requests and responses, including domain/path matching and expiration.
+pub mod cookie_jar;
+
 // Re-exports of core types
 pub use client::HttpClient;
 pub use error::Error;

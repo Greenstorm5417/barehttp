@@ -14,6 +14,10 @@ categories = ["network-programming", "no-std", "web-programming::http-client"]
 [lib]
 doctest = true
 
+[features]
+default = []
+cookie-jar = []
+
 [dependencies]
 
 [target.'cfg(unix)'.dependencies]

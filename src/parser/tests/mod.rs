@@ -7,6 +7,8 @@
 #![allow(clippy::shadow_same)]
 
 mod chunked_encoding;
+#[cfg(feature = "cookie-jar")]
+mod cookie;
 mod framing;
 mod incomplete_messages;
 mod message_body;
