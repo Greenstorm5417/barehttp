@@ -3,6 +3,7 @@ use crate::error::ParseError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkedDecoder {
   state: DecodeState,
+  trailers: alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,11 +19,19 @@ impl ChunkedDecoder {
   pub const fn new() -> Self {
     Self {
       state: DecodeState::ChunkSize,
+      trailers: alloc::vec::Vec::new(),
     }
   }
 
+  /// Get the parsed trailer fields from the chunked response.
+  /// Per RFC 9112 Section 7.1.2: Trailers are optional fields that appear after the last chunk.
+  #[must_use]
+  pub fn trailers(&self) -> &[(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)] {
+    &self.trailers
+  }
+
   pub fn decode_chunk<'a>(
-    &mut self,
+    &'a mut self,
     input: &'a [u8],
     output: &mut alloc::vec::Vec<u8>,
   ) -> Result<&'a [u8], ParseError> {
@@ -60,7 +69,7 @@ impl ChunkedDecoder {
           self.state = DecodeState::ChunkSize;
         }
         DecodeState::TrailerSection => {
-          let (found_end, rest) = Self::parse_trailer_section(remaining)?;
+          let (found_end, rest) = self.parse_trailer_section(remaining)?;
           remaining = rest;
 
           if found_end {
@@ -122,7 +131,11 @@ impl ChunkedDecoder {
     Ok((size, rest))
   }
 
-  fn parse_trailer_section(input: &[u8]) -> Result<(bool, &[u8]), ParseError> {
+  fn parse_trailer_section<'a>(
+    &mut self,
+    input: &'a [u8],
+  ) -> Result<(bool, &'a [u8]), ParseError> {
+    // Check for end of trailers (empty line)
     if input.len() >= 2 {
       let byte0 = input.first().copied();
       let byte1 = input.get(1).copied();
@@ -138,6 +151,49 @@ impl ChunkedDecoder {
       return Ok((true, rest));
     }
 
+    // Parse trailer field: name: value
+    let colon_pos = input.iter().position(|&b| b == b':');
+    if let Some(pos) = colon_pos {
+      let name = input.get(..pos).ok_or(ParseError::InvalidHeaderName)?;
+      let mut value_start = pos + 1;
+
+      // Skip leading whitespace in value
+      while value_start < input.len() {
+        let b = input.get(value_start).copied();
+        if b == Some(b' ') || b == Some(b'\t') {
+          value_start += 1;
+        } else {
+          break;
+        }
+      }
+
+      // Find end of line
+      let mut line_end = value_start;
+      while line_end < input.len() {
+        let b = input.get(line_end).copied();
+        if b == Some(b'\r') || b == Some(b'\n') {
+          break;
+        }
+        line_end += 1;
+      }
+
+      let value = input
+        .get(value_start..line_end)
+        .ok_or(ParseError::InvalidHeaderValue)?;
+
+      // RFC 9112 Section 7.1.2: Store trailer field
+      // Note: Proper merging with headers should only happen if explicitly allowed
+      // by the header definition. For now, we store them separately.
+      self.trailers.push((name.to_vec(), value.to_vec()));
+
+      let after_line = input
+        .get(line_end..)
+        .ok_or(ParseError::UnexpectedEndOfInput)?;
+      let final_rest = Self::expect_crlf(after_line)?;
+      return Ok((false, final_rest));
+    }
+
+    // No colon found - just skip this line
     let mut i = 0;
     while i < input.len() {
       let b = input.get(i).copied();

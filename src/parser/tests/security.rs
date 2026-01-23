@@ -11,19 +11,29 @@ fn test_response_splitting_crlf_injection_in_reason() {
 
 #[test]
 fn test_request_smuggling_both_te_and_cl() {
+  // RFC 9112 Section 6.3: Both TE and CL is a request smuggling attack vector
+  // Client MUST reject this combination
   let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 10\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
-  assert!(result.is_ok());
-  let response = result.unwrap();
-  assert_eq!(response.body.as_bytes(), b"Hello");
+  assert!(
+    result.is_err(),
+    "Response with both TE and CL should be rejected"
+  );
 }
 
 #[test]
 fn test_request_smuggling_conflicting_content_lengths() {
+  // RFC 9112 Section 6.3: Duplicate Content-Length headers with different values
+  // should be rejected to prevent request smuggling attacks
   let input =
     b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 10\r\n\r\nHelloWorld";
   let result = Response::parse(input);
-  assert!(result.is_ok());
+  // Our parser uses the first Content-Length (5), but the body is 10 bytes,
+  // so it correctly rejects the extra data after reading 5 bytes
+  assert!(
+    result.is_err(),
+    "Should reject conflicting Content-Length headers"
+  );
 }
 
 #[test]
@@ -99,11 +109,14 @@ fn test_chunked_smuggling_incomplete_chunk() {
 
 #[test]
 fn test_te_cl_desync_attack_prevention() {
+  // RFC 9112 Section 6.3: TE+CL desync attack prevention
+  // Client MUST reject responses with both headers
   let input = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
-  assert!(result.is_ok());
-  let response = result.unwrap();
-  assert_eq!(response.body.as_bytes(), b"Hello");
+  assert!(
+    result.is_err(),
+    "Response with both TE and CL should be rejected"
+  );
 }
 
 #[test]
@@ -151,7 +164,12 @@ fn test_header_with_vertical_tab() {
 
 #[test]
 fn test_chunked_zero_chunk_not_last() {
+  // RFC 9112 Section 6.3: Extra data after chunked terminator (0\r\n\r\n)
+  // MUST NOT be processed as a separate response
   let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
-  assert!(result.is_ok());
+  assert!(
+    result.is_err(),
+    "Should reject extra data after chunked terminator"
+  );
 }

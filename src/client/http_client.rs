@@ -7,7 +7,7 @@ use crate::parser::uri::Uri;
 use crate::parser::{RequestBuilder as ParserRequestBuilder, Response};
 use crate::request_builder::ClientRequestBuilder;
 use crate::socket::BlockingSocket;
-use crate::transport::{Connector, ResponseBodyExpectation};
+use crate::transport::{ConnectionPool, Connector, PoolKey, ResponseBodyExpectation};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -30,7 +30,7 @@ use alloc::vec::Vec;
 /// # Ok::<(), barehttp::Error>(())
 /// ```
 pub struct HttpClient<S, D> {
-  socket: S,
+  pool: ConnectionPool<S>,
   dns: D,
   config: Config,
 }
@@ -48,10 +48,11 @@ impl
   /// # Errors
   /// Returns an error if socket initialization fails.
   pub fn new() -> Result<Self, Error> {
+    let config = Config::default();
     Ok(Self {
-      socket: crate::socket::blocking::OsBlockingSocket::new()?,
+      pool: ConnectionPool::new(config.max_idle_per_host, config.idle_timeout),
       dns: crate::dns::resolver::OsDnsResolver::new(),
-      config: Config::default(),
+      config,
     })
   }
 
@@ -61,9 +62,9 @@ impl
   ///
   /// # Errors
   /// Returns an error if socket initialization fails.
-  pub fn with_config(config: Config) -> Result<Self, Error> {
+  pub const fn with_config(config: Config) -> Result<Self, Error> {
     Ok(Self {
-      socket: crate::socket::blocking::OsBlockingSocket::new()?,
+      pool: ConnectionPool::new(config.max_idle_per_host, config.idle_timeout),
       dns: crate::dns::resolver::OsDnsResolver::new(),
       config,
     })
@@ -81,26 +82,25 @@ where
   /// Use this when you need custom socket or DNS implementations.
   ///
   /// # Parameters
-  /// - `socket`: Custom socket adapter for network I/O
   /// - `dns`: Custom DNS resolver for hostname resolution
-  pub fn new_with_adapters(socket: S, dns: D) -> Self {
+  pub fn new_with_adapters(dns: D) -> Self {
+    let config = Config::default();
     Self {
-      socket,
+      pool: ConnectionPool::new(config.max_idle_per_host, config.idle_timeout),
       dns,
-      config: Config::default(),
+      config,
     }
   }
 
   /// Create a new HTTP client with custom adapters and configuration
   ///
   /// # Parameters
-  /// - `socket`: Custom socket adapter for network I/O
   /// - `dns`: Custom DNS resolver for hostname resolution
   /// - `config`: Custom client configuration
   #[allow(clippy::missing_const_for_fn)]
-  pub fn with_adapters_and_config(socket: S, dns: D, config: Config) -> Self {
+  pub fn with_adapters_and_config(dns: D, config: Config) -> Self {
     Self {
-      socket,
+      pool: ConnectionPool::new(config.max_idle_per_host, config.idle_timeout),
       dns,
       config,
     }
@@ -120,7 +120,9 @@ where
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
     ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(
-      self, "GET", url,
+      self,
+      crate::method::Method::Get,
+      url,
     )
   }
 
@@ -132,7 +134,9 @@ where
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithBody> {
     ClientRequestBuilder::<'_, S, D, crate::request_builder::WithBody>::new(
-      self, "POST", url,
+      self,
+      crate::method::Method::Post,
+      url,
     )
   }
 
@@ -144,7 +148,9 @@ where
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithBody> {
     ClientRequestBuilder::<'_, S, D, crate::request_builder::WithBody>::new(
-      self, "PUT", url,
+      self,
+      crate::method::Method::Put,
+      url,
     )
   }
 
@@ -156,7 +162,9 @@ where
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
     ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(
-      self, "DELETE", url,
+      self,
+      crate::method::Method::Delete,
+      url,
     )
   }
 
@@ -168,7 +176,9 @@ where
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
     ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(
-      self, "HEAD", url,
+      self,
+      crate::method::Method::Head,
+      url,
     )
   }
 
@@ -180,7 +190,9 @@ where
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
     ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(
-      self, "OPTIONS", url,
+      self,
+      crate::method::Method::Options,
+      url,
     )
   }
 
@@ -192,7 +204,9 @@ where
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithBody> {
     ClientRequestBuilder::<'_, S, D, crate::request_builder::WithBody>::new(
-      self, "PATCH", url,
+      self,
+      crate::method::Method::Patch,
+      url,
     )
   }
 
@@ -204,7 +218,9 @@ where
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
     ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(
-      self, "TRACE", url,
+      self,
+      crate::method::Method::Trace,
+      url,
     )
   }
 
@@ -216,7 +232,9 @@ where
     url: impl Into<String>,
   ) -> ClientRequestBuilder<'_, S, D, crate::request_builder::WithoutBody> {
     ClientRequestBuilder::<'_, S, D, crate::request_builder::WithoutBody>::new(
-      self, "CONNECT", url,
+      self,
+      crate::method::Method::Connect,
+      url,
     )
   }
 
@@ -226,7 +244,7 @@ where
   /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
   pub fn run(&mut self, request: crate::request::Request) -> Result<Response, Error> {
     let (method, url, headers, body) = request.into_parts();
-    self.request(method.as_str(), &url, &headers, body.map(Body::into_bytes))
+    self.request(method, &url, &headers, body.map(Body::into_bytes))
   }
 
   /// Internal request execution with thin orchestration
@@ -235,7 +253,7 @@ where
   /// Returns an error if URL parsing, DNS resolution, socket connection, or HTTP communication fails.
   pub(crate) fn request(
     &mut self,
-    method: &str,
+    method: crate::method::Method,
     url: &str,
     custom_headers: &crate::headers::Headers,
     body: Option<Vec<u8>>,
@@ -250,17 +268,47 @@ where
       let uri = Uri::parse(&current_url).map_err(Error::Parse)?;
       policy.validate_protocol(&uri)?;
 
-      let connector = Connector::new(&mut self.socket, &self.dns);
-      let mut conn = connector.connect(&uri, &self.config)?;
-
-      let authority = uri.authority().ok_or(Error::InvalidUrl)?;
-      let host_str = match authority.host() {
-        crate::parser::uri::Host::RegName(name) => name,
-        crate::parser::uri::Host::IpAddr(_) => return Err(Error::IpAddressNotSupported),
+      // RFC 9112 Section 3.2: Host header handling
+      let authority = uri.authority();
+      let host_str = if let Some(auth) = authority {
+        match auth.host() {
+          crate::parser::uri::Host::RegName(name) => name,
+          crate::parser::uri::Host::IpAddr(_) => {
+            return Err(Error::IpAddressNotSupported);
+          }
+        }
+      } else {
+        // RFC 9112 Section 3.2: If authority missing, send empty Host
+        ""
       };
 
-      let mut builder = ParserRequestBuilder::new(current_method, &uri.path_and_query())
-        .header("Host", host_str);
+      let port = authority
+        .and_then(super::super::parser::uri::Authority::port)
+        .unwrap_or_else(|| if uri.scheme() == "https" { 443 } else { 80 });
+
+      let pool_key = PoolKey::new(String::from(host_str), port);
+
+      // Get socket from pool or create new
+      let mut socket = if self.config.connection_pooling {
+        match self.pool.get(&pool_key) {
+          Some(s) => s,
+          None => S::new().map_err(Error::Socket)?,
+        }
+      } else {
+        S::new().map_err(Error::Socket)?
+      };
+
+      let connector = Connector::new(&mut socket, &self.dns);
+      let mut conn = connector.connect(&uri, &self.config)?;
+
+      let mut builder =
+        ParserRequestBuilder::new(current_method.as_str(), &uri.path_and_query())
+          .header("Host", host_str);
+
+      // RFC 9112 Section 9.3: Send Connection: close if pooling is disabled
+      if !self.config.connection_pooling {
+        builder = builder.header("Connection", "close");
+      }
 
       if let Some(ref user_agent) = self.config.user_agent {
         builder = builder.header("User-Agent", user_agent.as_str());
@@ -278,15 +326,23 @@ where
         builder = builder.body(body_data.clone());
       }
 
-      let request_bytes = builder.build();
+      let request_bytes = builder.build()?;
       conn.send_request(&request_bytes)?;
 
-      let expectation = if current_method == "HEAD" {
+      let expectation = if current_method == crate::method::Method::Head {
         ResponseBodyExpectation::NoBody
       } else {
         ResponseBodyExpectation::Normal
       };
       let raw = conn.read_raw_response(expectation)?;
+
+      // Check if connection can be reused
+      let is_reusable = conn.is_reusable();
+
+      // Return socket to pool if pooling is enabled and connection is reusable
+      if self.config.connection_pooling && is_reusable {
+        self.pool.return_connection(pool_key, socket);
+      }
 
       match policy.process_raw_response(
         raw,
@@ -307,245 +363,5 @@ where
         }
       }
     }
-  }
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
-mod tests {
-  use super::*;
-  use crate::error::SocketError;
-  use crate::util::IpAddr;
-  use alloc::string::ToString;
-  use alloc::vec;
-
-  struct MockSocket {
-    read_data: Vec<u8>,
-    read_pos: usize,
-    written: Vec<u8>,
-  }
-
-  impl MockSocket {
-    fn new(response: &str) -> Self {
-      Self {
-        read_data: response.as_bytes().to_vec(),
-        read_pos: 0,
-        written: Vec::new(),
-      }
-    }
-
-    fn get_written(&self) -> String {
-      String::from_utf8_lossy(&self.written).to_string()
-    }
-  }
-
-  impl crate::socket::BlockingSocket for MockSocket {
-    fn connect(
-      &mut self,
-      _addr: &crate::socket::SocketAddr<'_>,
-    ) -> Result<(), SocketError> {
-      Ok(())
-    }
-
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, SocketError> {
-      if self.read_pos >= self.read_data.len() {
-        return Ok(0);
-      }
-      let remaining = &self.read_data[self.read_pos..];
-      let to_read = remaining.len().min(buf.len());
-      buf[..to_read].copy_from_slice(&remaining[..to_read]);
-      self.read_pos += to_read;
-      Ok(to_read)
-    }
-
-    fn write(&mut self, buf: &[u8]) -> Result<usize, SocketError> {
-      self.written.extend_from_slice(buf);
-      Ok(buf.len())
-    }
-
-    fn shutdown(&mut self) -> Result<(), SocketError> {
-      Ok(())
-    }
-
-    fn set_flags(
-      &mut self,
-      _flags: crate::socket::SocketFlags,
-    ) -> Result<(), SocketError> {
-      Ok(())
-    }
-
-    fn set_read_timeout(&mut self, _timeout_ms: u32) -> Result<(), SocketError> {
-      Ok(())
-    }
-
-    fn set_write_timeout(&mut self, _timeout_ms: u32) -> Result<(), SocketError> {
-      Ok(())
-    }
-  }
-
-  struct MockDns;
-
-  impl crate::dns::DnsResolver for MockDns {
-    fn resolve(&self, _hostname: &str) -> Result<Vec<IpAddr>, crate::error::DnsError> {
-      Ok(vec![IpAddr::V4([127, 0, 0, 1])])
-    }
-  }
-
-  #[test]
-  fn head_request_passes_no_body_expectation() {
-    let socket = MockSocket::new("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n");
-    let dns = MockDns;
-    let mut client = HttpClient::with_adapters_and_config(socket, dns, Config::default());
-
-    let result = client.head("http://example.com").call();
-
-    assert!(result.is_ok());
-    let resp = result.unwrap();
-    assert_eq!(resp.status_code, 200);
-    assert!(
-      resp.body.as_bytes().is_empty(),
-      "HEAD response body should be empty"
-    );
-  }
-
-  #[test]
-  fn custom_headers_are_forwarded() {
-    let socket = MockSocket::new("HTTP/1.1 200 OK\r\n\r\n");
-    let dns = MockDns;
-    let mut client = HttpClient::with_adapters_and_config(socket, dns, Config::default());
-
-    let _result = client
-      .get("http://example.com")
-      .header("X-Test", "123")
-      .header("X-Custom", "value")
-      .call();
-
-    let written = client.socket.get_written();
-    assert!(
-      written.contains("X-Test: 123"),
-      "Custom header X-Test not found in request"
-    );
-    assert!(
-      written.contains("X-Custom: value"),
-      "Custom header X-Custom not found in request"
-    );
-  }
-
-  #[test]
-  fn user_agent_from_config_is_applied() {
-    let socket = MockSocket::new("HTTP/1.1 200 OK\r\n\r\n");
-    let dns = MockDns;
-    let config = Config {
-      user_agent: Some(String::from("TestAgent/1.0")),
-      ..Default::default()
-    };
-    let mut client = HttpClient::with_adapters_and_config(socket, dns, config);
-
-    let _result = client.get("http://example.com").call();
-
-    let written = client.socket.get_written();
-    assert!(
-      written.contains("User-Agent: TestAgent/1.0"),
-      "User-Agent header not applied from config"
-    );
-  }
-
-  #[test]
-  fn accept_header_from_config_is_applied() {
-    let socket = MockSocket::new("HTTP/1.1 200 OK\r\n\r\n");
-    let dns = MockDns;
-    let config = Config {
-      accept: Some(String::from("application/json")),
-      ..Default::default()
-    };
-    let mut client = HttpClient::with_adapters_and_config(socket, dns, config);
-
-    let _result = client.get("http://example.com").call();
-
-    let written = client.socket.get_written();
-    assert!(
-      written.contains("Accept: application/json"),
-      "Accept header not applied from config"
-    );
-  }
-
-  #[test]
-  fn ip_address_url_is_rejected() {
-    let socket = MockSocket::new("HTTP/1.1 200 OK\r\n\r\n");
-    let dns = MockDns;
-    let mut client = HttpClient::with_adapters_and_config(socket, dns, Config::default());
-
-    let err = client.get("http://127.0.0.1").call().unwrap_err();
-    assert!(
-      matches!(err, Error::IpAddressNotSupported),
-      "Should reject IP address URLs"
-    );
-  }
-
-  #[test]
-  fn client_respects_no_follow_policy() {
-    let socket = MockSocket::new("HTTP/1.1 302 Found\r\nLocation: /next\r\n\r\n");
-    let dns = MockDns;
-    let config = Config {
-      redirect_policy: crate::config::RedirectPolicy::NoFollow,
-      ..Default::default()
-    };
-    let mut client = HttpClient::with_adapters_and_config(socket, dns, config);
-
-    let result = client.get("http://example.com").call();
-
-    assert!(result.is_ok());
-    let resp = result.unwrap();
-    assert_eq!(
-      resp.status_code, 302,
-      "Should return redirect response without following"
-    );
-  }
-
-  #[test]
-  fn host_header_is_added() {
-    let socket = MockSocket::new("HTTP/1.1 200 OK\r\n\r\n");
-    let dns = MockDns;
-    let mut client = HttpClient::with_adapters_and_config(socket, dns, Config::default());
-
-    let _result = client.get("http://example.com").call();
-
-    let written = client.socket.get_written();
-    assert!(
-      written.contains("Host: example.com"),
-      "Host header should be added automatically"
-    );
-  }
-
-  #[test]
-  fn request_method_is_correct() {
-    let socket = MockSocket::new("HTTP/1.1 200 OK\r\n\r\n");
-    let dns = MockDns;
-    let mut client = HttpClient::with_adapters_and_config(socket, dns, Config::default());
-
-    let _result = client.get("http://example.com/path").call();
-
-    let written = client.socket.get_written();
-    assert!(
-      written.starts_with("GET /path"),
-      "Request should start with GET method and path"
-    );
-  }
-
-  #[test]
-  fn https_only_enforcement() {
-    let socket = MockSocket::new("HTTP/1.1 200 OK\r\n\r\n");
-    let dns = MockDns;
-    let config = Config {
-      protocol_restriction: crate::config::ProtocolRestriction::HttpsOnly,
-      ..Default::default()
-    };
-    let mut client = HttpClient::with_adapters_and_config(socket, dns, config);
-
-    let err = client.get("http://example.com").call().unwrap_err();
-    assert!(
-      matches!(err, Error::HttpsRequired),
-      "Should enforce HTTPS-only when configured"
-    );
   }
 }

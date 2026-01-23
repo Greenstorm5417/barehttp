@@ -65,6 +65,12 @@ pub struct Config {
   pub accept: Option<alloc::string::String>,
   /// Protocol restrictions (HTTP/HTTPS)
   pub protocol_restriction: ProtocolRestriction,
+  /// Enable connection pooling for persistent connections
+  pub connection_pooling: bool,
+  /// Maximum idle connections to keep per host
+  pub max_idle_per_host: usize,
+  /// Timeout for idle connections in the pool (in seconds)
+  pub idle_timeout: Option<Duration>,
 }
 
 impl Default for Config {
@@ -81,6 +87,9 @@ impl Default for Config {
       timeout_read: None,
       accept: Some(alloc::string::String::from("*/*")),
       protocol_restriction: ProtocolRestriction::Any,
+      connection_pooling: true,
+      max_idle_per_host: 5,
+      idle_timeout: Some(Duration::from_secs(90)),
     }
   }
 }
@@ -179,6 +188,27 @@ impl ConfigBuilder {
   }
 
   #[must_use]
+  /// Enable or disable connection pooling
+  pub const fn connection_pooling(mut self, enabled: bool) -> Self {
+    self.config.connection_pooling = enabled;
+    self
+  }
+
+  #[must_use]
+  /// Set maximum idle connections to keep per host
+  pub const fn max_idle_per_host(mut self, max: usize) -> Self {
+    self.config.max_idle_per_host = max;
+    self
+  }
+
+  #[must_use]
+  /// Set idle timeout for pooled connections
+  pub const fn idle_timeout(mut self, duration: Duration) -> Self {
+    self.config.idle_timeout = Some(duration);
+    self
+  }
+
+  #[must_use]
   /// Build the final configuration
   pub fn build(self) -> Config {
     self.config
@@ -198,9 +228,12 @@ mod tests {
   #[test]
   fn config_default_values() {
     let config = Config::default();
-    
+
     assert!(config.timeout.is_none());
-    assert_eq!(config.user_agent, Some(alloc::string::String::from("barehttp/1.0")));
+    assert_eq!(
+      config.user_agent,
+      Some(alloc::string::String::from("barehttp/1.0"))
+    );
     assert_eq!(config.redirect_policy, RedirectPolicy::Follow);
     assert_eq!(config.max_redirects, 10);
     assert_eq!(config.http_status_handling, HttpStatusHandling::AsError);
@@ -217,17 +250,18 @@ mod tests {
     let config = ConfigBuilder::new()
       .timeout(Duration::from_secs(30))
       .build();
-    
+
     assert_eq!(config.timeout, Some(Duration::from_secs(30)));
   }
 
   #[test]
   fn config_builder_user_agent() {
-    let config = ConfigBuilder::new()
-      .user_agent("MyClient/1.0")
-      .build();
-    
-    assert_eq!(config.user_agent, Some(alloc::string::String::from("MyClient/1.0")));
+    let config = ConfigBuilder::new().user_agent("MyClient/1.0").build();
+
+    assert_eq!(
+      config.user_agent,
+      Some(alloc::string::String::from("MyClient/1.0"))
+    );
   }
 
   #[test]
@@ -235,16 +269,14 @@ mod tests {
     let config = ConfigBuilder::new()
       .redirect_policy(RedirectPolicy::NoFollow)
       .build();
-    
+
     assert_eq!(config.redirect_policy, RedirectPolicy::NoFollow);
   }
 
   #[test]
   fn config_builder_max_redirects() {
-    let config = ConfigBuilder::new()
-      .max_redirects(5)
-      .build();
-    
+    let config = ConfigBuilder::new().max_redirects(5).build();
+
     assert_eq!(config.max_redirects, 5);
   }
 
@@ -253,7 +285,7 @@ mod tests {
     let config = ConfigBuilder::new()
       .http_status_handling(HttpStatusHandling::AsResponse)
       .build();
-    
+
     assert_eq!(config.http_status_handling, HttpStatusHandling::AsResponse);
   }
 
@@ -265,7 +297,7 @@ mod tests {
       .max_redirects(3)
       .http_status_handling(HttpStatusHandling::AsResponse)
       .build();
-    
+
     assert_eq!(config.timeout, Some(Duration::from_secs(10)));
     assert_eq!(config.max_redirects, 3);
     assert_eq!(config.http_status_handling, HttpStatusHandling::AsResponse);
@@ -276,7 +308,7 @@ mod tests {
     let config = ConfigBuilder::new()
       .protocol_restriction(ProtocolRestriction::HttpsOnly)
       .build();
-    
+
     assert_eq!(config.protocol_restriction, ProtocolRestriction::HttpsOnly);
   }
 
@@ -286,17 +318,18 @@ mod tests {
       .timeout_connect(Duration::from_secs(5))
       .timeout_read(Duration::from_secs(30))
       .build();
-    
+
     assert_eq!(config.timeout_connect, Some(Duration::from_secs(5)));
     assert_eq!(config.timeout_read, Some(Duration::from_secs(30)));
   }
 
   #[test]
   fn config_builder_accept_header() {
-    let config = ConfigBuilder::new()
-      .accept("application/json")
-      .build();
-    
-    assert_eq!(config.accept, Some(alloc::string::String::from("application/json")));
+    let config = ConfigBuilder::new().accept("application/json").build();
+
+    assert_eq!(
+      config.accept,
+      Some(alloc::string::String::from("application/json"))
+    );
   }
 }

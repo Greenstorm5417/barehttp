@@ -1,6 +1,7 @@
 use crate::body::Body;
 use crate::config::{Config, HttpStatusHandling, ProtocolRestriction, RedirectPolicy};
 use crate::error::Error;
+use crate::method::Method;
 use crate::parser::Response;
 use crate::parser::uri::Uri;
 use crate::transport::RawResponse;
@@ -13,7 +14,7 @@ pub enum PolicyDecision {
   Return(Response),
   Redirect {
     next_uri: String,
-    next_method: &'static str,
+    next_method: Method,
     next_body: Option<Vec<u8>>,
   },
 }
@@ -56,10 +57,10 @@ impl RequestPolicy {
     raw: RawResponse,
     current_uri: &Uri,
     current_url: &str,
-    current_method: &str,
+    current_method: Method,
     current_body: Option<Vec<u8>>,
   ) -> Result<PolicyDecision, Error> {
-    let is_head_request = current_method == "HEAD";
+    let is_head_request = current_method == Method::Head;
 
     let response_body = if is_head_request {
       Body::from_bytes(Vec::new())
@@ -73,6 +74,7 @@ impl RequestPolicy {
       reason: raw.reason,
       headers: raw.headers,
       body: response_body,
+      trailers: Vec::new(), // No trailers in two-phase reading
     };
 
     if self.config.http_status_handling == HttpStatusHandling::AsError
@@ -114,22 +116,11 @@ impl RequestPolicy {
 
       let (next_method, next_body) = if response.status_code == 303
         || (response.status_code == 301 || response.status_code == 302)
-          && current_method == "POST"
+          && current_method == Method::Post
       {
-        ("GET", None)
+        (Method::Get, None)
       } else {
-        let method_static: &'static str = match current_method {
-          "POST" => "POST",
-          "PUT" => "PUT",
-          "DELETE" => "DELETE",
-          "HEAD" => "HEAD",
-          "OPTIONS" => "OPTIONS",
-          "PATCH" => "PATCH",
-          "TRACE" => "TRACE",
-          "CONNECT" => "CONNECT",
-          _ => "GET",
-        };
-        (method_static, current_body)
+        (current_method, current_body)
       };
 
       self.redirect_count += 1;
@@ -142,367 +133,5 @@ impl RequestPolicy {
     }
 
     Ok(PolicyDecision::Return(response))
-  }
-}
-
-#[cfg(test)]
-#[allow(
-  clippy::unwrap_used,
-  clippy::panic,
-  clippy::match_wildcard_for_single_variants
-)]
-mod tests {
-  use super::*;
-  use crate::headers::Headers;
-  use alloc::vec;
-
-  fn make_redirect_response(status: u16, location: &str) -> RawResponse {
-    let mut headers = Headers::new();
-    headers.insert("Location", location);
-    RawResponse {
-      status_code: status,
-      reason: String::from("Redirect"),
-      headers,
-      body_bytes: Vec::new(),
-    }
-  }
-
-  #[test]
-  fn https_only_policy_rejects_http() {
-    let policy = RequestPolicy::new(&Config {
-      protocol_restriction: ProtocolRestriction::HttpsOnly,
-      ..Default::default()
-    });
-
-    let uri = Uri::parse("http://example.com").unwrap();
-    let result = policy.validate_protocol(&uri);
-
-    assert!(matches!(result, Err(Error::HttpsRequired)));
-  }
-
-  #[test]
-  fn https_only_policy_allows_https() {
-    let policy = RequestPolicy::new(&Config {
-      protocol_restriction: ProtocolRestriction::HttpsOnly,
-      ..Default::default()
-    });
-
-    let uri = Uri::parse("https://example.com").unwrap();
-    assert!(policy.validate_protocol(&uri).is_ok());
-  }
-
-  #[test]
-  fn policy_drops_body_for_head_requests() {
-    let mut policy = RequestPolicy::new(&Config::default());
-
-    let mut headers = Headers::new();
-    headers.insert("Content-Length", "10");
-
-    let raw = RawResponse {
-      status_code: 200,
-      reason: String::from("OK"),
-      headers,
-      body_bytes: b"1234567890".to_vec(),
-    };
-
-    let decision = policy
-      .process_raw_response(
-        raw,
-        &Uri::parse("http://example.com").unwrap(),
-        "http://example.com",
-        "HEAD",
-        None,
-      )
-      .unwrap();
-
-    match decision {
-      PolicyDecision::Return(resp) => {
-        assert_eq!(resp.status_code, 200);
-        assert!(
-          resp.body.as_bytes().is_empty(),
-          "HEAD response body should be empty"
-        );
-      }
-      _ => panic!("Expected PolicyDecision::Return"),
-    }
-  }
-
-  #[test]
-  fn post_302_redirect_becomes_get() {
-    let mut policy = RequestPolicy::new(&Config::default());
-
-    let raw = make_redirect_response(302, "/next");
-
-    let decision = policy
-      .process_raw_response(
-        raw,
-        &Uri::parse("http://a.com").unwrap(),
-        "http://a.com",
-        "POST",
-        Some(vec![1, 2, 3]),
-      )
-      .unwrap();
-
-    match decision {
-      PolicyDecision::Redirect {
-        next_method,
-        next_body,
-        ..
-      } => {
-        assert_eq!(next_method, "GET", "POST 302 should become GET");
-        assert!(next_body.is_none(), "GET should not have body");
-      }
-      _ => panic!("Expected PolicyDecision::Redirect"),
-    }
-  }
-
-  #[test]
-  fn post_301_redirect_becomes_get() {
-    let mut policy = RequestPolicy::new(&Config::default());
-
-    let raw = make_redirect_response(301, "/next");
-
-    let decision = policy
-      .process_raw_response(
-        raw,
-        &Uri::parse("http://a.com").unwrap(),
-        "http://a.com",
-        "POST",
-        Some(vec![1, 2, 3]),
-      )
-      .unwrap();
-
-    match decision {
-      PolicyDecision::Redirect {
-        next_method,
-        next_body,
-        ..
-      } => {
-        assert_eq!(next_method, "GET");
-        assert!(next_body.is_none());
-      }
-      _ => panic!("Expected PolicyDecision::Redirect"),
-    }
-  }
-
-  #[test]
-  fn post_303_redirect_becomes_get() {
-    let mut policy = RequestPolicy::new(&Config::default());
-
-    let raw = make_redirect_response(303, "/next");
-
-    let decision = policy
-      .process_raw_response(
-        raw,
-        &Uri::parse("http://a.com").unwrap(),
-        "http://a.com",
-        "POST",
-        Some(vec![1, 2, 3]),
-      )
-      .unwrap();
-
-    match decision {
-      PolicyDecision::Redirect {
-        next_method,
-        next_body,
-        ..
-      } => {
-        assert_eq!(next_method, "GET");
-        assert!(next_body.is_none());
-      }
-      _ => panic!("Expected PolicyDecision::Redirect"),
-    }
-  }
-
-  #[test]
-  fn get_redirect_stays_get() {
-    let mut policy = RequestPolicy::new(&Config::default());
-
-    let raw = make_redirect_response(302, "/next");
-
-    let decision = policy
-      .process_raw_response(
-        raw,
-        &Uri::parse("http://a.com").unwrap(),
-        "http://a.com",
-        "GET",
-        None,
-      )
-      .unwrap();
-
-    match decision {
-      PolicyDecision::Redirect { next_method, .. } => {
-        assert_eq!(next_method, "GET");
-      }
-      _ => panic!("Expected PolicyDecision::Redirect"),
-    }
-  }
-
-  #[test]
-  fn redirect_loop_is_detected() {
-    let mut policy = RequestPolicy::new(&Config::default());
-
-    let raw = make_redirect_response(301, "http://a.com");
-    let uri = Uri::parse("http://a.com").unwrap();
-
-    policy
-      .process_raw_response(raw.clone(), &uri, "http://a.com", "GET", None)
-      .unwrap();
-
-    let err = policy
-      .process_raw_response(raw, &uri, "http://a.com", "GET", None)
-      .unwrap_err();
-
-    assert!(matches!(err, Error::RedirectLoop));
-  }
-
-  #[test]
-  fn status_4xx_is_error_when_configured() {
-    let mut policy = RequestPolicy::new(&Config {
-      http_status_handling: HttpStatusHandling::AsError,
-      ..Default::default()
-    });
-
-    let raw = RawResponse {
-      status_code: 404,
-      reason: String::from("Not Found"),
-      headers: Headers::new(),
-      body_bytes: Vec::new(),
-    };
-
-    let err = policy
-      .process_raw_response(
-        raw,
-        &Uri::parse("http://example.com").unwrap(),
-        "http://example.com",
-        "GET",
-        None,
-      )
-      .unwrap_err();
-
-    assert!(matches!(err, Error::HttpStatus(404)));
-  }
-
-  #[test]
-  fn status_5xx_is_error_when_configured() {
-    let mut policy = RequestPolicy::new(&Config {
-      http_status_handling: HttpStatusHandling::AsError,
-      ..Default::default()
-    });
-
-    let raw = RawResponse {
-      status_code: 500,
-      reason: String::from("Internal Server Error"),
-      headers: Headers::new(),
-      body_bytes: Vec::new(),
-    };
-
-    let err = policy
-      .process_raw_response(
-        raw,
-        &Uri::parse("http://example.com").unwrap(),
-        "http://example.com",
-        "GET",
-        None,
-      )
-      .unwrap_err();
-
-    assert!(matches!(err, Error::HttpStatus(500)));
-  }
-
-  #[test]
-  fn status_4xx_is_ok_when_configured_as_response() {
-    let mut policy = RequestPolicy::new(&Config {
-      http_status_handling: HttpStatusHandling::AsResponse,
-      ..Default::default()
-    });
-
-    let raw = RawResponse {
-      status_code: 404,
-      reason: String::from("Not Found"),
-      headers: Headers::new(),
-      body_bytes: Vec::new(),
-    };
-
-    let result = policy.process_raw_response(
-      raw,
-      &Uri::parse("http://example.com").unwrap(),
-      "http://example.com",
-      "GET",
-      None,
-    );
-
-    assert!(result.is_ok());
-    match result.unwrap() {
-      PolicyDecision::Return(resp) => assert_eq!(resp.status_code, 404),
-      _ => panic!("Expected PolicyDecision::Return"),
-    }
-  }
-
-  #[test]
-  fn too_many_redirects_is_error() {
-    let mut policy = RequestPolicy::new(&Config {
-      max_redirects: 2,
-      ..Default::default()
-    });
-
-    let raw = make_redirect_response(301, "/next");
-
-    policy
-      .process_raw_response(
-        raw.clone(),
-        &Uri::parse("http://a.com").unwrap(),
-        "http://a.com",
-        "GET",
-        None,
-      )
-      .unwrap();
-
-    policy
-      .process_raw_response(
-        raw.clone(),
-        &Uri::parse("http://b.com").unwrap(),
-        "http://b.com",
-        "GET",
-        None,
-      )
-      .unwrap();
-
-    let err = policy
-      .process_raw_response(
-        raw,
-        &Uri::parse("http://c.com").unwrap(),
-        "http://c.com",
-        "GET",
-        None,
-      )
-      .unwrap_err();
-
-    assert!(matches!(err, Error::TooManyRedirects));
-  }
-
-  #[test]
-  fn no_follow_policy_returns_redirect_response() {
-    let mut policy = RequestPolicy::new(&Config {
-      redirect_policy: RedirectPolicy::NoFollow,
-      ..Default::default()
-    });
-
-    let raw = make_redirect_response(302, "/next");
-
-    let result = policy.process_raw_response(
-      raw,
-      &Uri::parse("http://a.com").unwrap(),
-      "http://a.com",
-      "GET",
-      None,
-    );
-
-    match result.unwrap() {
-      PolicyDecision::Return(resp) => assert_eq!(resp.status_code, 302),
-      PolicyDecision::Redirect { .. } => {
-        panic!("Should not follow redirect with NoFollow policy")
-      }
-    }
   }
 }

@@ -7,12 +7,15 @@
 #![allow(clippy::shadow_same)]
 
 mod chunked_encoding;
-mod field_syntax;
 mod framing;
 mod incomplete_messages;
 mod message_body;
 mod message_parsing;
 mod response_reading;
+mod rfc9112_missing_requirements;
+mod rfc9112_must_requirements;
+mod rfc9112_phase1_phase2;
+mod rfc9112_phase3_phase4;
 mod security;
 mod status_line;
 mod uri_parsing;

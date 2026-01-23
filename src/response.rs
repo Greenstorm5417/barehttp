@@ -79,6 +79,7 @@ mod tests {
       reason: String::from("Test"),
       headers: Headers::new(),
       body: Body::from_bytes(body.to_vec()),
+      trailers: alloc::vec::Vec::new(),
     }
   }
 
@@ -153,14 +154,15 @@ mod tests {
     let mut headers = Headers::new();
     headers.insert("Set-Cookie", "session=abc");
     headers.insert("Set-Cookie", "user=john");
-    
+
     let response = ParsedResponse {
       status_code: 200,
       reason: String::from("OK"),
       headers,
-      body: Body::empty(),
+      body: Body::from_bytes(alloc::vec![]),
+      trailers: alloc::vec::Vec::new(),
     };
-    
+
     let cookies = response.cookies();
     assert_eq!(cookies.len(), 2);
     assert!(cookies.contains(&"session=abc"));

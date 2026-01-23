@@ -139,7 +139,7 @@ mod tests {
   fn headers_insert_and_get() {
     let mut headers = Headers::new();
     headers.insert("Content-Type", "text/plain");
-    
+
     assert_eq!(headers.get("Content-Type"), Some("text/plain"));
     assert_eq!(headers.len(), 1);
   }
@@ -148,7 +148,7 @@ mod tests {
   fn headers_get_is_case_insensitive() {
     let mut headers = Headers::new();
     headers.insert("Content-Type", "application/json");
-    
+
     assert_eq!(headers.get("content-type"), Some("application/json"));
     assert_eq!(headers.get("CONTENT-TYPE"), Some("application/json"));
     assert_eq!(headers.get("CoNtEnT-TyPe"), Some("application/json"));
@@ -158,7 +158,7 @@ mod tests {
   fn headers_contains_is_case_insensitive() {
     let mut headers = Headers::new();
     headers.insert("Authorization", "Bearer token");
-    
+
     assert!(headers.contains("authorization"));
     assert!(headers.contains("AUTHORIZATION"));
     assert!(headers.contains("Authorization"));
@@ -171,7 +171,7 @@ mod tests {
     headers.insert("Set-Cookie", "session=abc");
     headers.insert("Set-Cookie", "user=john");
     headers.insert("Set-Cookie", "theme=dark");
-    
+
     let cookies = headers.get_all("Set-Cookie");
     assert_eq!(cookies.len(), 3);
     assert!(cookies.contains(&"session=abc"));
@@ -184,7 +184,7 @@ mod tests {
     let mut headers = Headers::new();
     headers.insert("Set-Cookie", "value1");
     headers.insert("set-cookie", "value2");
-    
+
     let values = headers.get_all("SET-COOKIE");
     assert_eq!(values.len(), 2);
   }
@@ -194,7 +194,7 @@ mod tests {
     let mut headers = Headers::new();
     headers.insert("Accept", "text/html");
     headers.insert("Accept", "application/json");
-    
+
     assert_eq!(headers.get("Accept"), Some("text/html"));
   }
 
@@ -203,9 +203,9 @@ mod tests {
     let mut headers = Headers::new();
     headers.insert("X-Custom", "value1");
     headers.insert("Content-Type", "text/plain");
-    
+
     headers.remove("x-custom");
-    
+
     assert!(!headers.contains("X-Custom"));
     assert!(headers.contains("Content-Type"));
     assert_eq!(headers.len(), 1);
@@ -217,9 +217,9 @@ mod tests {
     headers.insert("Cache-Control", "no-cache");
     headers.insert("cache-control", "no-store");
     headers.insert("Content-Type", "text/plain");
-    
+
     headers.remove("CACHE-CONTROL");
-    
+
     assert_eq!(headers.len(), 1);
     assert!(!headers.contains("Cache-Control"));
   }
@@ -229,7 +229,7 @@ mod tests {
     let mut headers = Headers::new();
     headers.insert("Host", "example.com");
     headers.insert("Accept", "*/*");
-    
+
     assert_eq!(headers.iter().count(), 2);
   }
 
@@ -239,7 +239,7 @@ mod tests {
       (String::from("Host"), String::from("example.com")),
       (String::from("Accept"), String::from("*/*")),
     ];
-    
+
     let headers = Headers::from_vec(vec);
     assert_eq!(headers.len(), 2);
     assert_eq!(headers.get("Host"), Some("example.com"));
@@ -249,7 +249,7 @@ mod tests {
   fn headers_into_vec_conversion() {
     let mut headers = Headers::new();
     headers.insert("X-Test", "value");
-    
+
     let vec = headers.into_vec();
     assert_eq!(vec.len(), 1);
     assert_eq!(vec.first().unwrap().0, "X-Test");
@@ -260,10 +260,10 @@ mod tests {
   fn headers_clone_creates_independent_copy() {
     let mut headers1 = Headers::new();
     headers1.insert("Original", "value");
-    
+
     let mut headers2 = headers1.clone();
     headers2.insert("New", "data");
-    
+
     assert_eq!(headers1.len(), 1);
     assert_eq!(headers2.len(), 2);
     assert!(!headers1.contains("New"));
@@ -273,10 +273,10 @@ mod tests {
   fn headers_equality() {
     let mut headers1 = Headers::new();
     headers1.insert("Content-Type", "text/plain");
-    
+
     let mut headers2 = Headers::new();
     headers2.insert("Content-Type", "text/plain");
-    
+
     assert_eq!(headers1, headers2);
   }
 

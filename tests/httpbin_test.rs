@@ -392,7 +392,7 @@ fn test_httpbin_absolute_redirect() {
 #[test]
 fn test_httpbin_redirect_to() {
   let result = get(&format!(
-    "{}/redirect-to?url=https://httpbin.org/get",
+    "{}/redirect-to?url=http://httpbin.org/get",
     httpbin_url()
   ));
   assert!(result.is_ok());

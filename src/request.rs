@@ -127,7 +127,7 @@ mod tests {
   fn request_get_creates_get_request() {
     let request = Request::get("http://example.com");
     let (method, url, _, _) = request.into_parts();
-    
+
     assert_eq!(method, Method::Get);
     assert_eq!(url, "http://example.com");
   }
@@ -136,7 +136,7 @@ mod tests {
   fn request_post_creates_post_request() {
     let request = Request::post("http://example.com");
     let (method, _, _, _) = request.into_parts();
-    
+
     assert_eq!(method, Method::Post);
   }
 
@@ -144,7 +144,7 @@ mod tests {
   fn request_put_creates_put_request() {
     let request = Request::put("http://example.com");
     let (method, _, _, _) = request.into_parts();
-    
+
     assert_eq!(method, Method::Put);
   }
 
@@ -152,7 +152,7 @@ mod tests {
   fn request_delete_creates_delete_request() {
     let request = Request::delete("http://example.com");
     let (method, _, _, _) = request.into_parts();
-    
+
     assert_eq!(method, Method::Delete);
   }
 
@@ -160,7 +160,7 @@ mod tests {
   fn request_head_creates_head_request() {
     let request = Request::head("http://example.com");
     let (method, _, _, _) = request.into_parts();
-    
+
     assert_eq!(method, Method::Head);
   }
 
@@ -168,7 +168,7 @@ mod tests {
   fn request_patch_creates_patch_request() {
     let request = Request::patch("http://example.com");
     let (method, _, _, _) = request.into_parts();
-    
+
     assert_eq!(method, Method::Patch);
   }
 
@@ -176,15 +176,14 @@ mod tests {
   fn request_options_creates_options_request() {
     let request = Request::options("http://example.com");
     let (method, _, _, _) = request.into_parts();
-    
+
     assert_eq!(method, Method::Options);
   }
 
   #[test]
   fn request_header_adds_header() {
-    let request = Request::get("http://example.com")
-      .header("X-Custom", "value");
-    
+    let request = Request::get("http://example.com").header("X-Custom", "value");
+
     let (_, _, headers, _) = request.into_parts();
     assert_eq!(headers.get("X-Custom"), Some("value"));
   }
@@ -194,7 +193,7 @@ mod tests {
     let request = Request::get("http://example.com")
       .header("X-First", "one")
       .header("X-Second", "two");
-    
+
     let (_, _, headers, _) = request.into_parts();
     assert_eq!(headers.get("X-First"), Some("one"));
     assert_eq!(headers.get("X-Second"), Some("two"));
@@ -203,9 +202,8 @@ mod tests {
   #[test]
   fn request_body_sets_body() {
     let body_data = Body::from_bytes(b"test data".to_vec());
-    let request = Request::post("http://example.com")
-      .body(body_data);
-    
+    let request = Request::post("http://example.com").body(body_data);
+
     let (_, _, _, body) = request.into_parts();
     assert!(body.is_some());
     assert_eq!(body.unwrap().as_bytes(), b"test data");
@@ -216,9 +214,9 @@ mod tests {
     let request = Request::post("http://example.com/api")
       .header("Content-Type", "application/json")
       .body(Body::from_bytes(b"{}".to_vec()));
-    
+
     let (method, url, headers, body) = request.into_parts();
-    
+
     assert_eq!(method, Method::Post);
     assert_eq!(url, "http://example.com/api");
     assert_eq!(headers.get("Content-Type"), Some("application/json"));
@@ -229,7 +227,7 @@ mod tests {
   fn request_new_with_method() {
     let request = Request::new(Method::Get, "http://example.com");
     let (method, url, headers, body) = request.into_parts();
-    
+
     assert_eq!(method, Method::Get);
     assert_eq!(url, "http://example.com");
     assert!(headers.is_empty());

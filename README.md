@@ -6,8 +6,8 @@ barehttp is a low-level, blocking HTTP client designed for developers who want
 **predictable behavior, full control, and minimal dependencies**.
 
 It supports `no_std` (with `alloc`), avoids global state, and exposes all network
-behavior explicitly. There is no async runtime, no hidden connection pooling,
-and no built-in TLS—you bring your own via adapters.
+behavior explicitly. There is no async runtime, no built-in TLS—you bring your own
+via adapters.
 
 ## Key Features
 
@@ -74,6 +74,35 @@ let response = client.get("http://httpbin.org/get").call()?;
 let mut client = barehttp::HttpClient::new()?;
 
 let response = client.get("http://httpbin.org/get").call()?;
+```
+
+### Connection Pooling
+
+Connection pooling is enabled by default for better performance:
+
+```rust
+use barehttp::config::ConfigBuilder;
+use core::time::Duration;
+
+// Customize pooling behavior
+let config = ConfigBuilder::new()
+    .connection_pooling(true)  // enabled by default
+    .max_idle_per_host(5)      // max idle connections per host
+    .idle_timeout(Duration::from_secs(90))  // idle timeout
+    .build();
+
+let mut client = barehttp::HttpClient::with_config(config)?;
+
+// First request creates a new connection
+let resp1 = client.get("http://httpbin.org/get").call()?;
+
+// Second request reuses the pooled connection
+let resp2 = client.get("http://httpbin.org/status/200").call()?;
+
+// Disable pooling for one-off requests
+let config = ConfigBuilder::new()
+    .connection_pooling(false)
+    .build();
 ```
 
 ### POST with body
@@ -160,18 +189,49 @@ Implement `BlockingSocket` and `DnsResolver` traits to provide:
 ```rust
 use barehttp::{HttpClient, OsBlockingSocket, OsDnsResolver};
 
-let socket = OsBlockingSocket::new()?;
 let dns = OsDnsResolver::new();
-
-let mut client = HttpClient::new_with_adapters(socket, dns);
+let mut client: HttpClient<OsBlockingSocket, _> = HttpClient::new_with_adapters(dns);
 let response = client.get("http://example.com").call()?;
 ```
 
+### Implementing Custom Sockets
+
+For embedded systems or custom networking, implement `BlockingSocket`:
+
+```rust
+use barehttp::socket::BlockingSocket;
+use barehttp::error::SocketError;
+
+struct MyCustomSocket {
+    // Your custom implementation
+}
+
+impl BlockingSocket for MyCustomSocket {
+    fn new() -> Result<Self, SocketError> {
+        // Initialize your socket (called by the pool when needed)
+        Ok(Self { /* ... */ })
+    }
+    
+    fn connect(&mut self, addr: &SocketAddr<'_>) -> Result<(), SocketError> {
+        // Your connection logic
+    }
+    
+    // ... implement other trait methods
+}
+
+// Use with HttpClient
+let dns = OsDnsResolver::new();
+let client: HttpClient<MyCustomSocket, _> = HttpClient::new_with_adapters(dns);
+```
+
+The pool will call `MyCustomSocket::new()` internally when it needs to create connections.
+
 ## Design Notes
 
-- Blocking I/O keeps the API simple and dependency-free
-- Each request is independent and explicit
-- No shared state or background behavior
+- **Blocking I/O** keeps the API simple and dependency-free
+- **Connection pooling** reuses TCP connections for better performance (configurable)
+- **Generic adapters** allow custom socket implementations via trait
+- **Explicit behavior** with no hidden global state
 
 barehttp is intended for environments where **clarity and control matter more than convenience**.
 

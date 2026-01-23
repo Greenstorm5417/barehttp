@@ -3,6 +3,7 @@ use crate::config::Config;
 use crate::dns::DnsResolver;
 use crate::error::Error;
 use crate::headers::Headers;
+use crate::method::Method;
 use crate::parser::Response;
 use crate::parser::version::Version;
 use crate::socket::BlockingSocket;
@@ -28,7 +29,7 @@ pub struct WithBody;
 /// while methods without a body (GET, HEAD, etc.) return `ClientRequestBuilder<WithoutBody>`.
 pub struct ClientRequestBuilder<'a, S, D, B = WithoutBody> {
   client: &'a mut HttpClient<S, D>,
-  method: &'static str,
+  method: Method,
   url: String,
   headers: Headers,
   query_params: Vec<(String, String)>,
@@ -151,9 +152,9 @@ where
     self
   }
 
-  /// Get the HTTP method as a string
+  /// Get the HTTP method
   #[must_use]
-  pub const fn method(&self) -> &str {
+  pub const fn method(&self) -> Method {
     self.method
   }
 
@@ -262,7 +263,7 @@ where
   /// Create a new request builder for methods without a body
   pub fn new(
     client: &'a mut HttpClient<S, D>,
-    method: &'static str,
+    method: Method,
     url: impl Into<String>,
   ) -> Self {
     Self {
@@ -322,7 +323,7 @@ where
   /// Create a new request builder for methods with a body
   pub fn new(
     client: &'a mut HttpClient<S, D>,
-    method: &'static str,
+    method: Method,
     url: impl Into<String>,
   ) -> Self {
     Self {

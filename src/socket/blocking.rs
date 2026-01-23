@@ -31,6 +31,10 @@ impl OsBlockingSocket {
 }
 
 impl BlockingSocket for OsBlockingSocket {
+  fn new() -> Result<Self, SocketError> {
+    Self::new()
+  }
+
   fn connect(&mut self, addr: &SocketAddr) -> Result<(), SocketError> {
     self.inner.connect(addr)
   }

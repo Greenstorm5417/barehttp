@@ -8,7 +8,8 @@ pub enum SocketAddr<'a> {
   Ip { addr: IpAddr, port: u16 },
 }
 
-pub trait BlockingSocket {
+pub trait BlockingSocket: Sized {
+  fn new() -> Result<Self, SocketError>;
   fn connect(&mut self, addr: &SocketAddr<'_>) -> Result<(), SocketError>;
   fn read(&mut self, buf: &mut [u8]) -> Result<usize, SocketError>;
   fn write(&mut self, buf: &[u8]) -> Result<usize, SocketError>;

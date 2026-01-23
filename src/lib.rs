@@ -166,10 +166,8 @@
 //! ```no_run
 //! use barehttp::{HttpClient, OsBlockingSocket, OsDnsResolver};
 //!
-//! let socket = OsBlockingSocket::new()?;
 //! let dns = OsDnsResolver::new();
-//!
-//! let mut client = HttpClient::new_with_adapters(socket, dns);
+//! let mut client: HttpClient<OsBlockingSocket, _> = HttpClient::new_with_adapters(dns);
 //! let response = client.get("http://example.com").call()?;
 //! # Ok::<(), barehttp::Error>(())
 //! ```
