@@ -1,0 +1,45 @@
+name: Update README
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'src/lib.rs'
+      - 'Cargo.toml'
+      - 'scripts/update_readme.rs'
+
+jobs:
+  update-readme:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      
+      - name: Run README generator
+        run: rustc scripts/update_readme.rs -o update_readme && ./update_readme
+      
+      - name: Check for changes
+        id: git-check
+        run: |
+          git diff --exit-code README.md || echo "changed=true" >> $GITHUB_OUTPUT
+      
+      - name: Commit and push if changed
+        if: steps.git-check.outputs.changed == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add README.md
+          git commit -m "chore: auto-update README.md from lib.rs [skip ci]"
+          git push
