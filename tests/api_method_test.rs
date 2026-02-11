@@ -44,7 +44,7 @@ fn test_method_without_body() {
 #[test]
 fn test_method_clone() {
   let method1 = Method::Get;
-  let method2 = method1.clone();
+  let method2 = method1;
   assert_eq!(method1, method2);
 }
 
@@ -72,12 +72,12 @@ fn test_method_debug() {
 #[test]
 fn test_method_hash() {
   use std::collections::HashSet;
-  
+
   let mut set = HashSet::new();
   set.insert(Method::Get);
   set.insert(Method::Post);
   set.insert(Method::Get);
-  
+
   assert_eq!(set.len(), 2);
   assert!(set.contains(&Method::Get));
   assert!(set.contains(&Method::Post));

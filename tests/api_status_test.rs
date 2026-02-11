@@ -23,7 +23,7 @@ fn test_status_code_new_invalid() {
 fn test_status_code_as_u16() {
   let code = StatusCode::new(200).unwrap();
   assert_eq!(code.as_u16(), 200);
-  
+
   let code = StatusCode::new(404).unwrap();
   assert_eq!(code.as_u16(), 404);
 }
@@ -32,16 +32,16 @@ fn test_status_code_as_u16() {
 fn test_status_code_class() {
   let code = StatusCode::new(100).unwrap();
   assert_eq!(code.class(), StatusClass::Informational);
-  
+
   let code = StatusCode::new(200).unwrap();
   assert_eq!(code.class(), StatusClass::Successful);
-  
+
   let code = StatusCode::new(300).unwrap();
   assert_eq!(code.class(), StatusClass::Redirection);
-  
+
   let code = StatusCode::new(400).unwrap();
   assert_eq!(code.class(), StatusClass::ClientError);
-  
+
   let code = StatusCode::new(500).unwrap();
   assert_eq!(code.class(), StatusClass::ServerError);
 }
@@ -123,10 +123,26 @@ fn test_status_code_is_final() {
 
 #[test]
 fn test_status_code_is_redirection_method_preserving() {
-  assert!(StatusCode::new(307).unwrap().is_redirection_method_preserving());
-  assert!(StatusCode::new(308).unwrap().is_redirection_method_preserving());
-  assert!(!StatusCode::new(301).unwrap().is_redirection_method_preserving());
-  assert!(!StatusCode::new(302).unwrap().is_redirection_method_preserving());
+  assert!(
+    StatusCode::new(307)
+      .unwrap()
+      .is_redirection_method_preserving()
+  );
+  assert!(
+    StatusCode::new(308)
+      .unwrap()
+      .is_redirection_method_preserving()
+  );
+  assert!(
+    !StatusCode::new(301)
+      .unwrap()
+      .is_redirection_method_preserving()
+  );
+  assert!(
+    !StatusCode::new(302)
+      .unwrap()
+      .is_redirection_method_preserving()
+  );
 }
 
 #[test]
@@ -173,7 +189,7 @@ fn test_status_code_more_constants() {
 #[test]
 fn test_status_code_clone() {
   let code1 = StatusCode::new(200).unwrap();
-  let code2 = code1.clone();
+  let code2 = code1;
   assert_eq!(code1.as_u16(), code2.as_u16());
 }
 
@@ -189,7 +205,7 @@ fn test_status_code_equality() {
   let code1 = StatusCode::new(200).unwrap();
   let code2 = StatusCode::new(200).unwrap();
   let code3 = StatusCode::new(404).unwrap();
-  
+
   assert_eq!(code1, code2);
   assert_ne!(code1, code3);
 }
@@ -204,12 +220,12 @@ fn test_status_code_debug() {
 #[test]
 fn test_status_code_hash() {
   use std::collections::HashSet;
-  
+
   let mut set = HashSet::new();
   set.insert(StatusCode::new(200).unwrap());
   set.insert(StatusCode::new(404).unwrap());
   set.insert(StatusCode::new(200).unwrap());
-  
+
   assert_eq!(set.len(), 2);
 }
 
@@ -229,7 +245,7 @@ fn test_status_class_debug() {
 #[test]
 fn test_status_class_clone() {
   let class1 = StatusClass::Successful;
-  let class2 = class1.clone();
+  let class2 = class1;
   assert_eq!(class1, class2);
 }
 

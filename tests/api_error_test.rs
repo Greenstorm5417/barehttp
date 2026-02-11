@@ -38,7 +38,7 @@ fn test_error_from_utf8_error() {
   let invalid_utf8 = vec![0xFF, 0xFE, 0xFD];
   let utf8_error = String::from_utf8(invalid_utf8).unwrap_err();
   let error: Error = utf8_error.into();
-  
+
   match error {
     Error::Utf8Error => {},
     _ => panic!("Expected Utf8Error variant"),

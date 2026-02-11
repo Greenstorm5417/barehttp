@@ -135,7 +135,7 @@ fn test_body_equality() {
   let body1 = Body::from_bytes(b"same".to_vec());
   let body2 = Body::from_bytes(b"same".to_vec());
   let body3 = Body::from_bytes(b"different".to_vec());
-  
+
   assert_eq!(body1, body2);
   assert_ne!(body1, body3);
 }

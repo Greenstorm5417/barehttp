@@ -1,7 +1,7 @@
 //! Integration tests for convenience functions (get, post, put, delete, etc.)
 
-use barehttp::{self, Error};
 use barehttp::response::ResponseExt;
+use barehttp::{self, Error};
 
 fn httpbin_url() -> String {
   std::env::var("HTTPBIN_URL").unwrap_or_else(|_| "http://httpbin.org".to_string())

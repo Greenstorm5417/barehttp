@@ -1,15 +1,14 @@
 //! Integration tests for Config and ConfigBuilder
 
 use barehttp::config::{
-  Config, ConfigBuilder, HttpStatusHandling, ProtocolRestriction, RedirectAuthHeaders,
-  RedirectPolicy,
+  Config, ConfigBuilder, HttpStatusHandling, ProtocolRestriction, RedirectAuthHeaders, RedirectPolicy,
 };
 use core::time::Duration;
 
 #[test]
 fn test_config_default() {
   let config = Config::default();
-  
+
   assert!(config.timeout.is_none());
   assert_eq!(config.user_agent, Some(String::from("barehttp/1.0")));
   assert_eq!(config.redirect_policy, RedirectPolicy::Follow);
@@ -21,7 +20,7 @@ fn test_config_default() {
   assert!(config.timeout_read.is_none());
   assert_eq!(config.accept, Some(String::from("*/*")));
   assert_eq!(config.protocol_restriction, ProtocolRestriction::Any);
-  assert_eq!(config.connection_pooling, true);
+  assert!(config.connection_pooling);
   assert_eq!(config.max_idle_per_host, 5);
   assert_eq!(config.idle_timeout, Some(Duration::from_secs(90)));
 }
@@ -30,7 +29,7 @@ fn test_config_default() {
 fn test_config_builder_new() {
   let builder = ConfigBuilder::new();
   let config = builder.build();
-  
+
   assert_eq!(config.redirect_policy, RedirectPolicy::Follow);
 }
 
@@ -39,16 +38,14 @@ fn test_config_builder_timeout() {
   let config = ConfigBuilder::new()
     .timeout(Duration::from_secs(30))
     .build();
-  
+
   assert_eq!(config.timeout, Some(Duration::from_secs(30)));
 }
 
 #[test]
 fn test_config_builder_user_agent() {
-  let config = ConfigBuilder::new()
-    .user_agent("MyApp/1.0")
-    .build();
-  
+  let config = ConfigBuilder::new().user_agent("MyApp/1.0").build();
+
   assert_eq!(config.user_agent, Some(String::from("MyApp/1.0")));
 }
 
@@ -57,16 +54,14 @@ fn test_config_builder_redirect_policy() {
   let config = ConfigBuilder::new()
     .redirect_policy(RedirectPolicy::NoFollow)
     .build();
-  
+
   assert_eq!(config.redirect_policy, RedirectPolicy::NoFollow);
 }
 
 #[test]
 fn test_config_builder_max_redirects() {
-  let config = ConfigBuilder::new()
-    .max_redirects(5)
-    .build();
-  
+  let config = ConfigBuilder::new().max_redirects(5).build();
+
   assert_eq!(config.max_redirects, 5);
 }
 
@@ -75,7 +70,7 @@ fn test_config_builder_http_status_handling() {
   let config = ConfigBuilder::new()
     .http_status_handling(HttpStatusHandling::AsResponse)
     .build();
-  
+
   assert_eq!(config.http_status_handling, HttpStatusHandling::AsResponse);
 }
 
@@ -84,7 +79,7 @@ fn test_config_builder_redirect_auth_headers() {
   let config = ConfigBuilder::new()
     .redirect_auth_headers(RedirectAuthHeaders::SameHost)
     .build();
-  
+
   assert_eq!(config.redirect_auth_headers, RedirectAuthHeaders::SameHost);
 }
 
@@ -93,7 +88,7 @@ fn test_config_builder_max_response_header_size() {
   let config = ConfigBuilder::new()
     .max_response_header_size(128 * 1024)
     .build();
-  
+
   assert_eq!(config.max_response_header_size, 128 * 1024);
 }
 
@@ -102,7 +97,7 @@ fn test_config_builder_timeout_connect() {
   let config = ConfigBuilder::new()
     .timeout_connect(Duration::from_secs(10))
     .build();
-  
+
   assert_eq!(config.timeout_connect, Some(Duration::from_secs(10)));
 }
 
@@ -111,16 +106,14 @@ fn test_config_builder_timeout_read() {
   let config = ConfigBuilder::new()
     .timeout_read(Duration::from_secs(60))
     .build();
-  
+
   assert_eq!(config.timeout_read, Some(Duration::from_secs(60)));
 }
 
 #[test]
 fn test_config_builder_accept() {
-  let config = ConfigBuilder::new()
-    .accept("application/json")
-    .build();
-  
+  let config = ConfigBuilder::new().accept("application/json").build();
+
   assert_eq!(config.accept, Some(String::from("application/json")));
 }
 
@@ -129,25 +122,21 @@ fn test_config_builder_protocol_restriction() {
   let config = ConfigBuilder::new()
     .protocol_restriction(ProtocolRestriction::HttpsOnly)
     .build();
-  
+
   assert_eq!(config.protocol_restriction, ProtocolRestriction::HttpsOnly);
 }
 
 #[test]
 fn test_config_builder_connection_pooling() {
-  let config = ConfigBuilder::new()
-    .connection_pooling(false)
-    .build();
-  
-  assert_eq!(config.connection_pooling, false);
+  let config = ConfigBuilder::new().connection_pooling(false).build();
+
+  assert!(!config.connection_pooling);
 }
 
 #[test]
 fn test_config_builder_max_idle_per_host() {
-  let config = ConfigBuilder::new()
-    .max_idle_per_host(10)
-    .build();
-  
+  let config = ConfigBuilder::new().max_idle_per_host(10).build();
+
   assert_eq!(config.max_idle_per_host, 10);
 }
 
@@ -156,7 +145,7 @@ fn test_config_builder_idle_timeout() {
   let config = ConfigBuilder::new()
     .idle_timeout(Duration::from_secs(120))
     .build();
-  
+
   assert_eq!(config.idle_timeout, Some(Duration::from_secs(120)));
 }
 
@@ -169,7 +158,7 @@ fn test_config_builder_chaining() {
     .http_status_handling(HttpStatusHandling::AsResponse)
     .redirect_policy(RedirectPolicy::NoFollow)
     .build();
-  
+
   assert_eq!(config.timeout, Some(Duration::from_secs(30)));
   assert_eq!(config.user_agent, Some(String::from("TestClient/1.0")));
   assert_eq!(config.max_redirects, 3);
@@ -181,7 +170,7 @@ fn test_config_builder_chaining() {
 fn test_config_builder_default() {
   let builder: ConfigBuilder = Default::default();
   let config = builder.build();
-  
+
   assert_eq!(config.redirect_policy, RedirectPolicy::Follow);
 }
 
@@ -219,9 +208,9 @@ fn test_config_clone() {
   let config1 = ConfigBuilder::new()
     .timeout(Duration::from_secs(30))
     .build();
-  
+
   let config2 = config1.clone();
-  
+
   assert_eq!(config1.timeout, config2.timeout);
   assert_eq!(config1.max_redirects, config2.max_redirects);
 }

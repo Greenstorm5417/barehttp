@@ -68,9 +68,8 @@ fn test_request_new() {
 
 #[test]
 fn test_request_header() {
-  let request = Request::get("http://example.com")
-    .header("X-Custom", "value");
-  
+  let request = Request::get("http://example.com").header("X-Custom", "value");
+
   let (_, _, headers, _) = request.into_parts();
   assert_eq!(headers.get("X-Custom"), Some("value"));
 }
@@ -81,7 +80,7 @@ fn test_request_header_chaining() {
     .header("X-First", "one")
     .header("X-Second", "two")
     .header("X-Third", "three");
-  
+
   let (_, _, headers, _) = request.into_parts();
   assert_eq!(headers.get("X-First"), Some("one"));
   assert_eq!(headers.get("X-Second"), Some("two"));
@@ -91,9 +90,8 @@ fn test_request_header_chaining() {
 #[test]
 fn test_request_body() {
   let body_data = barehttp::Body::from_bytes(b"test data".to_vec());
-  let request = Request::post("http://example.com")
-    .body(body_data);
-  
+  let request = Request::post("http://example.com").body(body_data);
+
   let (_, _, _, body) = request.into_parts();
   assert!(body.is_some());
   assert_eq!(body.unwrap().as_bytes(), b"test data");
@@ -101,9 +99,8 @@ fn test_request_body() {
 
 #[test]
 fn test_request_body_from_string() {
-  let request = Request::post("http://example.com")
-    .body("string body");
-  
+  let request = Request::post("http://example.com").body("string body");
+
   let (_, _, _, body) = request.into_parts();
   assert!(body.is_some());
   assert_eq!(body.unwrap().as_bytes(), b"string body");
@@ -114,9 +111,9 @@ fn test_request_into_parts() {
   let request = Request::post("http://example.com/api")
     .header("Content-Type", "application/json")
     .body(barehttp::Body::from_bytes(b"{}".to_vec()));
-  
+
   let (method, url, headers, body) = request.into_parts();
-  
+
   assert_eq!(method, barehttp::Method::Post);
   assert_eq!(url, "http://example.com/api");
   assert_eq!(headers.get("Content-Type"), Some("application/json"));
@@ -133,9 +130,8 @@ fn test_request_send() -> Result<(), Error> {
 
 #[test]
 fn test_request_send_with_headers() -> Result<(), Error> {
-  let request = Request::get(format!("{}/headers", httpbin_url()))
-    .header("X-Test-Header", "test-value");
-  
+  let request = Request::get(format!("{}/headers", httpbin_url())).header("X-Test-Header", "test-value");
+
   let response = request.send()?;
   assert_eq!(response.status_code, 200);
   Ok(())
@@ -146,7 +142,7 @@ fn test_request_send_post_with_body() -> Result<(), Error> {
   let request = Request::post(format!("{}/post", httpbin_url()))
     .header("Content-Type", "text/plain")
     .body("test data");
-  
+
   let response = request.send()?;
   assert_eq!(response.status_code, 200);
   Ok(())

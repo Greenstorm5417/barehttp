@@ -25,16 +25,16 @@ fn test_version_minor() {
 fn test_version_constants() {
   assert_eq!(Version::HTTP_09.major(), 0);
   assert_eq!(Version::HTTP_09.minor(), 9);
-  
+
   assert_eq!(Version::HTTP_10.major(), 1);
   assert_eq!(Version::HTTP_10.minor(), 0);
-  
+
   assert_eq!(Version::HTTP_11.major(), 1);
   assert_eq!(Version::HTTP_11.minor(), 1);
-  
+
   assert_eq!(Version::HTTP_2.major(), 2);
   assert_eq!(Version::HTTP_2.minor(), 0);
-  
+
   assert_eq!(Version::HTTP_3.major(), 3);
   assert_eq!(Version::HTTP_3.minor(), 0);
 }
@@ -42,7 +42,7 @@ fn test_version_constants() {
 #[test]
 fn test_version_clone() {
   let version1 = Version::new(1, 1);
-  let version2 = version1.clone();
+  let version2 = version1;
   assert_eq!(version1.major(), version2.major());
   assert_eq!(version1.minor(), version2.minor());
 }
@@ -60,7 +60,7 @@ fn test_version_equality() {
   let version1 = Version::new(1, 1);
   let version2 = Version::new(1, 1);
   let version3 = Version::new(2, 0);
-  
+
   assert_eq!(version1, version2);
   assert_ne!(version1, version3);
 }
@@ -75,11 +75,11 @@ fn test_version_debug() {
 #[test]
 fn test_version_hash() {
   use std::collections::HashSet;
-  
+
   let mut set = HashSet::new();
   set.insert(Version::new(1, 1));
   set.insert(Version::new(2, 0));
   set.insert(Version::new(1, 1));
-  
+
   assert_eq!(set.len(), 2);
 }

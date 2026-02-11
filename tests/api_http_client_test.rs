@@ -16,28 +16,28 @@ fn test_http_client_new() -> Result<(), Error> {
 fn test_http_client_with_config() -> Result<(), Error> {
   use barehttp::config::ConfigBuilder;
   use core::time::Duration;
-  
+
   let config = ConfigBuilder::new()
     .timeout(Duration::from_secs(30))
     .build();
-  
+
   let _client = HttpClient::with_config(config)?;
   Ok(())
 }
 
 #[test]
 fn test_http_client_new_with_adapters() {
-  use barehttp::{OsDnsResolver, OsBlockingSocket};
-  
+  use barehttp::{OsBlockingSocket, OsDnsResolver};
+
   let dns = OsDnsResolver::new();
   let _client: HttpClient<OsBlockingSocket, _> = HttpClient::new_with_adapters(dns);
 }
 
 #[test]
 fn test_http_client_with_adapters_and_config() {
-  use barehttp::{OsDnsResolver, OsBlockingSocket};
   use barehttp::config::Config;
-  
+  use barehttp::{OsBlockingSocket, OsDnsResolver};
+
   let dns = OsDnsResolver::new();
   let config = Config::default();
   let _client: HttpClient<OsBlockingSocket, _> = HttpClient::with_adapters_and_config(dns, config);
@@ -123,7 +123,7 @@ fn test_http_client_connect() -> Result<(), Error> {
 #[test]
 fn test_http_client_run() -> Result<(), Error> {
   use barehttp::Request;
-  
+
   let client = HttpClient::new()?;
   let request = Request::get(format!("{}/get", httpbin_url()));
   let response = client.run(request)?;
@@ -135,10 +135,10 @@ fn test_http_client_run() -> Result<(), Error> {
 fn test_http_client_clone() -> Result<(), Error> {
   let client1 = HttpClient::new()?;
   let client2 = client1.clone();
-  
+
   let response1 = client1.get(format!("{}/get", httpbin_url())).call()?;
   let response2 = client2.get(format!("{}/get", httpbin_url())).call()?;
-  
+
   assert_eq!(response1.status_code, 200);
   assert_eq!(response2.status_code, 200);
   Ok(())
