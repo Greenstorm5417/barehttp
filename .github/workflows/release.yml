@@ -505,15 +505,15 @@ jobs:
           if-no-files-found: ignore
 
   msrv:
-    name: MSRV (1.87)
+    name: MSRV (1.89)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
-      - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@1.87
+      - name: Install Rust 1.89
+        uses: dtolnay/rust-toolchain@1.89
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -614,7 +614,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Action installs its own toolchain + kani-verifier; MSRV 1.87 fits Kani 0.67's rustc 1.93.
+      # Action installs its own toolchain + kani-verifier; MSRV 1.89 fits Kani 0.67's rustc 1.93.
       - name: Install and run Kani
         uses: model-checking/kani-github-action@v1
         with:
