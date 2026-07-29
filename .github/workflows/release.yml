@@ -78,7 +78,8 @@ jobs:
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
         shell: bash
-        run: mkdir -p target/tests/target
+        # rust-cache cleans both nested dirs; creating only one makes the other ENOENT.
+        run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: Check
         run: cargo check --locked ${{ matrix.args }}
@@ -110,7 +111,8 @@ jobs:
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
         shell: bash
-        run: mkdir -p target/tests/target
+        # rust-cache cleans both nested dirs; creating only one makes the other ENOENT.
+        run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: Check
         run: |
@@ -136,7 +138,8 @@ jobs:
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
         shell: bash
-        run: mkdir -p target/tests/target
+        # rust-cache cleans both nested dirs; creating only one makes the other ENOENT.
+        run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: Miri (sync + focused)
         env:
@@ -174,7 +177,8 @@ jobs:
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
         shell: bash
-        run: mkdir -p target/tests/target
+        # rust-cache cleans both nested dirs; creating only one makes the other ENOENT.
+        run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: Cache fuzz corpora
         uses: actions/cache@v5
@@ -258,7 +262,8 @@ jobs:
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
         shell: bash
-        run: mkdir -p target/tests/target
+        # rust-cache cleans both nested dirs; creating only one makes the other ENOENT.
+        run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: Coverage (LCOV + Cobertura + HTML)
         run: bash scripts/coverage.sh
@@ -293,7 +298,8 @@ jobs:
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
         shell: bash
-        run: mkdir -p target/tests/target
+        # rust-cache cleans both nested dirs; creating only one makes the other ENOENT.
+        run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: trybuild / UI tests
         run: cargo test --locked --test ui
@@ -317,7 +323,8 @@ jobs:
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
         shell: bash
-        run: mkdir -p target/tests/target
+        # rust-cache cleans both nested dirs; creating only one makes the other ENOENT.
+        run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -368,7 +375,8 @@ jobs:
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
         shell: bash
-        run: mkdir -p target/tests/target
+        # rust-cache cleans both nested dirs; creating only one makes the other ENOENT.
+        run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: cargo package --locked
         run: cargo package --locked --no-verify
@@ -455,7 +463,8 @@ jobs:
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
         shell: bash
-        run: mkdir -p target/tests/target
+        # rust-cache cleans both nested dirs; creating only one makes the other ENOENT.
+        run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: Cache Gungraun baselines
         uses: actions/cache@v5
@@ -535,7 +544,8 @@ jobs:
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
         shell: bash
-        run: mkdir -p target/tests/target
+        # rust-cache cleans both nested dirs; creating only one makes the other ENOENT.
+        run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: Check (all features)
         run: cargo check --locked --all-features
@@ -569,7 +579,8 @@ jobs:
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
         shell: bash
-        run: mkdir -p target/tests/target
+        # rust-cache cleans both nested dirs; creating only one makes the other ENOENT.
+        run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: Nextest (default / none)
         run: cargo nextest run --profile ci --locked --no-default-features
@@ -606,7 +617,8 @@ jobs:
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
         shell: bash
-        run: mkdir -p target/tests/target
+        # rust-cache cleans both nested dirs; creating only one makes the other ENOENT.
+        run: mkdir -p target/tests/target target/tests/trybuild
 
       # ASan / LSan on lib tests. MSan needs a sanitized libc + careful FFI and is
       # not practical for OS socket/DNS bindings here (see CONTRIBUTING.md).
@@ -656,7 +668,8 @@ jobs:
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
         shell: bash
-        run: mkdir -p target/tests/target
+        # rust-cache cleans both nested dirs; creating only one makes the other ENOENT.
+        run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: Run interop suite
         env:
