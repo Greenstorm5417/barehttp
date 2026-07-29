@@ -11,6 +11,8 @@ pub struct MockSocket {
   pub written: Vec<u8>,
   /// Cap bytes returned per `write` call (simulates short writes).
   pub max_write: usize,
+  /// Cap bytes returned per `read` call (simulates fragmented TCP).
+  pub max_read: usize,
   pub connected_addr: Option<String>,
   /// Hostname passed to [`BlockingSocket::connect`] (SNI).
   pub connected_host: Option<String>,
@@ -28,6 +30,7 @@ impl MockSocket {
       read_pos: 0,
       written: Vec::new(),
       max_write: usize::MAX,
+      max_read: usize::MAX,
       connected_addr: None,
       connected_host: None,
       read_timeout: None,
@@ -51,6 +54,17 @@ impl MockSocket {
     Self {
       read_data: response.as_bytes().to_vec(),
       max_write,
+      ..Self::empty()
+    }
+  }
+
+  pub fn with_max_read(
+    response: &str,
+    max_read: usize,
+  ) -> Self {
+    Self {
+      read_data: response.as_bytes().to_vec(),
+      max_read: max_read.max(1),
       ..Self::empty()
     }
   }
@@ -104,7 +118,7 @@ impl BlockingSocket for MockSocket {
       return Ok(0);
     }
     let remaining = &self.read_data[self.read_pos..];
-    let to_read = remaining.len().min(buf.len());
+    let to_read = remaining.len().min(buf.len()).min(self.max_read);
     buf[..to_read].copy_from_slice(&remaining[..to_read]);
     self.read_pos += to_read;
     Ok(to_read)

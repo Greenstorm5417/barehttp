@@ -65,6 +65,7 @@ pub use util::IpAddr;
 pub use headers::Headers;
 pub use method::Method;
 pub use parser::Response;
+pub use parser::uri::Uri;
 pub use parser::version::Version;
 pub use request_builder::ClientRequestBuilder;
 
@@ -124,8 +125,9 @@ pub mod request_builder;
 mod client;
 mod dns;
 mod error;
+/// Gzip / zlib / raw DEFLATE decompression (RFC 1950–1952). Feature-gated.
 #[cfg(feature = "gzip-decompression")]
-mod gzip;
+pub mod gzip;
 mod headers;
 mod method;
 pub(crate) mod parser;

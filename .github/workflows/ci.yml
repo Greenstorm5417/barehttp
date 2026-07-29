@@ -15,6 +15,9 @@ permissions: {}
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # Pinned so install-action cache keys stay stable across runs.
+  NEXTEST_VERSION: "0.9.140"
+  CARGO_FUZZ_VERSION: "0.13.2"
 
 jobs:
   fmt:
@@ -40,7 +43,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # default = [] — none == --no-default-features
           - name: none
             args: --no-default-features
           - name: cookie-jar
@@ -70,7 +72,7 @@ jobs:
         run: cargo clippy --locked --all-targets ${{ matrix.args }} -- -D warnings
 
   test:
-    name: Test (${{ matrix.name }})
+    name: Nextest (${{ matrix.name }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -94,14 +96,102 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Prebuilt binary (not cargo install); version pin keeps cache/install stable.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: test-${{ matrix.name }}
+          key: nextest-${{ matrix.name }}
 
-      # Does not pass --ignored: live httpbin tests stay skipped.
-      - name: Test
-        run: cargo test --locked ${{ matrix.args }}
+      # Unit + integration (local mock server). Ignored httpbin tests stay skipped.
+      - name: Nextest (lib + tests)
+        run: cargo nextest run --profile ci --locked ${{ matrix.args }}
+
+  feature-matrix:
+    name: Feature check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabi
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: feature-matrix
+
+      - name: Check feature combos (host)
+        run: |
+          cargo check --locked --no-default-features
+          cargo check --locked --no-default-features --features cookie-jar
+          cargo check --locked --no-default-features --features gzip-decompression
+          cargo check --locked --no-default-features --features zstd-decompression
+          cargo check --locked --all-features
+
+      - name: Embedded target (thumbv7em-none-eabi)
+        run: |
+          cargo check --locked --target thumbv7em-none-eabi --no-default-features
+          cargo check --locked --target thumbv7em-none-eabi --features gzip-decompression
+
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install nightly + miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: miri
+
+      - name: Miri (sync + focused)
+        env:
+          MIRIFLAGS: -Zmiri-strict-provenance
+        run: |
+          cargo miri setup
+          cargo miri test --lib sync::
+          cargo miri test --lib --features gzip-decompression gzip::
+
+  fuzz-build:
+    name: Fuzz build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      # Prebuilt via install-action/binstall; pin avoids rebuilding each run.
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz@${{ env.CARGO_FUZZ_VERSION }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: fuzz-build
+
+      - name: Build fuzz targets
+        run: cargo +nightly fuzz build
 
   docs:
     name: Docs
@@ -140,7 +230,6 @@ jobs:
         with:
           key: examples
 
-      # Build only — do not run live/network examples (e.g. httpbin).
       - name: Build examples
         run: cargo build --locked --examples --all-features
 
@@ -155,6 +244,11 @@ jobs:
       - name: Install Rust 1.97
         uses: dtolnay/rust-toolchain@1.97
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -163,8 +257,8 @@ jobs:
       - name: Check (all features)
         run: cargo check --locked --all-features
 
-      - name: Test (all features)
-        run: cargo test --locked --all-features
+      - name: Nextest (all features)
+        run: cargo nextest run --profile ci --locked --all-features
 
   lockfile:
     name: Lockfile
@@ -187,7 +281,7 @@ jobs:
         run: cargo metadata --format-version 1 --locked >/dev/null
 
       - name: Report available dependency updates (informational)
-        run: cargo update -w --dry-run
+        run: cargo update --dry-run
 
       - name: Dependency tree sanity
         run: cargo tree -e features --all-features
@@ -207,13 +301,18 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
           key: os-${{ matrix.os }}
 
-      - name: Test (default / none)
-        run: cargo test --locked --no-default-features
+      - name: Nextest (default / none)
+        run: cargo nextest run --profile ci --locked --no-default-features
 
-      - name: Test (all features)
-        run: cargo test --locked --all-features
+      - name: Nextest (all features)
+        run: cargo nextest run --profile ci --locked --all-features

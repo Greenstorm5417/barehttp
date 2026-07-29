@@ -188,11 +188,7 @@ impl Response {
           continue;
         }
         for part in value.split(',') {
-          let token = part
-            .split(';')
-            .next()
-            .unwrap_or(part)
-            .trim();
+          let token = part.split(';').next().unwrap_or(part).trim();
           if token.is_empty() {
             continue;
           }

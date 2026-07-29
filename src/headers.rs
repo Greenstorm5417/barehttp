@@ -205,4 +205,24 @@ mod tests {
     h.merge_cookie("");
     assert_eq!(h.get(Headers::COOKIE), Some("a=1; b=2"));
   }
+
+  #[test]
+  fn property_header_lookup_case_insensitive() {
+    use proptest::prelude::*;
+    proptest::proptest!(|(
+      name in "[A-Za-z][A-Za-z0-9-]{0,24}",
+      value in "[ -~]{0,40}",
+      case_flip in any::<bool>()
+    )| {
+      let mut h = Headers::new();
+      h.insert(name.clone(), value.clone());
+      let probe = if case_flip {
+        name.to_ascii_uppercase()
+      } else {
+        name.to_ascii_lowercase()
+      };
+      prop_assert_eq!(h.get(&probe), Some(value.as_str()));
+      prop_assert!(h.contains(&probe));
+    });
+  }
 }

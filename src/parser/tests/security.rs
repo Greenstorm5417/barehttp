@@ -1,3 +1,4 @@
+use crate::error::ParseError;
 use crate::parser::*;
 extern crate alloc;
 use alloc::vec::Vec;
@@ -128,4 +129,67 @@ fn test_chunked_zero_chunk_not_last() {
   let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
   let result = Response::parse(input);
   assert!(result.is_err(), "Should reject extra data after chunked terminator");
+}
+
+#[test]
+fn test_te_and_content_length_conflict() {
+  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
+  let result = Response::parse(input);
+  assert!(matches!(result, Err(ParseError::ConflictingFraming)), "got {result:?}");
+}
+
+#[test]
+fn test_chunked_not_final_coding() {
+  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, gzip\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
+  let result = Response::parse(input);
+  assert!(matches!(result, Err(ParseError::ChunkedNotFinal)), "got {result:?}");
+}
+
+#[test]
+fn test_obs_fold_rejected() {
+  let input = b"HTTP/1.1 200 OK\r\nX-Fold: line1\r\n continued\r\n\r\n";
+  let result = Response::parse(input);
+  assert!(
+    matches!(result, Err(ParseError::ObsoleteFoldInHeader)),
+    "got {result:?}"
+  );
+}
+
+#[test]
+fn test_invalid_header_name_space() {
+  let input = b"HTTP/1.1 200 OK\r\nBad Name: value\r\n\r\n";
+  let result = Response::parse(input);
+  assert!(matches!(result, Err(ParseError::InvalidHeaderName)));
+}
+
+#[test]
+fn test_status_line_not_http() {
+  let input = b"HTP/1.1 200 OK\r\n\r\n";
+  let result = Response::parse(input);
+  assert!(matches!(result, Err(ParseError::InvalidHttpVersion)));
+}
+
+#[test]
+fn test_bare_lf_only_status_still_parses_or_rejects_consistently() {
+  // LF-only message framing: either accepted (lenient) or rejected — must not panic.
+  let input = b"HTTP/1.1 200 OK\nContent-Length: 0\n\n";
+  let _ = Response::parse(input);
+}
+
+#[cfg(feature = "gzip-decompression")]
+#[test]
+fn test_truncated_gzip_body_rejected() {
+  let input = b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 4\r\n\r\n\x1f\x8b\x08\x00";
+  let result = Response::parse(input);
+  assert!(matches!(result, Err(ParseError::DecompressionFailed)), "got {result:?}");
+}
+
+#[cfg(feature = "gzip-decompression")]
+#[test]
+fn test_corrupt_gzip_body_rejected() {
+  let junk = [0xffu8; 32];
+  let mut msg = Vec::from(&b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 32\r\n\r\n"[..]);
+  msg.extend_from_slice(&junk);
+  let result = Response::parse(&msg);
+  assert!(matches!(result, Err(ParseError::DecompressionFailed)), "got {result:?}");
 }

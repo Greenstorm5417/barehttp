@@ -87,7 +87,11 @@ impl<'a> BitReader<'a> {
     if self.bitcnt == 0 {
       return Err(DecompressError::InvalidInput);
     }
-    let have = if self.bitcnt < n { self.bitcnt } else { n };
+    let have = if self.bitcnt < n {
+      self.bitcnt
+    } else {
+      n
+    };
     let mask = (1u32 << have) - 1;
     Ok((self.bitbuf & mask, have))
   }
@@ -122,7 +126,11 @@ impl<'a> BitReader<'a> {
       self.bitcnt = self.bitcnt.saturating_sub(8);
       return Ok(b);
     }
-    let b = self.data.get(self.pos).copied().ok_or(DecompressError::InvalidInput)?;
+    let b = self
+      .data
+      .get(self.pos)
+      .copied()
+      .ok_or(DecompressError::InvalidInput)?;
     self.pos = self.pos.saturating_add(1);
     Ok(b)
   }

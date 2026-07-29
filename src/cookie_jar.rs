@@ -1,6 +1,6 @@
+use crate::sync::Mutex;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use crate::sync::Mutex;
 
 use crate::parser::cookie::SetCookie;
 use crate::parser::uri::{Host, Uri};

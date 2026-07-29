@@ -32,7 +32,7 @@ let response = barehttp::post("http://example.com/api").send(b"{}")?;
 
 ## Examples
 
-All examples use real cleartext HTTP (`http://` only — no TLS by default):
+All examples use cleartext HTTP (`http://` only):
 
 ```text
 cargo run --example basic                    # GET http://example.com
@@ -92,6 +92,17 @@ let client: HttpClient<OsBlockingSocket, _> =
 ```
 
 See `examples/custom_adapters.rs` for logging wrappers around `OsDnsResolver` / `OsBlockingSocket`.
+
+## Testing
+
+Use [cargo-nextest](https://nexte.st/):
+
+```bash
+cargo install cargo-nextest --locked
+cargo nextest run --all-features
+```
+
+CI runs nextest on push and pull requests. Details in [CONTRIBUTING.md](CONTRIBUTING.md); fuzz targets in [`fuzz/README.md`](fuzz/README.md).
 
 ## License
 

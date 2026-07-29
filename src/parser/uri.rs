@@ -4,6 +4,7 @@ use core::str::FromStr;
 use crate::error::ParseError;
 use crate::util::IpAddr;
 
+/// Parsed HTTP URI (absolute-form or origin-form used by the client).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Uri<'a> {
   scheme: &'a str,
@@ -12,27 +13,39 @@ pub struct Uri<'a> {
   query: Option<&'a str>,
 }
 
+/// Authority component (`host[:port]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Authority<'a> {
   host: Host<'a>,
   port: Option<u16>,
 }
 
+/// Host as an IP literal or registered name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Host<'a> {
+  /// Literal IPv4 / IPv6 address.
   IpAddr(IpAddr),
+  /// DNS / reg-name.
   RegName(&'a str),
 }
 
 impl<'a> Uri<'a> {
+  /// Parse an absolute URI (`http://…` / `https://…`).
+  ///
+  /// # Errors
+  /// [`ParseError::InvalidUri`] when the input is not a usable absolute URI.
   pub fn parse(input: &'a str) -> Result<Self, ParseError> {
     Parser::new(input).parse_uri()
   }
 
+  /// URI scheme (`http` / `https`).
+  #[must_use]
   pub const fn scheme(&self) -> &'a str {
     self.scheme
   }
 
+  /// Authority (`host[:port]`), if present.
+  #[must_use]
   pub const fn authority(&self) -> Option<&Authority<'a>> {
     self.authority.as_ref()
   }
@@ -52,15 +65,21 @@ impl<'a> Uri<'a> {
       })
   }
 
+  /// Path component (may be empty before normalization).
+  #[must_use]
   pub const fn path(&self) -> &'a str {
     self.path
   }
 
+  /// Query string without the leading `?`.
+  #[must_use]
   #[allow(dead_code)] // exercised by parser tests
   pub const fn query(&self) -> Option<&'a str> {
     self.query
   }
 
+  /// `path` + optional `?query` for the request-target.
+  #[must_use]
   pub fn path_and_query(&self) -> alloc::string::String {
     let path = if self.path().is_empty() {
       "/"
@@ -151,10 +170,14 @@ impl<'a> Uri<'a> {
 }
 
 impl<'a> Authority<'a> {
+  /// Host (IP or reg-name).
+  #[must_use]
   pub const fn host(&self) -> &Host<'a> {
     &self.host
   }
 
+  /// Explicit port, if any.
+  #[must_use]
   pub const fn port(&self) -> Option<u16> {
     self.port
   }

@@ -1,0 +1,37 @@
+[package]
+name = "barehttp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+barehttp = { path = "..", features = ["gzip-decompression"] }
+
+[[bin]]
+name = "parse_response"
+path = "fuzz_targets/parse_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_uri"
+path = "fuzz_targets/parse_uri.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inflate_gzip"
+path = "fuzz_targets/inflate_gzip.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+# Isolate fuzz as its own package (root crate is not a Cargo workspace).
+members = ["."]

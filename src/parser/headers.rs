@@ -175,6 +175,11 @@ pub fn expect_crlf(input: &[u8]) -> Result<&[u8], ParseError> {
     return input.get(1..).ok_or(ParseError::MissingCrlf);
   }
 
+  // Lone CR at end of buffer: need another read (not a framing error yet).
+  if byte0 == Some(b'\r') && byte1.is_none() {
+    return Err(ParseError::MissingCrlf);
+  }
+
   if byte0 == Some(b'\r') {
     return Err(ParseError::BareCarriageReturn);
   }

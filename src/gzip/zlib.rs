@@ -40,11 +40,19 @@ pub(super) fn decompress(
 
   let deflate = data.get(2..).ok_or(DecompressError::InvalidInput)?;
   let (out, consumed) = inflate::inflate(deflate, max_out)?;
-  let trailer_off = consumed.checked_add(2).ok_or(DecompressError::InvalidInput)?;
+  let trailer_off = consumed
+    .checked_add(2)
+    .ok_or(DecompressError::InvalidInput)?;
   let b0 = *data.get(trailer_off).ok_or(DecompressError::InvalidInput)?;
-  let b1 = *data.get(trailer_off.saturating_add(1)).ok_or(DecompressError::InvalidInput)?;
-  let b2 = *data.get(trailer_off.saturating_add(2)).ok_or(DecompressError::InvalidInput)?;
-  let b3 = *data.get(trailer_off.saturating_add(3)).ok_or(DecompressError::InvalidInput)?;
+  let b1 = *data
+    .get(trailer_off.saturating_add(1))
+    .ok_or(DecompressError::InvalidInput)?;
+  let b2 = *data
+    .get(trailer_off.saturating_add(2))
+    .ok_or(DecompressError::InvalidInput)?;
+  let b3 = *data
+    .get(trailer_off.saturating_add(3))
+    .ok_or(DecompressError::InvalidInput)?;
   let got = u32::from_be_bytes([b0, b1, b2, b3]);
   if got != adler32(&out) {
     return Err(DecompressError::InvalidInput);

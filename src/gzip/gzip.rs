@@ -51,7 +51,9 @@ pub(super) fn decompress_member(
 
   if flg & FEXTRA != 0 {
     let b0 = *data.get(i).ok_or(DecompressError::InvalidInput)?;
-    let b1 = *data.get(i.saturating_add(1)).ok_or(DecompressError::InvalidInput)?;
+    let b1 = *data
+      .get(i.saturating_add(1))
+      .ok_or(DecompressError::InvalidInput)?;
     let xlen = usize::from(u16::from_le_bytes([b0, b1]));
     i = i
       .checked_add(2)
@@ -73,7 +75,9 @@ pub(super) fn decompress_member(
     let header = data.get(..i).ok_or(DecompressError::InvalidInput)?;
     let expect = u16::try_from(crc32(header) & 0xffff).map_err(|_| DecompressError::InvalidInput)?;
     let b0 = *data.get(i).ok_or(DecompressError::InvalidInput)?;
-    let b1 = *data.get(i.saturating_add(1)).ok_or(DecompressError::InvalidInput)?;
+    let b1 = *data
+      .get(i.saturating_add(1))
+      .ok_or(DecompressError::InvalidInput)?;
     let got = u16::from_le_bytes([b0, b1]);
     if got != expect {
       return Err(DecompressError::InvalidInput);
@@ -83,16 +87,32 @@ pub(super) fn decompress_member(
 
   let deflate = data.get(i..).ok_or(DecompressError::InvalidInput)?;
   let (out, consumed) = inflate::inflate(deflate, max_out)?;
-  let trailer_off = i.checked_add(consumed).ok_or(DecompressError::InvalidInput)?;
+  let trailer_off = i
+    .checked_add(consumed)
+    .ok_or(DecompressError::InvalidInput)?;
   let b0 = *data.get(trailer_off).ok_or(DecompressError::InvalidInput)?;
-  let b1 = *data.get(trailer_off.saturating_add(1)).ok_or(DecompressError::InvalidInput)?;
-  let b2 = *data.get(trailer_off.saturating_add(2)).ok_or(DecompressError::InvalidInput)?;
-  let b3 = *data.get(trailer_off.saturating_add(3)).ok_or(DecompressError::InvalidInput)?;
+  let b1 = *data
+    .get(trailer_off.saturating_add(1))
+    .ok_or(DecompressError::InvalidInput)?;
+  let b2 = *data
+    .get(trailer_off.saturating_add(2))
+    .ok_or(DecompressError::InvalidInput)?;
+  let b3 = *data
+    .get(trailer_off.saturating_add(3))
+    .ok_or(DecompressError::InvalidInput)?;
   let crc_got = u32::from_le_bytes([b0, b1, b2, b3]);
-  let i0 = *data.get(trailer_off.saturating_add(4)).ok_or(DecompressError::InvalidInput)?;
-  let i1 = *data.get(trailer_off.saturating_add(5)).ok_or(DecompressError::InvalidInput)?;
-  let i2 = *data.get(trailer_off.saturating_add(6)).ok_or(DecompressError::InvalidInput)?;
-  let i3 = *data.get(trailer_off.saturating_add(7)).ok_or(DecompressError::InvalidInput)?;
+  let i0 = *data
+    .get(trailer_off.saturating_add(4))
+    .ok_or(DecompressError::InvalidInput)?;
+  let i1 = *data
+    .get(trailer_off.saturating_add(5))
+    .ok_or(DecompressError::InvalidInput)?;
+  let i2 = *data
+    .get(trailer_off.saturating_add(6))
+    .ok_or(DecompressError::InvalidInput)?;
+  let i3 = *data
+    .get(trailer_off.saturating_add(7))
+    .ok_or(DecompressError::InvalidInput)?;
   let isize = u32::from_le_bytes([i0, i1, i2, i3]);
 
   let crc_expect = update_crc(0, &out);

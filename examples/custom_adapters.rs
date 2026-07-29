@@ -82,11 +82,8 @@ impl BlockingSocket for LoggingSocket {
 }
 
 fn main() -> Result<(), Error> {
-  let dns = LoggingDns {
-    inner: OsDnsResolver,
-  };
-  let client: HttpClient<LoggingSocket, LoggingDns> =
-    HttpClient::with_adapters(dns, Config::default());
+  let dns = LoggingDns { inner: OsDnsResolver };
+  let client: HttpClient<LoggingSocket, LoggingDns> = HttpClient::with_adapters(dns, Config::default());
 
   let response = client.get("http://example.com/").call()?;
   let preview: String = response.text()?.chars().take(120).collect();

@@ -104,7 +104,11 @@ impl HuffmanDecoder {
     // remains and require the matched code length to fit in the available bits.
     let (peek, have) = bits.peek_bits_available(self.max_bits)?;
     let idx = usize::try_from(peek).map_err(|_| DecompressError::InvalidInput)?;
-    let (sym, len) = self.table.get(idx).copied().ok_or(DecompressError::InvalidInput)?;
+    let (sym, len) = self
+      .table
+      .get(idx)
+      .copied()
+      .ok_or(DecompressError::InvalidInput)?;
     if len == 0 || len > self.max_bits || len > have {
       return Err(DecompressError::InvalidInput);
     }

@@ -91,6 +91,9 @@ impl<T: ?Sized> fmt::Debug for Mutex<T> {
 
 #[cfg(test)]
 mod tests {
+  #![allow(clippy::unwrap_used, clippy::expect_used, clippy::shadow_reuse)]
+  extern crate std;
+
   use super::Mutex;
   use alloc::vec::Vec;
 
@@ -126,5 +129,36 @@ mod tests {
     drop(g);
     // Would hang forever if unlock failed.
     let _ = m.lock();
+  }
+
+  #[test]
+  fn concurrent_increments() {
+    // Miri + threads: verifies UnsafeCell mutex under the interpreter.
+    use std::sync::Arc;
+    use std::thread;
+
+    let m = Arc::new(Mutex::new(0_u32));
+    let mut handles = Vec::new();
+    for _ in 0..4 {
+      let lock = Arc::clone(&m);
+      handles.push(thread::spawn(move || {
+        for _ in 0..50 {
+          let mut g = lock.lock();
+          *g = g.wrapping_add(1);
+        }
+      }));
+    }
+    for h in handles {
+      assert!(h.join().is_ok());
+    }
+    assert_eq!(*m.lock(), 200);
+  }
+
+  #[test]
+  fn debug_does_not_lock() {
+    let m = Mutex::new(1_u32);
+    let _g = m.lock();
+    // Debug must not try to lock (would deadlock if it did).
+    let _ = alloc::format!("{m:?}");
   }
 }

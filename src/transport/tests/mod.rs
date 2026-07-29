@@ -8,4 +8,6 @@
 mod mock_socket;
 mod test_connection;
 mod test_connector;
+mod test_fragmentation;
+mod test_limits;
 mod test_pool;

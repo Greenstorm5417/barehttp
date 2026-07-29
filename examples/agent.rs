@@ -9,6 +9,10 @@ fn main() -> Result<(), barehttp::Error> {
     .query("q", "barehttp")
     .call()?;
 
-  println!("{} {}", response.status(), response.text()?.chars().take(120).collect::<String>());
+  println!(
+    "{} {}",
+    response.status(),
+    response.text()?.chars().take(120).collect::<String>()
+  );
   Ok(())
 }

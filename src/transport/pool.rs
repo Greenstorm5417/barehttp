@@ -1,9 +1,9 @@
 use crate::socket::BlockingSocket;
+use crate::sync::Mutex;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::time::Duration;
-use crate::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolKey {

@@ -11,7 +11,7 @@ fn main() {
       Err(msg) => {
         eprintln!("cookies example: {host} failed: {msg}");
         last_err = Some(msg);
-      }
+      },
     }
   }
 

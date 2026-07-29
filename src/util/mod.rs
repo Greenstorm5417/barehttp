@@ -84,6 +84,7 @@ pub fn now_unix_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
+  #![allow(clippy::unwrap_used)]
   use super::*;
 
   #[test]
@@ -104,5 +105,44 @@ mod tests {
   fn encode_modes_match_public_helpers() {
     assert_eq!(percent_encode("x y!"), encode(b"x y!", false));
     assert_eq!(form_url_encode("x y!"), encode(b"x y!", true));
+  }
+
+  #[test]
+  fn property_unreserved_unchanged() {
+    use proptest::prelude::*;
+    const UNRESERVED: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    proptest::proptest!(|(s in prop::collection::vec(
+      prop::sample::select(UNRESERVED),
+      0..64
+    ))| {
+      // Selected bytes are ASCII unreserved → always valid UTF-8.
+      let input = core::str::from_utf8(&s).unwrap_or("");
+      prop_assert_eq!(percent_encode(input), input);
+      prop_assert_eq!(form_url_encode(input), input);
+    });
+  }
+
+  #[test]
+  fn property_encode_never_panics_and_is_ascii() {
+    use proptest::prelude::*;
+    proptest::proptest!(|(s in ".*")| {
+      let out = percent_encode(&s);
+      prop_assert!(out.is_ascii());
+      let form = form_url_encode(&s);
+      prop_assert!(form.is_ascii());
+    });
+  }
+
+  #[test]
+  fn property_space_encoding_differs() {
+    use proptest::prelude::*;
+    proptest::proptest!(|(prefix in "[A-Za-z0-9]{0,8}", suffix in "[A-Za-z0-9]{0,8}")| {
+      let s = alloc::format!("{prefix} {suffix}");
+      let pct = percent_encode(&s);
+      let form = form_url_encode(&s);
+      prop_assert!(pct.contains("%20"));
+      prop_assert!(form.contains('+'));
+      prop_assert_ne!(pct, form);
+    });
   }
 }
