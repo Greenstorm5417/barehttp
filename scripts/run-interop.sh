@@ -67,7 +67,8 @@ fi
 
 echo "==> running interop_client (BAREHTTP_INTEROP=1)"
 set +e
-BAREHTTP_INTEROP=1 cargo nextest run --profile ci --locked --features gzip --test interop_client
+BAREHTTP_INTEROP=1 cargo nextest run --profile interop --ignore-default-filter \
+  --locked --features gzip --test interop_client
 STATUS=$?
 set -e
 

@@ -78,5 +78,8 @@ cargo llvm-cov report \
   --summary-only \
   | tee "${OUT_DIR}/summary.txt"
 
+# trybuild nests under target/tests/; rust-cache cleanup ENOENT-spams without this.
+mkdir -p target/tests/target
+
 echo "==> coverage artifacts under ${OUT_DIR}/"
 ls -la "${OUT_DIR}"

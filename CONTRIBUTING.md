@@ -42,7 +42,7 @@ Cargo build artifacts use [`Swatinem/rust-cache`](https://github.com/Swatinem/ru
 | trybuild / `tests/ui` | yes | yes |
 | fmt / docs / examples / lockfile | yes | yes |
 | Benches | smoke (short Criterion, Callgrind, dhat) | full (longer Criterion, Callgrind+Cachegrind, dhat, adversarial if present) |
-| MSRV 1.97 | yes | yes |
+| MSRV 1.85 | yes | yes |
 | OS matrix (Windows / macOS) | yes | yes |
 | Docker interop | **no** | yes (`scripts/run-interop.sh`) |
 | ASan / LSan | **no** | yes (nightly `-Zbuild-std`) |
@@ -114,9 +114,13 @@ Release / nightly only. Pinned images in `docker-compose.interop.yml`:
 bash scripts/run-interop.sh
 # or manually:
 docker compose -f docker-compose.interop.yml up -d --build
-BAREHTTP_INTEROP=1 cargo nextest run --features gzip --test interop_client
+BAREHTTP_INTEROP=1 cargo nextest run --profile interop --ignore-default-filter \
+  --features gzip --test interop_client
 docker compose -f docker-compose.interop.yml down -v
 ```
+
+Regular nextest profiles exclude `interop_client` (`default-filter` in `.config/nextest.toml`).
+Do not set `BAREHTTP_INTEROP=1` on the whole workflow — only the interop job / script.
 
 Deterministic endpoints: `/plain`, `/chunked`, `/gzip`, `/headers`, `/status/404`, `/close`, `/http10`.
 

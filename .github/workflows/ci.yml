@@ -62,6 +62,10 @@ jobs:
         with:
           key: features-${{ matrix.name }}
 
+      - name: Quiet rust-cache trybuild ENOENT
+        if: always()
+        run: mkdir -p target/tests/target
+
       - name: Check
         run: cargo check --locked ${{ matrix.args }}
 
@@ -90,6 +94,10 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Quiet rust-cache trybuild ENOENT
+        if: always()
+        run: mkdir -p target/tests/target
+
       - name: Check
         run: |
           cargo check --locked --target thumbv7em-none-eabi --no-default-features
@@ -110,6 +118,10 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Quiet rust-cache trybuild ENOENT
+        if: always()
+        run: mkdir -p target/tests/target
 
       - name: Miri (sync + focused)
         env:
@@ -145,6 +157,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz -> target
+
+      - name: Quiet rust-cache trybuild ENOENT
+        if: always()
+        run: mkdir -p target/tests/target
 
       - name: Cache fuzz corpora
         uses: actions/cache@v5
@@ -219,12 +235,16 @@ jobs:
         with:
           key: coverage
 
+      - name: Quiet rust-cache trybuild ENOENT
+        if: always()
+        run: mkdir -p target/tests/target
+
       - name: Coverage (LCOV + Cobertura + HTML)
         run: bash scripts/coverage.sh
 
       - name: Upload coverage artifacts
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-${{ github.sha }}
           path: |
@@ -249,6 +269,10 @@ jobs:
         with:
           key: ui
 
+      - name: Quiet rust-cache trybuild ENOENT
+        if: always()
+        run: mkdir -p target/tests/target
+
       - name: trybuild / UI tests
         run: cargo test --locked --test ui
 
@@ -267,6 +291,10 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Quiet rust-cache trybuild ENOENT
+        if: always()
+        run: mkdir -p target/tests/target
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -317,6 +345,10 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Quiet rust-cache trybuild ENOENT
+        if: always()
+        run: mkdir -p target/tests/target
+
       - name: Cache Gungraun baselines
         uses: actions/cache@v5
         with:
@@ -349,15 +381,15 @@ jobs:
           cargo bench --locked --bench dhat_e2e --all-features
 
   msrv:
-    name: MSRV (1.97)
+    name: MSRV (1.85)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
-      - name: Install Rust 1.97
-        uses: dtolnay/rust-toolchain@1.97
+      - name: Install Rust 1.85
+        uses: dtolnay/rust-toolchain@1.85
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -366,6 +398,10 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Quiet rust-cache trybuild ENOENT
+        if: always()
+        run: mkdir -p target/tests/target
 
       - name: Check (all features)
         run: cargo check --locked --all-features
@@ -395,6 +431,10 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Quiet rust-cache trybuild ENOENT
+        if: always()
+        run: mkdir -p target/tests/target
 
       - name: Nextest (default / none)
         run: cargo nextest run --profile ci --locked --no-default-features

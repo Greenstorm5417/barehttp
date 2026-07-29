@@ -4,10 +4,18 @@
 [profile.default]
 fail-fast = false
 slow-timeout = { period = "60s", terminate-after = 2 }
+# Docker interop is opt-in (BAREHTTP_INTEROP=1 + compose). Never run in regular CI.
+default-filter = "not binary(interop_client)"
 
 [profile.ci]
 fail-fast = false
 slow-timeout = { period = "120s", terminate-after = 2 }
+default-filter = "not binary(interop_client)"
 
 [profile.ci.junit]
 path = "target/nextest-junit.xml"
+
+# Used by scripts/run-interop.sh (ignores default-filter via --ignore-default-filter).
+[profile.interop]
+fail-fast = false
+slow-timeout = { period = "120s", terminate-after = 2 }
