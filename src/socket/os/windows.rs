@@ -3,9 +3,9 @@ use core::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use windows_sys::Win32::Networking::WinSock::{
-  AF_INET, AF_INET6, FIONBIO, INVALID_SOCKET, IPPROTO_TCP, SD_BOTH, SO_ERROR, SO_RCVTIMEO, SO_SNDTIMEO, SOCK_STREAM,
-  SOCKADDR_IN, SOCKADDR_IN6, SOCKET, SOCKET_ERROR, SOL_SOCKET, WSADATA, WSAGetLastError, WSAStartup, closesocket,
-  connect, fd_set, getsockopt, ioctlsocket, recv, select, send, setsockopt, shutdown, socket, timeval,
+  AF_INET, AF_INET6, FD_SET, FIONBIO, INVALID_SOCKET, IPPROTO_TCP, SD_BOTH, SO_ERROR, SO_RCVTIMEO, SO_SNDTIMEO,
+  SOCK_STREAM, SOCKADDR_IN, SOCKADDR_IN6, SOCKET, SOCKET_ERROR, SOL_SOCKET, TIMEVAL, WSADATA, WSAGetLastError,
+  WSAStartup, closesocket, connect, getsockopt, ioctlsocket, recv, select, send, setsockopt, shutdown, socket,
 };
 
 static WSA_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -275,11 +275,13 @@ impl OsSocket {
         return Err(SocketError::TimedOut);
       }
 
-      let mut write_fds = fd_set {
+      let mut write_fds = FD_SET {
         fd_count: 1,
         fd_array: [0; 64],
       };
-      write_fds.fd_array[0] = self.socket;
+      if let Some(slot) = write_fds.fd_array.get_mut(0) {
+        *slot = self.socket;
+      }
       let mut except_fds = write_fds;
 
       #[allow(
@@ -287,7 +289,7 @@ impl OsSocket {
         clippy::cast_possible_truncation,
         clippy::integer_division
       )]
-      let mut tv = timeval {
+      let mut tv = TIMEVAL {
         tv_sec: (remaining / 1000) as i32,
         tv_usec: ((remaining % 1000) * 1000) as i32,
       };

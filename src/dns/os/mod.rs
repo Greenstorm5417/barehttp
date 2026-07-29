@@ -1,5 +1,4 @@
 use crate::error::DnsError;
-use alloc::ffi::CString;
 
 #[cfg(unix)]
 mod unix;
@@ -16,6 +15,7 @@ pub fn resolve_host(_host: &str) -> Result<alloc::vec::Vec<crate::util::IpAddr>,
   Err(DnsError::ResolutionFailed(-1))
 }
 
-pub fn host_cstring(host: &str) -> Result<CString, DnsError> {
-  CString::new(host).map_err(|_| DnsError::ResolutionFailed(-1))
+#[cfg(any(unix, windows))]
+pub fn host_cstring(host: &str) -> Result<alloc::ffi::CString, DnsError> {
+  alloc::ffi::CString::new(host).map_err(|_| DnsError::ResolutionFailed(-1))
 }

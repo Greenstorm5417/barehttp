@@ -405,7 +405,16 @@ fn decompression_bomb_stored_block_hits_limit() {
 #[test]
 fn property_stored_blocks_roundtrip() {
   use proptest::prelude::*;
-  proptest::proptest!(|(payload in prop::collection::vec(any::<u8>(), 0..200))| {
+  use proptest::test_runner::Config;
+  // No file persistence: Miri isolation cannot `getcwd` for replay paths.
+  // Keep Miri cases tiny — full default counts are too slow under the interpreter.
+  let mut config = Config::with_cases(if cfg!(miri) {
+    8
+  } else {
+    256
+  });
+  config.failure_persistence = None;
+  proptest::proptest!(config, |(payload in prop::collection::vec(any::<u8>(), 0..200))| {
     let raw = stored_block(&payload, true);
     let out = decompress_raw_deflate(&raw, payload.len().saturating_add(1)).expect("inflate stored");
     prop_assert_eq!(out.as_slice(), payload.as_slice());
@@ -415,7 +424,14 @@ fn property_stored_blocks_roundtrip() {
 #[test]
 fn property_multi_stored_blocks_roundtrip() {
   use proptest::prelude::*;
-  proptest::proptest!(|(a in prop::collection::vec(any::<u8>(), 0..80), b in prop::collection::vec(any::<u8>(), 0..80))| {
+  use proptest::test_runner::Config;
+  let mut config = Config::with_cases(if cfg!(miri) {
+    8
+  } else {
+    256
+  });
+  config.failure_persistence = None;
+  proptest::proptest!(config, |(a in prop::collection::vec(any::<u8>(), 0..80), b in prop::collection::vec(any::<u8>(), 0..80))| {
     let mut raw = stored_block(&a, false);
     raw.extend_from_slice(&stored_block(&b, true));
     let mut expect = a;

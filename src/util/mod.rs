@@ -55,7 +55,12 @@ pub fn format_ip_for_host(addr: IpAddr) -> alloc::string::String {
 /// Wall-clock Unix seconds (cookie expiry, pool idle age).
 #[must_use]
 pub fn now_unix_secs() -> u64 {
-  #[cfg(unix)]
+  // Miri cannot call libc::time / Win32 FILETIME; keep a fixed clock for tests.
+  #[cfg(miri)]
+  {
+    1_700_000_000
+  }
+  #[cfg(all(unix, not(miri)))]
   {
     // SAFETY: time(NULL) is well-defined; negative means error → 0.
     let t = unsafe { libc::time(core::ptr::null_mut()) };
@@ -65,7 +70,7 @@ pub fn now_unix_secs() -> u64 {
       u64::try_from(t).unwrap_or(0)
     }
   }
-  #[cfg(windows)]
+  #[cfg(all(windows, not(miri)))]
   {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
@@ -82,7 +87,7 @@ pub fn now_unix_secs() -> u64 {
       .and_then(|s| s.checked_sub(11_644_473_600))
       .unwrap_or(0)
   }
-  #[cfg(not(any(unix, windows)))]
+  #[cfg(not(any(unix, windows, miri)))]
   {
     0
   }
