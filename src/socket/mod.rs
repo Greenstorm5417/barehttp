@@ -13,6 +13,9 @@ use crate::error::SocketError;
 /// [`OsBlockingSocket::new`]; custom [`crate::HttpClient`] adapters implement
 /// [`BlockingSocketFactory`].
 ///
+/// New methods added to this trait will provide default implementations when
+/// possible so existing adapters keep compiling.
+///
 /// # Examples
 ///
 /// ```no_run

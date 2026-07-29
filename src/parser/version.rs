@@ -1,8 +1,26 @@
 /// HTTP version (e.g. HTTP/1.1).
+///
+/// # Examples
+///
+/// ```
+/// use barehttp::Version;
+///
+/// assert_eq!(Version::HTTP_11.major(), 1);
+/// assert_eq!(Version::HTTP_11.minor(), 1);
+/// assert!(Version::HTTP_11.defaults_to_persistent());
+/// assert_eq!(Version::parse(b"HTTP/1.0")?, Version::HTTP_10);
+/// # Ok::<(), barehttp::ParseError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Version {
   major: u8,
   minor: u8,
+}
+
+impl Default for Version {
+  fn default() -> Self {
+    Self::HTTP_11
+  }
 }
 
 impl Version {

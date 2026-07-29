@@ -12,27 +12,27 @@ fn httpbin_url() -> String {
 #[test]
 #[ignore = "needs network / httpbin"]
 fn get_ok() {
-  let response = get(&format!("{}/get", httpbin_url())).call().unwrap();
-  assert_eq!(response.status(), 200);
+  let response = get(format!("{}/get", httpbin_url())).call().unwrap();
+  assert_eq!(response.status_code(), 200);
   assert!(response.is_success());
 }
 
 #[test]
 #[ignore = "needs network / httpbin"]
 fn post_ok() {
-  let response = post(&format!("{}/post", httpbin_url()))
+  let response = post(format!("{}/post", httpbin_url()))
     .send(b"test")
     .unwrap();
-  assert_eq!(response.status(), 200);
+  assert_eq!(response.status_code(), 200);
 }
 
 #[test]
 #[ignore = "needs network / httpbin"]
 fn delete_ok() {
-  let response = barehttp::delete(&format!("{}/delete", httpbin_url()))
+  let response = barehttp::delete(format!("{}/delete", httpbin_url()))
     .call()
     .unwrap();
-  assert_eq!(response.status(), 200);
+  assert_eq!(response.status_code(), 200);
 }
 
 #[test]
@@ -60,7 +60,7 @@ fn status_as_response() {
     .get(format!("{}/status/404", httpbin_url()))
     .call()
     .unwrap();
-  assert_eq!(response.status(), 404);
+  assert_eq!(response.status_code(), 404);
   assert!(response.is_client_error());
 }
 

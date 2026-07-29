@@ -54,6 +54,37 @@ windows-sys = { version = "0.61.2", default-features = false, features = [
   "Win32_System_SystemInformation",
 ] }
 
+# Lints that apply to *all* targets (lib, tests, benches, examples). Keep this
+# narrow: pedantic/nursery/`missing_docs`/`unwrap_used` stay in `src/lib.rs` so
+# CI `-D warnings` does not explode on benches and integration tests.
+# Restriction denies for library code: see `#![deny(...)]` in `src/lib.rs`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+# Not `unreachable_pub = "warn"`: private modules keep `pub` for crate-internal
+# clarity (see `clippy::redundant_pub_crate` allow in `src/lib.rs`). C-HIDDEN is
+# enforced by `pub(crate)` module boundaries + root re-exports instead.
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "warn"
+unescaped_backticks = "warn"
+missing_crate_level_docs = "warn"
+
+[lints.clippy]
+# API shape (skill defaults; safe under `-D warnings` for every target).
+# Heavier restriction/pedantic items stay in `src/lib.rs` so benches/tests
+# are not forced through `-D warnings` on those groups.
+ptr_arg = "deny"
+missing_safety_doc = "deny"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+wrong_self_convention = "warn"
+must_use_candidate = "warn"
+return_self_not_must_use = "warn"
+iter_not_returning_iterator = "warn"
+should_implement_trait = "warn"
+module_name_repetitions = "allow"
+
 [profile.bench]
 debug = 1
 

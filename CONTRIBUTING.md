@@ -84,3 +84,13 @@ cargo check --target thumbv7em-none-eabi --no-default-features
 
 - Keep the library `no_std` + `alloc`. Put `std` only in `tests/`, `examples/`, `fuzz/`, `benches/`, or `#[cfg(test)]`.
 - Do not add runtime `miniz_oxide` / `spin`; gzip stays hand-rolled behind `gzip`.
+
+## Optional public-API tooling
+
+Not installed by CI. Useful locally when changing the crate root surface:
+
+```bash
+cargo install cargo-public-api --locked   # optional
+cargo public-api                         # diff vs last tag / baseline if configured
+# similarly: cargo-semver-checks (optional)
+```

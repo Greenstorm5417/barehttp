@@ -28,7 +28,7 @@ fn make_redirect_response(
 
 fn raw_to_response_for_test(
   raw: RawResponse,
-  method: Method,
+  method: &Method,
 ) -> crate::parser::Response {
   let RawResponse {
     status_code,
@@ -37,8 +37,8 @@ fn raw_to_response_for_test(
     version,
     body_bytes,
   } = raw;
-  let (body, trailers) = if method == Method::Head {
-    (bytes::Bytes::new(), Vec::new())
+  let (body, trailers) = if method == &Method::Head {
+    (bytes::Bytes::new(), Headers::new())
   } else {
     crate::parser::Response::parse_body_from_bytes(&body_bytes, &mut headers, status_code, version, usize::MAX).unwrap()
   };
@@ -51,7 +51,7 @@ fn process(
   redirect_count: &mut u32,
   raw: RawResponse,
   current_url: &str,
-  method: Method,
+  method: &Method,
   body: Option<Vec<u8>>,
 ) -> Result<Option<(String, Method, Option<Vec<u8>>)>, Error> {
   if config.http_status_as_error() && (400..600).contains(&raw.status_code) {
@@ -139,7 +139,7 @@ fn policy_drops_body_for_head_requests() {
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::from_static(b"1234567890"),
   };
-  let resp = raw_to_response_for_test(raw, Method::Head);
+  let resp = raw_to_response_for_test(raw, &Method::Head);
   assert_eq!(resp.status_code(), 200);
   assert!(resp.body().is_empty(), "HEAD response body should be empty");
 }
@@ -158,7 +158,7 @@ fn redirect_method_table_301_302_303() {
   ];
 
   for status in statuses {
-    for &(method, ref body, expect_method, drop_body) in cases {
+    for (method, body, expect_method, drop_body) in cases {
       let mut visited = Vec::new();
       let mut count = 0;
       let next = process(
@@ -172,8 +172,8 @@ fn redirect_method_table_301_302_303() {
       )
       .unwrap()
       .expect("expected redirect");
-      assert_eq!(next.1, expect_method, "{method:?} {status} → method");
-      if drop_body {
+      assert_eq!(next.1, *expect_method, "{method:?} {status} → method");
+      if *drop_body {
         assert!(next.2.is_none(), "{method:?} {status} should drop body");
       }
     }
@@ -193,7 +193,7 @@ fn redirect_method_table_307_308() {
         &mut count,
         make_redirect_response(status, "/next"),
         "http://a.com",
-        method,
+        &method,
         None,
       )
       .unwrap()
@@ -215,7 +215,7 @@ fn redirect_method_table_307_308() {
         &mut count,
         make_redirect_response(status, "/next"),
         "http://a.com",
-        method,
+        &method,
         body,
       )
       .unwrap_err();
@@ -249,7 +249,7 @@ fn non_followable_3xx_is_returned() {
         &mut count,
         raw,
         "http://a.com",
-        Method::Get,
+        &Method::Get,
         None,
       )
       .unwrap()
@@ -269,7 +269,7 @@ fn get_redirect_stays_get() {
     &mut count,
     make_redirect_response(302, "/next"),
     "http://a.com",
-    Method::Get,
+    &Method::Get,
     None,
   )
   .unwrap()
@@ -290,7 +290,7 @@ fn redirect_loop_is_detected() {
     &mut count,
     raw.clone(),
     "http://a.com",
-    Method::Get,
+    &Method::Get,
     None,
   )
   .unwrap();
@@ -301,7 +301,7 @@ fn redirect_loop_is_detected() {
     &mut count,
     raw,
     "http://a.com",
-    Method::Get,
+    &Method::Get,
     None,
   )
   .unwrap_err();
@@ -329,7 +329,7 @@ fn status_error_when_configured() {
       &mut count,
       raw,
       "http://example.com",
-      Method::Get,
+      &Method::Get,
       None,
     )
     .unwrap_err();
@@ -364,7 +364,7 @@ fn status_4xx_is_ok_when_configured_as_response() {
       &mut count,
       raw,
       "http://example.com",
-      Method::Get,
+      &Method::Get,
       None
     )
     .unwrap()
@@ -385,7 +385,7 @@ fn too_many_redirects_is_error() {
     &mut count,
     raw.clone(),
     "http://a.com",
-    Method::Get,
+    &Method::Get,
     None,
   )
   .unwrap();
@@ -395,7 +395,7 @@ fn too_many_redirects_is_error() {
     &mut count,
     raw.clone(),
     "http://b.com",
-    Method::Get,
+    &Method::Get,
     None,
   )
   .unwrap();
@@ -405,7 +405,7 @@ fn too_many_redirects_is_error() {
     &mut count,
     raw,
     "http://c.com",
-    Method::Get,
+    &Method::Get,
     None,
   )
   .unwrap_err();
@@ -422,7 +422,7 @@ fn same_origin_redirect_follows() {
     &mut count,
     make_redirect_response(302, "/next"),
     "http://a.com/path",
-    Method::Get,
+    &Method::Get,
     None,
   )
   .unwrap()
@@ -440,7 +440,7 @@ fn cross_origin_redirect_follows() {
     &mut count,
     make_redirect_response(302, "http://b.com/next"),
     "http://a.com/path",
-    Method::Get,
+    &Method::Get,
     None,
   )
   .unwrap()
@@ -458,7 +458,7 @@ fn different_port_redirect_follows() {
     &mut count,
     make_redirect_response(302, "http://a.com:9090/next"),
     "http://a.com:8080/path",
-    Method::Get,
+    &Method::Get,
     None,
   )
   .unwrap()
@@ -505,7 +505,7 @@ fn max_redirects_zero_does_not_follow() {
       &mut count,
       make_redirect_response(302, "/next"),
       "http://a.com",
-      Method::Get,
+      &Method::Get,
       None,
     )
     .unwrap()
@@ -524,9 +524,10 @@ fn chunked_trailers_reach_response() {
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::from_static(b"5\r\nhello\r\n0\r\nX-Trailer: value\r\n\r\n"),
   };
-  let resp = raw_to_response_for_test(raw, Method::Get);
+  let resp = raw_to_response_for_test(raw, &Method::Get);
   assert_eq!(resp.body(), b"hello");
-  assert_eq!(resp.trailers(), &[(String::from("X-Trailer"), String::from("value"))]);
+  assert_eq!(resp.trailers().get("X-Trailer"), Some("value"));
+  assert_eq!(resp.trailers().len(), 1);
 }
 
 #[test]
@@ -534,7 +535,7 @@ fn build_request_is_http11_with_host_and_origin_form() {
   let uri = Uri::parse("http://example.com:8080/a/b?q=1").unwrap();
   let bytes = build_request(
     &uri,
-    Method::Get,
+    &Method::Get,
     "example.com",
     8080,
     &Headers::new(),
@@ -556,7 +557,7 @@ fn build_request_sends_connection_close_when_pooling_disabled() {
   let config = Config::builder().max_idle_per_host(0).build();
   let mut custom = Headers::new();
   custom.insert("Connection", "keep-alive");
-  let bytes = build_request(&uri, Method::Get, "example.com", 80, &custom, None, &config).unwrap();
+  let bytes = build_request(&uri, &Method::Get, "example.com", 80, &custom, None, &config).unwrap();
   let text = String::from_utf8_lossy(&bytes);
   assert!(text.contains("Connection: close\r\n"));
   assert!(!text.contains("keep-alive"));
@@ -567,7 +568,7 @@ fn build_request_default_port_omits_port_in_host() {
   let uri = Uri::parse("http://example.com/path").unwrap();
   let bytes = build_request(
     &uri,
-    Method::Get,
+    &Method::Get,
     "example.com",
     80,
     &Headers::new(),

@@ -5,7 +5,20 @@ use crate::error::ParseError;
 use crate::util::IpAddr;
 
 /// Parsed HTTP URI (absolute-form or origin-form used by the client).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// # Examples
+///
+/// ```
+/// use barehttp::Uri;
+///
+/// let uri = Uri::parse("http://example.com/path?q=1")?;
+/// assert_eq!(uri.scheme(), "http");
+/// assert_eq!(uri.path(), "/path");
+/// assert_eq!(uri.query(), Some("q=1"));
+/// assert_eq!(uri.port_or_default(), 80);
+/// # Ok::<(), barehttp::ParseError>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Uri<'a> {
   scheme: &'a str,
   authority: Option<Authority<'a>>,
@@ -14,14 +27,14 @@ pub struct Uri<'a> {
 }
 
 /// Authority component (`host[:port]`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Authority<'a> {
   host: Host<'a>,
   port: Option<u16>,
 }
 
 /// Host as an IP literal or registered name.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Host<'a> {
   /// Literal IPv4 / IPv6 address.
   IpAddr(IpAddr),
@@ -73,7 +86,6 @@ impl<'a> Uri<'a> {
 
   /// Query string without the leading `?`.
   #[must_use]
-  #[allow(dead_code)] // exercised by parser tests
   pub const fn query(&self) -> Option<&'a str> {
     self.query
   }

@@ -2,10 +2,11 @@ use crate::sync::Mutex;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use crate::error::ParseError;
 use crate::parser::cookie::SetCookie;
 use crate::parser::uri::{Host, Uri};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Cookie entry in [`CookieStore`].
 pub struct StoredCookie {
   name: String,
@@ -68,8 +69,19 @@ impl StoredCookie {
   }
 }
 
-#[derive(Debug)]
 /// Mutex-backed RFC 6265 cookie jar (domain/path match, expiry, `Secure`).
+///
+/// # Examples
+///
+/// ```
+/// use barehttp::cookie_jar::CookieStore;
+///
+/// let store = CookieStore::new();
+/// store.store_response_cookies("http://example.com/", ["id=1; Path=/"])?;
+/// assert_eq!(store.request_cookie_header("http://example.com/"), "id=1");
+/// # Ok::<(), barehttp::ParseError>(())
+/// ```
+#[derive(Debug)]
 pub struct CookieStore {
   cookies: Mutex<Vec<StoredCookie>>,
 }
@@ -86,21 +98,25 @@ impl CookieStore {
   /// Parse `Set-Cookie` values and insert them (RFC 6265 domain/path match; replace on name+domain+path).
   ///
   /// `Secure` cookies are rejected unless `uri` is `https://` (RFC 6265bis).
+  /// Individual malformed `Set-Cookie` values are skipped (RFC 6265 ignore-bad-cookie).
+  ///
+  /// # Errors
+  /// [`ParseError::InvalidUri`] if `uri` is not a usable absolute HTTP(S) URI
+  /// (same failure as [`Uri::parse`] / missing authority).
   pub fn store_response_cookies(
     &self,
     uri: &str,
-    set_cookie_headers: &[String],
-  ) {
-    let Some((request_host, request_path, is_secure)) = host_path_secure(uri) else {
-      return;
-    };
+    set_cookie_headers: impl IntoIterator<Item = impl AsRef<str>>,
+  ) -> Result<(), ParseError> {
+    let (request_host, request_path, is_secure) = host_path_secure(uri)?;
 
     let mut cookies = self.cookies.lock();
     for header_value in set_cookie_headers {
-      if let Some(parsed) = SetCookie::parse(header_value) {
+      if let Some(parsed) = SetCookie::parse(header_value.as_ref()) {
         Self::insert_cookie_locked(&mut cookies, parsed, &request_host, &request_path, is_secure);
       }
     }
+    Ok(())
   }
 
   fn insert_cookie_locked(
@@ -168,13 +184,16 @@ impl CookieStore {
 
   /// Cookie header value for `uri` (RFC 6265 path-length / creation-time sort).
   ///
-  /// Empty when nothing matches. Skips `Secure` cookies unless `is_secure`.
+  /// Empty when nothing matches, or when `uri` is not a usable absolute HTTP(S)
+  /// URI (unlike [`Self::store_response_cookies`], invalid URIs are not an error
+  /// here — callers typically already validated the request URL).
+  /// Skips `Secure` cookies unless `uri` uses the `https` scheme (same rule as
+  /// store-time rejection of `Secure` over cleartext).
   pub fn request_cookie_header(
     &self,
     uri: &str,
-    is_secure: bool,
   ) -> String {
-    let Some((request_host, request_path, _)) = host_path_secure(uri) else {
+    let Ok((request_host, request_path, is_secure)) = host_path_secure(uri) else {
       return String::new();
     };
 
@@ -309,11 +328,13 @@ impl Default for CookieStore {
 }
 
 /// Alias for [`CookieStore`] (matches the `cookie-jar` feature / module name).
+///
+/// Prefer [`CookieStore`] in new code; this alias is stable and **not** deprecated.
 pub type CookieJar = CookieStore;
 
-fn host_path_secure(uri: &str) -> Option<(String, String, bool)> {
-  let parsed = Uri::parse(uri).ok()?;
-  let auth = parsed.authority()?;
+fn host_path_secure(uri: &str) -> Result<(String, String, bool), ParseError> {
+  let parsed = Uri::parse(uri)?;
+  let auth = parsed.authority().ok_or(ParseError::InvalidUri)?;
   let host = match auth.host() {
     Host::RegName(name) => String::from(*name),
     Host::IpAddr(addr) => crate::util::format_ip_for_host(*addr),
@@ -324,7 +345,7 @@ fn host_path_secure(uri: &str) -> Option<(String, String, bool)> {
     String::from(parsed.path())
   };
   let is_secure = parsed.scheme().eq_ignore_ascii_case("https");
-  Some((host, path, is_secure))
+  Ok((host, path, is_secure))
 }
 
 fn domain_matches(
@@ -430,6 +451,7 @@ fn default_path(request_path: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
   use super::*;
 
@@ -437,20 +459,21 @@ mod tests {
   fn test_host_path_secure() {
     assert_eq!(
       host_path_secure("http://example.com"),
-      Some((String::from("example.com"), String::from("/"), false))
+      Ok((String::from("example.com"), String::from("/"), false))
     );
     assert_eq!(
       host_path_secure("https://example.com/path"),
-      Some((String::from("example.com"), String::from("/path"), true))
+      Ok((String::from("example.com"), String::from("/path"), true))
     );
     assert_eq!(
       host_path_secure("http://example.com:8080/path"),
-      Some((String::from("example.com"), String::from("/path"), false))
+      Ok((String::from("example.com"), String::from("/path"), false))
     );
     assert_eq!(
       host_path_secure("http://example.com/path?query"),
-      Some((String::from("example.com"), String::from("/path"), false))
+      Ok((String::from("example.com"), String::from("/path"), false))
     );
+    assert_eq!(host_path_secure("not a uri"), Err(ParseError::InvalidUri));
   }
 
   #[test]
@@ -485,10 +508,22 @@ mod tests {
     let store = CookieStore::new();
 
     let set_cookie = alloc::vec!["session=abc123".to_string()];
-    store.store_response_cookies("http://example.com/", &set_cookie);
+    store
+      .store_response_cookies("http://example.com/", &set_cookie)
+      .expect("uri");
 
-    let cookies = store.request_cookie_header("http://example.com/", false);
+    let cookies = store.request_cookie_header("http://example.com/");
     assert_eq!(cookies, "session=abc123");
+  }
+
+  #[test]
+  fn store_response_cookies_rejects_invalid_uri() {
+    let store = CookieStore::new();
+    assert_eq!(
+      store.store_response_cookies("not a uri", ["a=1"]),
+      Err(ParseError::InvalidUri)
+    );
+    assert!(store.iter().next().is_none());
   }
 
   #[test]
@@ -496,12 +531,14 @@ mod tests {
     let store = CookieStore::new();
 
     let set_cookie = alloc::vec!["id=123; Path=/admin".to_string()];
-    store.store_response_cookies("http://example.com/admin/panel", &set_cookie);
+    store
+      .store_response_cookies("http://example.com/admin/panel", &set_cookie)
+      .expect("uri");
 
-    let cookies_admin = store.request_cookie_header("http://example.com/admin/panel", false);
+    let cookies_admin = store.request_cookie_header("http://example.com/admin/panel");
     assert_eq!(cookies_admin, "id=123");
 
-    let cookies_other = store.request_cookie_header("http://example.com/other", false);
+    let cookies_other = store.request_cookie_header("http://example.com/other");
     assert_eq!(cookies_other, "");
   }
 
@@ -510,15 +547,17 @@ mod tests {
     let store = CookieStore::new();
 
     let set_cookie = alloc::vec!["id=123; Domain=example.com".to_string()];
-    store.store_response_cookies("http://www.example.com/", &set_cookie);
+    store
+      .store_response_cookies("http://www.example.com/", &set_cookie)
+      .expect("uri");
 
-    let cookies_www = store.request_cookie_header("http://www.example.com/", false);
+    let cookies_www = store.request_cookie_header("http://www.example.com/");
     assert_eq!(cookies_www, "id=123");
 
-    let cookies_sub = store.request_cookie_header("http://sub.example.com/", false);
+    let cookies_sub = store.request_cookie_header("http://sub.example.com/");
     assert_eq!(cookies_sub, "id=123");
 
-    let cookies_other = store.request_cookie_header("http://other.com/", false);
+    let cookies_other = store.request_cookie_header("http://other.com/");
     assert_eq!(cookies_other, "");
   }
 
@@ -527,21 +566,25 @@ mod tests {
     let store = CookieStore::new();
 
     let set_cookie = alloc::vec!["token=secret; Secure".to_string()];
-    store.store_response_cookies("https://example.com/", &set_cookie);
+    store
+      .store_response_cookies("https://example.com/", &set_cookie)
+      .expect("uri");
 
-    let cookies_https = store.request_cookie_header("https://example.com/", true);
+    let cookies_https = store.request_cookie_header("https://example.com/");
     assert_eq!(cookies_https, "token=secret");
 
-    let cookies_http = store.request_cookie_header("http://example.com/", false);
+    let cookies_http = store.request_cookie_header("http://example.com/");
     assert_eq!(cookies_http, "");
   }
 
   #[test]
   fn test_secure_cookie_rejected_over_http() {
     let store = CookieStore::new();
-    store.store_response_cookies("http://example.com/", &alloc::vec!["token=secret; Secure".to_string()]);
+    store
+      .store_response_cookies("http://example.com/", alloc::vec!["token=secret; Secure".to_string()])
+      .expect("uri");
     // Must not store. Later HTTPS must not see a Secure cookie set over cleartext.
-    assert_eq!(store.request_cookie_header("https://example.com/", true), "");
+    assert_eq!(store.request_cookie_header("https://example.com/"), "");
     assert!(store.iter().next().is_none());
   }
 
@@ -549,12 +592,16 @@ mod tests {
   fn test_cookie_replacement() {
     let store = CookieStore::new();
 
-    store.store_response_cookies("http://example.com/", &alloc::vec!["id=first".to_string()]);
-    let cookies_first = store.request_cookie_header("http://example.com/", false);
+    store
+      .store_response_cookies("http://example.com/", alloc::vec!["id=first".to_string()])
+      .expect("uri");
+    let cookies_first = store.request_cookie_header("http://example.com/");
     assert_eq!(cookies_first, "id=first");
 
-    store.store_response_cookies("http://example.com/", &alloc::vec!["id=second".to_string()]);
-    let cookies_second = store.request_cookie_header("http://example.com/", false);
+    store
+      .store_response_cookies("http://example.com/", alloc::vec!["id=second".to_string()])
+      .expect("uri");
+    let cookies_second = store.request_cookie_header("http://example.com/");
     assert_eq!(cookies_second, "id=second");
   }
 
@@ -562,36 +609,42 @@ mod tests {
   fn cookie_send_order_longer_path_first_then_creation() {
     let store = CookieStore::new();
     // Shorter path first in time, then longer path. Wire order must be longer path first.
-    store.store_response_cookies("http://example.com/a/b", &alloc::vec!["a=1; Path=/".to_string()]);
-    store.store_response_cookies("http://example.com/a/b", &alloc::vec!["b=2; Path=/a".to_string()]);
-    store.store_response_cookies("http://example.com/a/b", &alloc::vec!["c=3; Path=/a/b".to_string()]);
-    assert_eq!(
-      store.request_cookie_header("http://example.com/a/b", false),
-      "c=3; b=2; a=1"
-    );
+    store
+      .store_response_cookies("http://example.com/a/b", alloc::vec!["a=1; Path=/".to_string()])
+      .expect("uri");
+    store
+      .store_response_cookies("http://example.com/a/b", alloc::vec!["b=2; Path=/a".to_string()])
+      .expect("uri");
+    store
+      .store_response_cookies("http://example.com/a/b", alloc::vec!["c=3; Path=/a/b".to_string()])
+      .expect("uri");
+    assert_eq!(store.request_cookie_header("http://example.com/a/b"), "c=3; b=2; a=1");
   }
 
   #[test]
   fn cookie_send_order_same_path_creation_time() {
     let store = CookieStore::new();
-    store.store_response_cookies("http://example.com/", &alloc::vec!["first=1; Path=/".to_string()]);
-    store.store_response_cookies("http://example.com/", &alloc::vec!["second=2; Path=/".to_string()]);
-    assert_eq!(
-      store.request_cookie_header("http://example.com/", false),
-      "first=1; second=2"
-    );
+    store
+      .store_response_cookies("http://example.com/", alloc::vec!["first=1; Path=/".to_string()])
+      .expect("uri");
+    store
+      .store_response_cookies("http://example.com/", alloc::vec!["second=2; Path=/".to_string()])
+      .expect("uri");
+    assert_eq!(store.request_cookie_header("http://example.com/"), "first=1; second=2");
   }
 
   #[test]
   fn test_multiple_cookies() {
     let store = CookieStore::new();
 
-    store.store_response_cookies(
-      "http://example.com/",
-      &alloc::vec!["session=abc".to_string(), "lang=en".to_string()],
-    );
+    store
+      .store_response_cookies(
+        "http://example.com/",
+        alloc::vec!["session=abc".to_string(), "lang=en".to_string()],
+      )
+      .expect("uri");
 
-    let cookies = store.request_cookie_header("http://example.com/", false);
+    let cookies = store.request_cookie_header("http://example.com/");
     assert!(cookies.contains("session=abc"));
     assert!(cookies.contains("lang=en"));
   }
@@ -599,13 +652,15 @@ mod tests {
   #[test]
   fn expires_in_past_is_not_stored() {
     let store = CookieStore::new();
-    store.store_response_cookies(
-      "http://example.com/",
-      &alloc::vec!["gone=1; Expires=Thu, 01 Jan 1970 00:00:00 GMT".to_string()],
-    );
+    store
+      .store_response_cookies(
+        "http://example.com/",
+        alloc::vec!["gone=1; Expires=Thu, 01 Jan 1970 00:00:00 GMT".to_string()],
+      )
+      .expect("uri");
     assert!(
       store
-        .request_cookie_header("http://example.com/", false)
+        .request_cookie_header("http://example.com/")
         .is_empty()
     );
   }
@@ -613,22 +668,28 @@ mod tests {
   #[test]
   fn expires_in_future_is_stored() {
     let store = CookieStore::new();
-    store.store_response_cookies(
-      "http://example.com/",
-      &alloc::vec!["keep=1; Expires=Wed, 09 Jun 2099 10:18:14 GMT".to_string()],
-    );
-    assert_eq!(store.request_cookie_header("http://example.com/", false), "keep=1");
+    store
+      .store_response_cookies(
+        "http://example.com/",
+        alloc::vec!["keep=1; Expires=Wed, 09 Jun 2099 10:18:14 GMT".to_string()],
+      )
+      .expect("uri");
+    assert_eq!(store.request_cookie_header("http://example.com/"), "keep=1");
   }
 
   #[test]
   fn max_age_zero_deletes() {
     let store = CookieStore::new();
-    store.store_response_cookies("http://example.com/", &alloc::vec!["id=1".to_string()]);
-    assert_eq!(store.request_cookie_header("http://example.com/", false), "id=1");
-    store.store_response_cookies("http://example.com/", &alloc::vec!["id=1; Max-Age=0".to_string()]);
+    store
+      .store_response_cookies("http://example.com/", alloc::vec!["id=1".to_string()])
+      .expect("uri");
+    assert_eq!(store.request_cookie_header("http://example.com/"), "id=1");
+    store
+      .store_response_cookies("http://example.com/", alloc::vec!["id=1; Max-Age=0".to_string()])
+      .expect("uri");
     assert!(
       store
-        .request_cookie_header("http://example.com/", false)
+        .request_cookie_header("http://example.com/")
         .is_empty()
     );
   }
@@ -636,10 +697,12 @@ mod tests {
   #[test]
   fn rejects_public_suffix_like_domain() {
     let store = CookieStore::new();
-    store.store_response_cookies("http://example.com/", &alloc::vec!["x=1; Domain=com".to_string()]);
+    store
+      .store_response_cookies("http://example.com/", alloc::vec!["x=1; Domain=com".to_string()])
+      .expect("uri");
     assert!(
       store
-        .request_cookie_header("http://example.com/", false)
+        .request_cookie_header("http://example.com/")
         .is_empty()
     );
     assert_eq!(store.iter().len(), 0);
@@ -648,17 +711,21 @@ mod tests {
   #[test]
   fn rejects_ip_domain_attribute() {
     let store = CookieStore::new();
-    store.store_response_cookies("http://192.0.2.1/", &alloc::vec!["x=1; Domain=192.0.2.1".to_string()]);
+    store
+      .store_response_cookies("http://192.0.2.1/", alloc::vec!["x=1; Domain=192.0.2.1".to_string()])
+      .expect("uri");
     assert_eq!(store.iter().len(), 0);
   }
 
   #[test]
   fn clear_and_remove() {
     let store = CookieStore::new();
-    store.store_response_cookies(
-      "http://example.com/",
-      &alloc::vec!["a=1".to_string(), "b=2; Path=/".to_string()],
-    );
+    store
+      .store_response_cookies(
+        "http://example.com/",
+        alloc::vec!["a=1".to_string(), "b=2; Path=/".to_string()],
+      )
+      .expect("uri");
     assert_eq!(store.iter().len(), 2);
     assert!(store.remove("a", "example.com", "/"));
     assert_eq!(store.iter().len(), 1);
@@ -670,10 +737,12 @@ mod tests {
   #[test]
   fn iter_walks_locked_cookies() {
     let store = CookieStore::new();
-    store.store_response_cookies(
-      "http://example.com/",
-      &alloc::vec!["session=abc".to_string(), "lang=en".to_string()],
-    );
+    store
+      .store_response_cookies(
+        "http://example.com/",
+        alloc::vec!["session=abc".to_string(), "lang=en".to_string()],
+      )
+      .expect("uri");
 
     let mut pairs = alloc::vec::Vec::new();
     for cookie in &store {

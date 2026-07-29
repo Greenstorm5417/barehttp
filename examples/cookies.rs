@@ -40,7 +40,7 @@ fn run_against(host: &str) -> Result<(), String> {
     return Err(format!("expected 200 after set, got {set_status}: {body}"));
   }
 
-  let cookie_hdr = agent.cookie_store().request_cookie_header(&get_url, false);
+  let cookie_hdr = agent.cookie_store().request_cookie_header(&get_url);
   println!("stored Cookie header: {cookie_hdr}");
   if !cookie_hdr.contains("session=abc123") {
     return Err(format!("jar missing session cookie, got: {cookie_hdr:?}"));

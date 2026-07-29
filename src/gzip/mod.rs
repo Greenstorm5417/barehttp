@@ -14,29 +14,9 @@ mod tests;
 
 use alloc::vec::Vec;
 
-/// Errors from gzip / deflate decompression.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum DecompressError {
-  /// Invalid or truncated input.
-  InvalidInput,
-  /// Uncompressed output would exceed the configured limit.
-  LimitExceeded,
-}
-
-impl core::fmt::Display for DecompressError {
-  fn fmt(
-    &self,
-    f: &mut core::fmt::Formatter<'_>,
-  ) -> core::fmt::Result {
-    match self {
-      Self::InvalidInput => f.write_str("invalid gzip/deflate input"),
-      Self::LimitExceeded => f.write_str("decompressed output exceeds size limit"),
-    }
-  }
-}
-
-impl core::error::Error for DecompressError {}
+/// Same type as [`crate::DecompressError`] (always at the crate root; this module is
+/// feature-gated behind `gzip`).
+pub use crate::error::DecompressError;
 
 /// RFC 1952 gzip member → uncompressed bytes. Enforces `max_out`.
 ///
@@ -53,7 +33,8 @@ impl core::error::Error for DecompressError {}
 ///   0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xcb, 0xc8, 0x04, 0x00, 0xac, 0x2a, 0x93,
 ///   0xd8, 0x02, 0x00, 0x00, 0x00,
 /// ];
-/// assert_eq!(decompress_gzip(gz, 64).unwrap(), b"hi");
+/// assert_eq!(decompress_gzip(gz, 64)?, b"hi");
+/// # Ok::<(), barehttp::gzip::DecompressError>(())
 /// ```
 pub fn decompress_gzip(
   data: &[u8],
@@ -66,6 +47,17 @@ pub fn decompress_gzip(
 ///
 /// # Errors
 /// [`DecompressError`] when both wrappers fail or output would exceed `max_out`.
+///
+/// # Examples
+///
+/// ```
+/// use barehttp::gzip::decompress_http_deflate;
+///
+/// // zlib-wrapped DEFLATE for payload "hi" (CMF/FLG + deflate + Adler-32)
+/// let z: &[u8] = &[0x78, 0xda, 0xcb, 0xc8, 0x04, 0x00, 0x01, 0x3b, 0x00, 0xd2];
+/// assert_eq!(decompress_http_deflate(z, 64)?, b"hi");
+/// # Ok::<(), barehttp::gzip::DecompressError>(())
+/// ```
 pub fn decompress_http_deflate(
   data: &[u8],
   max_out: usize,
@@ -81,6 +73,17 @@ pub fn decompress_http_deflate(
 ///
 /// # Errors
 /// [`DecompressError`] when the stream is invalid or output would exceed `max_out`.
+///
+/// # Examples
+///
+/// ```
+/// use barehttp::gzip::decompress_raw_deflate;
+///
+/// // raw DEFLATE for payload "hi" (no zlib wrapper)
+/// let raw: &[u8] = &[0xcb, 0xc8, 0x04, 0x00];
+/// assert_eq!(decompress_raw_deflate(raw, 64)?, b"hi");
+/// # Ok::<(), barehttp::gzip::DecompressError>(())
+/// ```
 pub fn decompress_raw_deflate(
   data: &[u8],
   max_out: usize,

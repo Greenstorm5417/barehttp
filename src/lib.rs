@@ -20,10 +20,16 @@
 )]
 #![warn(
   missing_docs,
+  missing_debug_implementations,
   clippy::pedantic,
   clippy::nursery,
   clippy::missing_errors_doc,
-  clippy::missing_panics_doc
+  clippy::missing_panics_doc,
+  clippy::needless_pass_by_value,
+  clippy::new_without_default,
+  clippy::large_enum_variant,
+  clippy::result_large_err,
+  clippy::undocumented_unsafe_blocks
 )]
 #![allow(
   clippy::inline_always,
@@ -41,33 +47,49 @@
 extern crate alloc;
 
 #[cfg(feature = "cookie-jar")]
-/// RFC 6265 cookie store ([`CookieStore`](cookie_jar::CookieStore) / [`CookieJar`](cookie_jar::CookieJar)).
+/// RFC 6265 cookie store ([`CookieStore`](cookie_jar::CookieStore); alias [`CookieJar`](cookie_jar::CookieJar)).
 pub mod cookie_jar;
 
 pub use client::HttpClient;
 pub use error::Error;
 
 pub use dns::{DnsResolver, OsDnsResolver};
-pub use error::{DnsError, InvalidRequest, ParseError, SocketError};
+pub use error::{DecompressError, DnsError, IntoStringError, InvalidRequest, ParseError, SocketError};
 pub use socket::{BlockingSocket, BlockingSocketFactory};
 pub use socket::{OsBlockingSocket, SocketAddr};
 pub use util::IpAddr;
 
-pub use bytes::Bytes;
-pub use headers::{Headers, Iter as HeaderIter, WellKnownHeader, well_known_header};
-pub use method::{Method, ParseMethodError};
+pub use headers::{
+  Headers, IntoIter as HeaderIntoIter, Iter as HeaderIter, WellKnownHeader, well_known_header, well_known_header_bytes,
+};
+pub use method::{ExtensionMethod, Method, ParseMethodError};
 pub use parser::Response;
 pub use parser::uri::{Authority, Host, Uri};
 pub use parser::version::Version;
 pub use request_builder::ClientRequestBuilder;
 
-/// [`HttpClient`] with OS adapters (ureq calls this `Agent`).
+/// [`HttpClient`] with OS adapters (`HttpClient<OsBlockingSocket, OsDnsResolver>`).
+///
+/// Documented ureq-like synonym. Prefer [`HttpClient`] in new code; this alias is
+/// stable and **not** deprecated.
 pub type Agent = HttpClient<OsBlockingSocket, OsDnsResolver>;
 
-/// [`ClientRequestBuilder`] with OS adapters (ureq calls this `RequestBuilder`).
+/// [`ClientRequestBuilder`] with OS adapters.
+///
+/// Documented ureq-like synonym. Prefer [`ClientRequestBuilder`] in new code; this
+/// alias is stable and **not** deprecated.
 pub type RequestBuilder = ClientRequestBuilder<OsBlockingSocket, OsDnsResolver>;
 
-/// Default-OS [`Agent`] / [`HttpClient`].
+/// Default-OS [`HttpClient`] (type alias [`Agent`]).
+///
+/// # Examples
+///
+/// ```no_run
+/// let client = barehttp::agent();
+/// let response = client.get("http://example.com").call()?;
+/// assert!(response.status_code() > 0);
+/// # Ok::<(), barehttp::Error>(())
+/// ```
 #[must_use]
 pub fn agent() -> Agent {
   HttpClient::new()
@@ -83,7 +105,7 @@ pub fn agent() -> Agent {
 /// # Ok::<(), barehttp::Error>(())
 /// ```
 #[must_use]
-pub fn get(url: &str) -> RequestBuilder {
+pub fn get(url: impl AsRef<str>) -> RequestBuilder {
   HttpClient::new().get(url)
 }
 
@@ -97,37 +119,74 @@ pub fn get(url: &str) -> RequestBuilder {
 /// # Ok::<(), barehttp::Error>(())
 /// ```
 #[must_use]
-pub fn post(url: &str) -> RequestBuilder {
+pub fn post(url: impl AsRef<str>) -> RequestBuilder {
   HttpClient::new().post(url)
 }
 
 /// PUT using a fresh default OS client (body via [`.send()`](ClientRequestBuilder::send)).
+///
+/// # Examples
+///
+/// ```no_run
+/// let response = barehttp::put("http://example.com/item/1").send(b"updated")?;
+/// assert!(response.status_code() > 0);
+/// # Ok::<(), barehttp::Error>(())
+/// ```
 #[must_use]
-pub fn put(url: &str) -> RequestBuilder {
+pub fn put(url: impl AsRef<str>) -> RequestBuilder {
   HttpClient::new().put(url)
 }
 
 /// DELETE using a fresh default OS client.
+///
+/// # Examples
+///
+/// ```no_run
+/// let response = barehttp::delete("http://example.com/item/1").call()?;
+/// assert!(response.status_code() > 0);
+/// # Ok::<(), barehttp::Error>(())
+/// ```
 #[must_use]
-pub fn delete(url: &str) -> RequestBuilder {
+pub fn delete(url: impl AsRef<str>) -> RequestBuilder {
   HttpClient::new().delete(url)
 }
 
 /// HEAD using a fresh default OS client.
+///
+/// # Examples
+///
+/// ```no_run
+/// let response = barehttp::head("http://example.com").call()?;
+/// assert!(response.status_code() > 0);
+/// # Ok::<(), barehttp::Error>(())
+/// ```
 #[must_use]
-pub fn head(url: &str) -> RequestBuilder {
+pub fn head(url: impl AsRef<str>) -> RequestBuilder {
   HttpClient::new().head(url)
 }
 
 /// PATCH using a fresh default OS client (body via [`.send()`](ClientRequestBuilder::send)).
+///
+/// # Examples
+///
+/// ```no_run
+/// let response = barehttp::patch("http://example.com/item/1").send(b"{}")?;
+/// assert!(response.status_code() > 0);
+/// # Ok::<(), barehttp::Error>(())
+/// ```
 #[must_use]
-pub fn patch(url: &str) -> RequestBuilder {
+pub fn patch(url: impl AsRef<str>) -> RequestBuilder {
   HttpClient::new().patch(url)
 }
 
-/// Client configuration.
+/// Client configuration ([`config::Config`], [`config::ConfigBuilder`]).
+///
+/// Kept as a module (not flattened to the crate root) on purpose — see README
+/// “Module layout”.
 pub mod config;
-/// Request builder.
+/// Request builder ([`ClientRequestBuilder`]).
+///
+/// Module path is stable; the type is also re-exported at the crate root.
 pub mod request_builder;
 
 mod client;
@@ -143,3 +202,36 @@ pub(crate) mod socket;
 pub(crate) mod sync;
 mod transport;
 pub(crate) mod util;
+
+// C-SEND-SYNC: clients, errors, config, and response are threaded / `Arc`-shared.
+const _: fn() = || {
+  const fn assert_send_sync<T: Send + Sync>() {}
+  assert_send_sync::<Agent>();
+  assert_send_sync::<HttpClient<OsBlockingSocket, OsDnsResolver>>();
+  assert_send_sync::<Error>();
+  assert_send_sync::<ParseError>();
+  assert_send_sync::<DecompressError>();
+  assert_send_sync::<DnsError>();
+  assert_send_sync::<SocketError>();
+  assert_send_sync::<InvalidRequest>();
+  assert_send_sync::<IntoStringError>();
+  assert_send_sync::<ParseMethodError>();
+  assert_send_sync::<ExtensionMethod>();
+  assert_send_sync::<Method>();
+  assert_send_sync::<config::Config>();
+  assert_send_sync::<config::ConfigBuilder>();
+  assert_send_sync::<Response>();
+  assert_send_sync::<RequestBuilder>();
+  assert_send_sync::<ClientRequestBuilder<OsBlockingSocket, OsDnsResolver>>();
+  assert_send_sync::<Headers>();
+  assert_send_sync::<Uri<'static>>();
+  assert_send_sync::<Version>();
+};
+
+#[cfg(feature = "cookie-jar")]
+const _: fn() = || {
+  const fn assert_send_sync<T: Send + Sync>() {}
+  assert_send_sync::<cookie_jar::CookieStore>();
+  assert_send_sync::<cookie_jar::CookieJar>();
+  assert_send_sync::<cookie_jar::StoredCookie>();
+};

@@ -81,8 +81,8 @@ fn get_200_plain() {
   );
   let url = format!("http://{addr}/");
   let resp = client.get(&url).call().expect("call");
-  assert_eq!(resp.status(), 200);
-  assert_eq!(resp.as_bytes(), b"hello");
+  assert_eq!(resp.status_code(), 200);
+  assert_eq!(resp.body(), b"hello");
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn chunked_body() {
 
   let client = HttpClient::with_config(Config::builder().max_idle_per_host(0).build());
   let resp = client.get(format!("http://{addr}/")).call().unwrap();
-  assert_eq!(resp.as_bytes(), b"hello");
+  assert_eq!(resp.body(), b"hello");
 }
 
 #[test]
@@ -124,8 +124,8 @@ fn redirect_follow() {
       .build(),
   );
   let resp = client.get(format!("http://{addr}/start")).call().unwrap();
-  assert_eq!(resp.status(), 200);
-  assert_eq!(resp.as_bytes(), b"done");
+  assert_eq!(resp.status_code(), 200);
+  assert_eq!(resp.body(), b"done");
 }
 
 #[cfg(feature = "gzip")]
@@ -153,7 +153,7 @@ fn gzip_content_encoding() {
 
   let client = HttpClient::with_config(Config::builder().max_idle_per_host(0).build());
   let resp = client.get(format!("http://{addr}/")).call().unwrap();
-  assert_eq!(resp.as_bytes(), plain);
+  assert_eq!(resp.body(), plain);
 }
 
 #[test]

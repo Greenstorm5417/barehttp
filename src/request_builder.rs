@@ -13,6 +13,19 @@ use core::fmt;
 use core::time::Duration;
 
 /// Request builder for [`HttpClient`].
+///
+/// Finish with [`Self::call`] (no body / body already set) or [`Self::send`].
+///
+/// # Examples
+///
+/// ```no_run
+/// let response = barehttp::HttpClient::new()
+///     .get("http://example.com")
+///     .header("Accept", "text/plain")
+///     .call()?;
+/// assert!(response.status_code() > 0);
+/// # Ok::<(), barehttp::Error>(())
+/// ```
 #[must_use = "builders do nothing unless you call `.call()` or `.send()`"]
 pub struct ClientRequestBuilder<S, D> {
   client: HttpClient<S, D>,
@@ -49,12 +62,12 @@ where
   pub(crate) fn new(
     client: HttpClient<S, D>,
     method: Method,
-    url: impl Into<String>,
+    url: impl AsRef<str>,
   ) -> Self {
     Self {
       client,
       method,
-      url: url.into(),
+      url: String::from(url.as_ref()),
       headers: Headers::new(),
       query_params: Vec::new(),
       form_data: Vec::new(),
@@ -71,6 +84,7 @@ where
   }
 
   /// Override [`Config::timeout_connect`] for this request.
+  #[must_use]
   pub fn timeout_connect(
     mut self,
     timeout: Option<Duration>,
@@ -83,6 +97,7 @@ where
   }
 
   /// Override [`Config::timeout_read`] for this request.
+  #[must_use]
   pub fn timeout_read(
     mut self,
     timeout: Option<Duration>,
@@ -95,6 +110,7 @@ where
   }
 
   /// Override [`Config::timeout_write`] for this request.
+  #[must_use]
   pub fn timeout_write(
     mut self,
     timeout: Option<Duration>,
@@ -107,6 +123,7 @@ where
   }
 
   /// Override [`Config::max_response_body_size`] for this request.
+  #[must_use]
   pub fn max_response_body_size(
     mut self,
     limit: usize,
@@ -119,56 +136,65 @@ where
   }
 
   /// Append a header (does not replace existing values for the same name).
+  #[must_use]
   pub fn header(
     mut self,
-    name: impl Into<String>,
-    value: impl Into<String>,
+    name: impl AsRef<str>,
+    value: impl AsRef<str>,
   ) -> Self {
     self.headers.insert(name, value);
     self
   }
 
   /// Replace all values for a header name.
+  #[must_use]
   pub fn set_header(
     mut self,
-    name: impl Into<String>,
-    value: impl Into<String>,
+    name: impl AsRef<str>,
+    value: impl AsRef<str>,
   ) -> Self {
     self.headers.set(name, value);
     self
   }
 
   /// Set `Content-Type`, replacing any prior value.
+  #[must_use]
   pub fn content_type(
     self,
-    value: impl Into<String>,
+    value: impl AsRef<str>,
   ) -> Self {
     self.set_header(Headers::CONTENT_TYPE, value)
   }
 
   /// Add a URL-encoded query parameter (space as `%20`).
+  #[must_use]
   pub fn query(
     mut self,
-    key: impl Into<String>,
-    value: impl Into<String>,
+    key: impl AsRef<str>,
+    value: impl AsRef<str>,
   ) -> Self {
-    self.query_params.push((key.into(), value.into()));
+    self
+      .query_params
+      .push((String::from(key.as_ref()), String::from(value.as_ref())));
     self
   }
 
   /// Add multiple URL-encoded query parameters (space as `%20`).
+  #[must_use]
   pub fn query_pairs<I, K, V>(
     mut self,
     iter: I,
   ) -> Self
   where
     I: IntoIterator<Item = (K, V)>,
-    K: Into<String>,
-    V: Into<String>,
+    K: AsRef<str>,
+    V: AsRef<str>,
   {
-    self
-      .query_params
-      .extend(iter.into_iter().map(|(k, v)| (k.into(), v.into())));
+    self.query_params.extend(
+      iter
+        .into_iter()
+        .map(|(k, v)| (String::from(k.as_ref()), String::from(v.as_ref()))),
+    );
     self
   }
 
@@ -176,26 +202,33 @@ where
   ///
   /// Invalid names/values (`;` or control characters) make [`Self::call`] / [`Self::send`]
   /// return [`Error::InvalidRequest`] with [`InvalidRequest::CookieOctet`].
+  #[must_use]
   pub fn cookie(
     mut self,
-    name: impl Into<String>,
-    value: impl Into<String>,
+    name: impl AsRef<str>,
+    value: impl AsRef<str>,
   ) -> Self {
-    self.cookies.push((name.into(), value.into()));
+    self
+      .cookies
+      .push((String::from(name.as_ref()), String::from(value.as_ref())));
     self
   }
 
   /// Add a form data field (`application/x-www-form-urlencoded`).
+  #[must_use]
   pub fn form(
     mut self,
-    key: impl Into<String>,
-    value: impl Into<String>,
+    key: impl AsRef<str>,
+    value: impl AsRef<str>,
   ) -> Self {
-    self.form_data.push((key.into(), value.into()));
+    self
+      .form_data
+      .push((String::from(key.as_ref()), String::from(value.as_ref())));
     self
   }
 
   /// Set the request body.
+  #[must_use]
   pub fn body(
     mut self,
     data: impl AsRef<[u8]>,
@@ -250,7 +283,7 @@ where
     };
 
     // POST/PUT/PATCH with no body still send Content-Length: 0 (via empty Some).
-    let body = match (self.method, prepared_body) {
+    let body = match (&self.method, prepared_body) {
       (Method::Post | Method::Put | Method::Patch, None) => Some(Vec::new()),
       (_, other) => other,
     };
@@ -260,7 +293,7 @@ where
       .unwrap_or_else(|| self.client.config().clone());
     self
       .client
-      .request_with_config(&config, self.method, &url, &headers, body)
+      .request_with_config_owned(&config, self.method, &url, &headers, body)
   }
 
   /// Set the body and send ([`Self::call`]).

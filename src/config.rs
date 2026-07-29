@@ -28,7 +28,7 @@ pub const DEFAULT_MAX_RESPONSE_BODY_SIZE: usize = 10 * 1024 * 1024;
 /// assert_eq!(config.max_redirects(), 5);
 /// assert_eq!(config.timeout_connect(), Some(Duration::from_secs(10)));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Config {
   user_agent: alloc::string::String,
@@ -49,7 +49,7 @@ pub struct Config {
 impl Default for Config {
   fn default() -> Self {
     Self {
-      user_agent: alloc::string::String::from("barehttp/1.0"),
+      user_agent: alloc::string::String::from(concat!("barehttp/", env!("CARGO_PKG_VERSION"))),
       max_redirects: 10,
       http_status_as_error: true,
       max_response_header_size: 64 * 1024,
@@ -190,6 +190,7 @@ impl Config {
 }
 
 /// Builder for [`Config`].
+#[must_use = "builders do nothing unless you call `.build()`"]
 #[derive(Debug, Clone)]
 pub struct ConfigBuilder {
   config: Config,
@@ -206,9 +207,9 @@ impl ConfigBuilder {
   #[must_use]
   pub fn user_agent(
     mut self,
-    v: impl Into<alloc::string::String>,
+    v: impl AsRef<str>,
   ) -> Self {
-    self.config.user_agent = v.into();
+    self.config.user_agent = alloc::string::String::from(v.as_ref());
     self
   }
 
@@ -286,9 +287,9 @@ impl ConfigBuilder {
   #[must_use]
   pub fn accept(
     mut self,
-    v: impl Into<alloc::string::String>,
+    v: impl AsRef<str>,
   ) -> Self {
-    self.config.accept = v.into();
+    self.config.accept = alloc::string::String::from(v.as_ref());
     self
   }
 

@@ -181,7 +181,13 @@ fn test_bare_lf_only_status_still_parses_or_rejects_consistently() {
 fn test_truncated_gzip_body_rejected() {
   let input = b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 4\r\n\r\n\x1f\x8b\x08\x00";
   let result = Response::parse(input);
-  assert!(matches!(result, Err(ParseError::DecompressionFailed)), "got {result:?}");
+  assert!(
+    matches!(
+      result,
+      Err(ParseError::Decompression(crate::error::DecompressError::InvalidInput))
+    ),
+    "got {result:?}"
+  );
 }
 
 #[cfg(feature = "gzip")]
@@ -191,5 +197,11 @@ fn test_corrupt_gzip_body_rejected() {
   let mut msg = Vec::from(&b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 32\r\n\r\n"[..]);
   msg.extend_from_slice(&junk);
   let result = Response::parse(&msg);
-  assert!(matches!(result, Err(ParseError::DecompressionFailed)), "got {result:?}");
+  assert!(
+    matches!(
+      result,
+      Err(ParseError::Decompression(crate::error::DecompressError::InvalidInput))
+    ),
+    "got {result:?}"
+  );
 }

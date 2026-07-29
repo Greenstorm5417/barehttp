@@ -109,7 +109,7 @@ where
   pub fn method(
     &self,
     method: Method,
-    url: impl Into<String>,
+    url: impl AsRef<str>,
   ) -> ClientRequestBuilder<S, D> {
     ClientRequestBuilder::new(self.clone(), method, url)
   }
@@ -118,7 +118,7 @@ where
   #[must_use]
   pub fn get(
     &self,
-    url: impl Into<String>,
+    url: impl AsRef<str>,
   ) -> ClientRequestBuilder<S, D> {
     self.method(Method::Get, url)
   }
@@ -127,7 +127,7 @@ where
   #[must_use]
   pub fn post(
     &self,
-    url: impl Into<String>,
+    url: impl AsRef<str>,
   ) -> ClientRequestBuilder<S, D> {
     self.method(Method::Post, url)
   }
@@ -136,7 +136,7 @@ where
   #[must_use]
   pub fn put(
     &self,
-    url: impl Into<String>,
+    url: impl AsRef<str>,
   ) -> ClientRequestBuilder<S, D> {
     self.method(Method::Put, url)
   }
@@ -145,7 +145,7 @@ where
   #[must_use]
   pub fn delete(
     &self,
-    url: impl Into<String>,
+    url: impl AsRef<str>,
   ) -> ClientRequestBuilder<S, D> {
     self.method(Method::Delete, url)
   }
@@ -154,7 +154,7 @@ where
   #[must_use]
   pub fn head(
     &self,
-    url: impl Into<String>,
+    url: impl AsRef<str>,
   ) -> ClientRequestBuilder<S, D> {
     self.method(Method::Head, url)
   }
@@ -163,16 +163,19 @@ where
   #[must_use]
   pub fn patch(
     &self,
-    url: impl Into<String>,
+    url: impl AsRef<str>,
   ) -> ClientRequestBuilder<S, D> {
     self.method(Method::Patch, url)
   }
 
   /// Shared cookie store (`cookie-jar` feature).
+  ///
+  /// Returns a borrow of the store (not [`Arc`]) so callers do not depend on the
+  /// internal shared-ownership shape. Clone the client (or call again) to share.
   #[cfg(feature = "cookie-jar")]
   #[must_use]
-  pub const fn cookie_store(&self) -> &Arc<CookieStore> {
-    &self.cookie_store
+  pub fn cookie_store(&self) -> &CookieStore {
+    self.cookie_store.as_ref()
   }
 
   /// Shared client config.
@@ -183,24 +186,50 @@ where
 
   /// Redirect loop; each hop connect / write / read.
   ///
+  /// Body is copied once into an owned buffer (needed for redirect replay).
+  /// Pass `None::<&[u8]>` when there is no body.
+  ///
   /// # Errors
   /// [`Error::InvalidUrl`], [`Error::Dns`], [`Error::Socket`], [`Error::Parse`],
   /// redirect / TLS / size-limit variants, or [`Error::HttpStatus`] when configured.
   pub fn request(
     &self,
     method: Method,
-    url: &str,
+    url: impl AsRef<str>,
     custom_headers: &Headers,
-    body: Option<Vec<u8>>,
+    body: Option<impl AsRef<[u8]>>,
   ) -> Result<Response, Error> {
     self.request_with_config(self.config.as_ref(), method, url, custom_headers, body)
   }
 
   /// [`Self::request`] with a caller-supplied config.
   ///
+  /// Body is copied once into an owned buffer (needed for redirect replay).
+  /// Pass `None::<&[u8]>` when there is no body.
+  ///
   /// # Errors
   /// Same as [`Self::request`].
   pub fn request_with_config(
+    &self,
+    config: &Config,
+    method: Method,
+    url: impl AsRef<str>,
+    custom_headers: &Headers,
+    body: Option<impl AsRef<[u8]>>,
+  ) -> Result<Response, Error> {
+    // `AsRef` cannot move a `Vec`; one copy is the public-API cost. The request
+    // builder already holds `Option<Vec<u8>>` and uses `request_with_config_owned`.
+    self.request_with_config_owned(
+      config,
+      method,
+      url.as_ref(),
+      custom_headers,
+      body.map(|b| b.as_ref().to_vec()),
+    )
+  }
+
+  /// Like [`Self::request_with_config`], but takes an already-owned body (no copy).
+  pub(crate) fn request_with_config_owned(
     &self,
     config: &Config,
     method: Method,
@@ -228,10 +257,7 @@ where
       let mut headers_with_cookies = current_headers.clone();
       #[cfg(feature = "cookie-jar")]
       {
-        let is_secure = uri.scheme().eq_ignore_ascii_case("https");
-        let cookie_header = self
-          .cookie_store
-          .request_cookie_header(&current_url, is_secure);
+        let cookie_header = self.cookie_store.request_cookie_header(&current_url);
         headers_with_cookies.merge_cookie(&cookie_header);
       }
 
@@ -245,28 +271,22 @@ where
         self.dns.as_ref(),
         config,
         &uri,
-        current_method,
+        &current_method,
         headers_to_use,
         current_body.as_deref(),
       )?;
 
       #[cfg(feature = "cookie-jar")]
       {
-        let set_cookie_headers: Vec<String> = raw
-          .headers
-          .get_all(Headers::SET_COOKIE)
-          .into_iter()
-          .map(alloc::string::ToString::to_string)
-          .collect();
-
+        let set_cookie_headers = raw.headers.get_all(Headers::SET_COOKIE);
         if !set_cookie_headers.is_empty() {
           self
             .cookie_store
-            .store_response_cookies(&current_url, &set_cookie_headers);
+            .store_response_cookies(&current_url, set_cookie_headers)?;
         }
       }
 
-      let response = raw_to_response(raw, current_method, config.max_response_body_size())?;
+      let response = raw_to_response(raw, &current_method, config.max_response_body_size())?;
 
       if config.http_status_as_error() && (400..600).contains(&response.status_code()) {
         return Err(Error::HttpStatus(
@@ -282,7 +302,7 @@ where
         &response,
         &uri,
         &current_url,
-        current_method,
+        &current_method,
         current_body,
       )?
       else {
@@ -303,7 +323,7 @@ const fn pooling_enabled(config: &Config) -> bool {
 
 fn raw_to_response(
   raw: RawResponse,
-  method: Method,
+  method: &Method,
   max_body: usize,
 ) -> Result<Response, Error> {
   let RawResponse {
@@ -314,13 +334,10 @@ fn raw_to_response(
     body_bytes,
   } = raw;
 
-  let (response_body, trailers) = if method == Method::Head {
-    (bytes::Bytes::new(), Vec::new())
+  let (response_body, trailers) = if method == &Method::Head {
+    (bytes::Bytes::new(), Headers::new())
   } else {
-    Response::parse_body_from_owned(body_bytes, &mut headers, status_code, version, max_body).map_err(|e| match e {
-      crate::error::ParseError::BodyExceedsLimit(n) => Error::BodyExceedsLimit(n),
-      other => Error::Parse(other),
-    })?
+    Response::parse_body_from_owned(body_bytes, &mut headers, status_code, version, max_body).map_err(Error::from)?
   };
 
   Ok(Response::from_parts(
@@ -391,7 +408,7 @@ pub fn follow_redirect(
   response: &Response,
   current_uri: &Uri,
   current_url: &str,
-  current_method: Method,
+  current_method: &Method,
   current_body: Option<Vec<u8>>,
 ) -> Result<Option<(String, Method, Option<Vec<u8>>)>, Error> {
   // `max_redirects == 0` means do not follow (return the redirect response).
@@ -426,21 +443,21 @@ pub fn follow_redirect(
 
 fn redirect_method_and_body(
   status: u16,
-  method: Method,
+  method: &Method,
   body: Option<Vec<u8>>,
 ) -> Result<(Method, Option<Vec<u8>>), Error> {
   match status {
     307 | 308 => {
       // Retain method only when there is no request body to replay (ureq).
-      if method.needs_request_body() || method == Method::Delete {
+      if method.needs_request_body() || method == &Method::Delete {
         return Err(Error::RedirectFailed);
       }
-      Ok((method, body))
+      Ok((method.clone(), body))
     },
     // 301, 302, 303 (and only those are followable besides 307/308)
     _ => {
-      if matches!(method, Method::Get | Method::Head) {
-        Ok((method, body))
+      if matches!(method, &Method::Get | &Method::Head) {
+        Ok((method.clone(), body))
       } else {
         Ok((Method::Get, None))
       }
@@ -456,7 +473,7 @@ fn execute<S, D>(
   dns: &D,
   config: &Config,
   uri: &Uri,
-  method: Method,
+  method: &Method,
   custom_headers: &Headers,
   body: Option<&[u8]>,
 ) -> Result<RawResponse, Error>
@@ -517,7 +534,7 @@ fn try_one_hop<S, D>(
   dns: &D,
   config: &Config,
   uri: &Uri,
-  method: Method,
+  method: &Method,
   custom_headers: &Headers,
   body: Option<&[u8]>,
   host_str: &str,
@@ -533,7 +550,7 @@ where
   let mut conn = crate::transport::connection::connect_with_buffers(socket, dns, uri, config, reused, buffers)?;
   let request_bytes = build_request(uri, method, host_str, port, custom_headers, body, config)?;
   conn.send_request(&request_bytes)?;
-  let raw = conn.read_raw_response(method != Method::Head)?;
+  let raw = conn.read_raw_response(method != &Method::Head)?;
   let reusable = conn.is_reusable();
   let returned_bufs = conn.take_buffers();
   Ok((raw, reusable, returned_bufs))
@@ -572,7 +589,7 @@ where
 /// Exposed for unit tests that assert wire serialization.
 pub fn build_request(
   uri: &Uri,
-  method: Method,
+  method: &Method,
   host_str: &str,
   port: u16,
   custom_headers: &Headers,

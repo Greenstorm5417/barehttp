@@ -1,12 +1,11 @@
 use crate::error::ParseError;
+use crate::headers::Headers;
 use crate::parser::headers::{expect_crlf, parse_header_fields};
-use alloc::string::String;
-use alloc::vec::Vec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkedDecoder {
   state: DecodeState,
-  trailers: Vec<(String, String)>,
+  trailers: Headers,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,20 +32,20 @@ impl ChunkedDecoder {
   pub const fn new() -> Self {
     Self {
       state: DecodeState::ChunkSize,
-      trailers: Vec::new(),
+      trailers: Headers::new(),
     }
   }
 
   /// Trailer fields after the last chunk (RFC 9112 §7.1.2).
   #[must_use]
   #[allow(dead_code)]
-  pub fn trailers(&self) -> &[(String, String)] {
+  pub const fn trailers(&self) -> &Headers {
     &self.trailers
   }
 
   /// Take trailer fields out of the decoder (avoids cloning after a successful decode).
   #[must_use]
-  pub fn take_trailers(&mut self) -> Vec<(String, String)> {
+  pub fn take_trailers(&mut self) -> Headers {
     core::mem::take(&mut self.trailers)
   }
 
@@ -169,7 +168,7 @@ impl ChunkedDecoder {
             });
           }
           let (trailers, rest) = parse_header_fields(remaining)?;
-          self.trailers = trailers.into_vec();
+          self.trailers = trailers;
           self.state = DecodeState::Complete;
           return Ok(FeedResult::Done { rest });
         },

@@ -3,6 +3,8 @@
 Blocking HTTP/1.1 client for `no_std` + `alloc`. Cleartext HTTP; no async.
 Design notes: [philosophy.md](philosophy.md).
 
+**MSRV:** Rust **1.97** (`rust-version` in `Cargo.toml`).
+
 `https://` needs [`config::Config::assume_tls_socket`] and a [`BlockingSocket`] that terminates TLS.
 [`OsBlockingSocket`] is TCP only. Pairing it with `assume_tls_socket` returns
 [`Error::TlsNotConfigured`].
@@ -10,14 +12,25 @@ Design notes: [philosophy.md](philosophy.md).
 ```rust,no_run
 fn main() -> Result<(), barehttp::Error> {
     let response = barehttp::get("http://example.com").call()?;
-    println!("{} {}", response.status(), response.to_text()?);
+    println!("{} {}", response.status_code(), response.to_text()?);
     Ok(())
 }
 ```
 
-[`Agent`] is `HttpClient<OsBlockingSocket, OsDnsResolver>`. [`agent`] builds one.
-Free functions ([`get`], [`post`], …) return a [`RequestBuilder`]; finish with
-[`ClientRequestBuilder::call`] or [`ClientRequestBuilder::send`]:
+## Naming
+
+Primary names:
+
+| Role | Primary | Compatibility alias |
+|------|---------|---------------------|
+| Client | [`HttpClient`] | [`Agent`] (= `HttpClient<OsBlockingSocket, OsDnsResolver>`) |
+| Request builder | [`ClientRequestBuilder`] | [`RequestBuilder`] (same OS adapters) |
+| Cookie store (`cookie-jar`) | [`cookie_jar::CookieStore`] | [`cookie_jar::CookieJar`] |
+| Status / body | [`Response::status_code`], [`Response::body`] | deprecated [`Response::status`] / [`Response::as_bytes`] |
+
+[`Agent`] / [`RequestBuilder`] / [`cookie_jar::CookieJar`] are documented ureq-like synonyms and are **not** deprecated. Prefer the primary names in new code. README and examples use primaries only.
+
+[`agent`] builds a default-OS [`HttpClient`]. Free functions ([`get`], [`post`], …) return a builder; finish with [`ClientRequestBuilder::call`] or [`ClientRequestBuilder::send`]:
 
 ```rust,no_run
 # fn main() -> Result<(), barehttp::Error> {
@@ -28,14 +41,29 @@ let response = barehttp::post("http://example.com/api").send(b"{}")?;
 # }
 ```
 
+## Module layout
+
+Hot types live at the crate root (`HttpClient`, `Response`, `Error`, `Headers`, …).
+Optional / larger surfaces stay in modules: [`config`], [`request_builder`], and
+(feature-gated) [`cookie_jar`] / [`gzip`]. That half-nesting is intentional — not a
+half-finished re-export pass.
+
+## Intentional limits
+
+- **Buffered** response bodies (no streaming `Read` body API).
+- **Blocking** I/O only (no async runtime).
+- Public body accessors use `&[u8]` / `Vec<u8>` / `String` only (`core` / `alloc`).
+
 ## Features
 
 - Custom [`BlockingSocket`] / [`DnsResolver`] (`connect` gets the hostname for SNI)
 - Connection pooling (`Config::max_idle_per_host` default 3; `0` disables; `max_idle_age` default 15s)
 - Response body size limit (`Config::max_response_body_size`, default ~10 MiB)
 - Optional Cargo features: `gzip` exposes `barehttp::gzip` (hand-rolled RFC 1951/1952); `zstd` is Accept-Encoding + decode only; `cookie-jar` gates the cookie module
-- Runtime deps (always): `bytes` (body / wire buffers, `no_std` + `alloc`), `phf` (well-known header name map), `compact_str` (SSO header strings), `hashbrown` (header side-index / pool). Platform: `libc` / `windows-sys`.
+- Runtime deps (always, **not** in the public API): `bytes` (internal body / wire buffers), `phf` (well-known header name map), `compact_str` (SSO header strings), `hashbrown` (header side-index / pool). Platform: `libc` / `windows-sys`.
 - Request builder: `.form` / `.body` then `.call()`, or `.send(bytes)`; per-request `.timeout_read` / `.timeout_write` / `.timeout_connect`
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Examples
 
@@ -115,4 +143,4 @@ CI runs nextest on push and pull requests. Details in [CONTRIBUTING.md](https://
 
 ## License
 
-MIT OR Apache-2.0
+MIT OR Apache-2.0. Changes: [CHANGELOG.md](CHANGELOG.md).

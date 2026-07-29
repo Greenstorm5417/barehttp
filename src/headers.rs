@@ -9,9 +9,25 @@ use hashbrown::HashMap;
 
 /// Ordered list of `(name, value)` header fields.
 ///
-/// Field storage is [`CompactString`] (inline ≤24 bytes on 64-bit).
+/// Names and values are stored compactly (short strings stay inline).
 /// A lowercase → first-index map, when present, backs [`Self::get`] /
-/// [`Self::contains`]; iteration and multi-value order follow the ordered `Vec`.
+/// [`Self::contains`]; iteration and multi-value order follow insertion order.
+///
+/// # String policy
+///
+/// - Mutation / ingest that copies into storage: `impl AsRef<str>`
+/// - Lookups: `&str`
+/// - Owned export via [`Self::into_vec`]: `(String, String)`
+///
+/// # Examples
+///
+/// ```
+/// use barehttp::Headers;
+///
+/// let mut headers = Headers::new();
+/// headers.insert("Content-Type", "text/plain");
+/// assert_eq!(headers.get("content-type"), Some("text/plain"));
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct Headers {
   headers: Vec<(CompactString, CompactString)>,
@@ -31,6 +47,16 @@ impl PartialEq for Headers {
 }
 
 impl Eq for Headers {}
+
+impl Hash for Headers {
+  fn hash<H: Hasher>(
+    &self,
+    state: &mut H,
+  ) {
+    // Must match `PartialEq`: hash fields only, not the index cache.
+    self.headers.hash(state);
+  }
+}
 
 /// Iterator over `(name, value)` pairs in a [`Headers`] map.
 #[derive(Debug, Clone)]
@@ -158,7 +184,7 @@ pub fn well_known_header_bytes(name: &[u8]) -> Option<WellKnownHeader> {
   WELL_KNOWN.get(key).copied()
 }
 
-/// ASCII-lowercase `name` into a [`CompactString`] (inline for typical header lengths).
+/// ASCII-lowercase `name` into internal key storage (inline for typical header lengths).
 #[inline]
 fn ascii_lowercase_key(name: &str) -> CompactString {
   const STACK: usize = 64;
@@ -196,7 +222,7 @@ impl Hash for AsciiLowerQuery<'_> {
     state: &mut H,
   ) {
     const STACK: usize = 64;
-    // Must match `str`/`CompactString` hashing of the lowercased form.
+    // Must match hashing of the lowercased form stored in the index.
     let bytes = self.0.as_bytes();
     if !bytes.iter().any(u8::is_ascii_uppercase) {
       self.0.hash(state);
@@ -249,19 +275,21 @@ impl Headers {
   }
 
   /// Wrap an existing `(name, value)` list.
+  ///
+  /// Accepts any pair types that borrow as [`str`] (e.g. [`&str`], [`String`]).
   #[must_use]
-  pub fn from_vec(headers: Vec<(String, String)>) -> Self {
-    let mut out = Self::with_capacity(headers.len());
-    for (name, value) in headers {
-      out
-        .headers
-        .push((CompactString::from(name), CompactString::from(value)));
-    }
-    out.rebuild_index();
-    out
+  pub fn from_vec<S, T>(headers: Vec<(S, T)>) -> Self
+  where
+    S: AsRef<str>,
+    T: AsRef<str>,
+  {
+    headers.into_iter().collect()
   }
 
-  /// Consume into the underlying `(name, value)` list.
+  /// Consume into owned `(name, value)` pairs as [`String`].
+  ///
+  /// Returns standard [`String`] pairs (not the crate's internal storage) so
+  /// callers get a stable, dependency-free owned export.
   #[must_use]
   pub fn into_vec(self) -> Vec<(String, String)> {
     self
@@ -274,10 +302,10 @@ impl Headers {
   /// Append a field; keeps any existing values for the same name.
   pub fn insert(
     &mut self,
-    name: impl Into<String>,
-    value: impl Into<String>,
+    name: impl AsRef<str>,
+    value: impl AsRef<str>,
   ) {
-    self.push_compact(CompactString::from(name.into()), CompactString::from(value.into()));
+    self.push_compact(CompactString::from(name.as_ref()), CompactString::from(value.as_ref()));
   }
 
   /// Append an already-owned field without touching the side-index.
@@ -336,11 +364,11 @@ impl Headers {
   /// Replace every value for `name` (case-insensitive) with a single value.
   pub fn set(
     &mut self,
-    name: impl Into<String>,
-    value: impl Into<String>,
+    name: impl AsRef<str>,
+    value: impl AsRef<str>,
   ) {
-    let owned_name = CompactString::from(name.into());
-    let owned_value = CompactString::from(value.into());
+    let owned_name = CompactString::from(name.as_ref());
+    let owned_value = CompactString::from(value.as_ref());
     let mut first: Option<usize> = None;
     let mut removed = false;
     let mut i = 0usize;
@@ -442,7 +470,9 @@ impl Headers {
   }
 
   /// Append to `Cookie` (`; `-joined), or insert if absent. No-op when `value` is empty.
-  pub fn merge_cookie(
+  ///
+  /// Builder / client plumbing — not part of the general header-map API.
+  pub(crate) fn merge_cookie(
     &mut self,
     value: &str,
   ) {
@@ -514,28 +544,36 @@ impl From<Vec<(String, String)>> for Headers {
   }
 }
 
-impl FromIterator<(String, String)> for Headers {
-  fn from_iter<T: IntoIterator<Item = (String, String)>>(iter: T) -> Self {
+impl<S, T> FromIterator<(S, T)> for Headers
+where
+  S: AsRef<str>,
+  T: AsRef<str>,
+{
+  fn from_iter<I: IntoIterator<Item = (S, T)>>(iter: I) -> Self {
     let pairs = iter.into_iter();
     let (lower, upper) = pairs.size_hint();
     let mut out = Self::with_capacity(upper.unwrap_or(lower));
     for (name, value) in pairs {
       out
         .headers
-        .push((CompactString::from(name), CompactString::from(value)));
+        .push((CompactString::from(name.as_ref()), CompactString::from(value.as_ref())));
     }
     out.rebuild_index();
     out
   }
 }
 
-impl Extend<(String, String)> for Headers {
-  fn extend<T: IntoIterator<Item = (String, String)>>(
+impl<S, T> Extend<(S, T)> for Headers
+where
+  S: AsRef<str>,
+  T: AsRef<str>,
+{
+  fn extend<I: IntoIterator<Item = (S, T)>>(
     &mut self,
-    iter: T,
+    iter: I,
   ) {
     for (name, value) in iter {
-      self.push_compact(CompactString::from(name), CompactString::from(value));
+      self.push_compact(CompactString::from(name.as_ref()), CompactString::from(value.as_ref()));
     }
   }
 }
@@ -546,6 +584,44 @@ impl<'a> IntoIterator for &'a Headers {
 
   fn into_iter(self) -> Self::IntoIter {
     self.iter()
+  }
+}
+
+/// Owning iterator over `(name, value)` pairs from [`Headers`].
+#[derive(Debug)]
+pub struct IntoIter {
+  inner: alloc::vec::IntoIter<(CompactString, CompactString)>,
+}
+
+impl Iterator for IntoIter {
+  type Item = (String, String);
+
+  fn next(&mut self) -> Option<Self::Item> {
+    self
+      .inner
+      .next()
+      .map(|(n, v)| (String::from(n), String::from(v)))
+  }
+
+  fn size_hint(&self) -> (usize, Option<usize>) {
+    self.inner.size_hint()
+  }
+}
+
+impl ExactSizeIterator for IntoIter {
+  fn len(&self) -> usize {
+    self.inner.len()
+  }
+}
+
+impl IntoIterator for Headers {
+  type Item = (String, String);
+  type IntoIter = IntoIter;
+
+  fn into_iter(self) -> Self::IntoIter {
+    IntoIter {
+      inner: self.headers.into_iter(),
+    }
   }
 }
 
@@ -594,17 +670,18 @@ mod tests {
   }
 
   #[test]
-  fn from_iterator_and_extend() {
-    let h: Headers = [
-      (String::from("A"), String::from("1")),
-      (String::from("B"), String::from("2")),
-    ]
-    .into_iter()
-    .collect();
+  fn from_iterator_and_extend_accept_str_pairs() {
+    let h: Headers = [("A", "1"), ("B", "2")].into_iter().collect();
     assert_eq!(h.get("a"), Some("1"));
     let mut h2 = Headers::new();
-    h2.extend([(String::from("C"), String::from("3"))]);
+    h2.extend([("C", "3")]);
     assert_eq!(h2.get("c"), Some("3"));
+  }
+
+  #[test]
+  fn from_vec_accepts_str_pairs() {
+    let h = Headers::from_vec(alloc::vec![("Host", "example.com")]);
+    assert_eq!(h.get("host"), Some("example.com"));
   }
 
   #[test]
@@ -613,6 +690,40 @@ mod tests {
     h.insert("Host", "example.com");
     let v = h.into_vec();
     assert_eq!(v, alloc::vec![(String::from("Host"), String::from("example.com"))]);
+  }
+
+  #[test]
+  fn hash_matches_field_equality() {
+    let mut a = Headers::new();
+    a.insert("Host", "example.com");
+    // Cross the index threshold so `a` has a side-index cache.
+    for i in 0..INDEX_THRESHOLD {
+      a.insert(alloc::format!("X-{i}"), "1");
+    }
+    // `b` built via FromIterator also rebuilds an index — Hash must still match Eq.
+    let b: Headers = a.iter().collect();
+    assert_eq!(a, b);
+    assert_eq!(hash_value(&a), hash_value(&b));
+  }
+
+  fn hash_value(h: &Headers) -> u64 {
+    struct CountingHasher(u64);
+    impl Hasher for CountingHasher {
+      fn finish(&self) -> u64 {
+        self.0
+      }
+      fn write(
+        &mut self,
+        bytes: &[u8],
+      ) {
+        for b in bytes {
+          self.0 = self.0.wrapping_mul(31).wrapping_add(u64::from(*b));
+        }
+      }
+    }
+    let mut hasher = CountingHasher(0);
+    h.hash(&mut hasher);
+    hasher.finish()
   }
 
   #[test]

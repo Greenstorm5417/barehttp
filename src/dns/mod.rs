@@ -8,6 +8,9 @@ use alloc::vec::Vec;
 
 /// Resolve hostnames to IP addresses.
 ///
+/// New methods added to this trait will provide default implementations when
+/// possible so existing resolvers keep compiling.
+///
 /// # Examples
 ///
 /// ```no_run

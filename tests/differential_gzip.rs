@@ -95,7 +95,7 @@ fn bomb_via_response_body_limit() {
   // by checking Content-Encoding path with a small limit through HttpClient is covered
   // elsewhere — here assert parse succeeds with enough room then bomb with direct API.
   let ok = Response::parse(&msg).unwrap();
-  assert_eq!(ok.as_bytes().len(), plain.len());
+  assert_eq!(ok.body().len(), plain.len());
 
   // Body size limit is enforced on decompressed output (same path as Content-Encoding).
   assert_eq!(decompress_gzip(&gz, 512), Err(DecompressError::LimitExceeded));
@@ -125,7 +125,7 @@ fn response_parse_fixture_subset() {
   ];
   for (wire, status, body_len) in fixtures {
     let r = Response::parse(wire).unwrap();
-    assert_eq!(r.status(), *status);
-    assert_eq!(r.as_bytes().len(), *body_len);
+    assert_eq!(r.status_code(), *status);
+    assert_eq!(r.body().len(), *body_len);
   }
 }

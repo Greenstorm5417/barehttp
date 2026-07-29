@@ -5,7 +5,7 @@
 //!
 //! Soft limits (+5% Ir, +10% EstimatedCycles vs previous/baseline) fail the run on
 //! regression — used by CI (`benches` workflow job).
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::must_use_candidate)]
 
 use barehttp::{Headers, Response, Uri};
 use gungraun::{Callgrind, EventKind, LibraryBenchmarkConfig, library_benchmark, library_benchmark_group, main};

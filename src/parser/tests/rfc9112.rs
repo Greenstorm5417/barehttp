@@ -52,6 +52,7 @@ fn trailers_not_merged_into_headers() {
   assert_eq!(response.body(), b"Hello");
   assert!(response.header("X-Trailer").is_none());
   assert_eq!(response.trailers().len(), 1);
+  assert_eq!(response.trailers().get("X-Trailer"), Some("value"));
 }
 
 #[test]

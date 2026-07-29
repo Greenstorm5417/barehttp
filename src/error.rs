@@ -1,3 +1,44 @@
+//! Crate error types.
+//!
+//! # Body size limits
+//!
+//! Wire / decompress paths may produce [`ParseError::BodyExceedsLimit`] while reading a
+//! buffered response. At the client boundary that variant is **lifted** to
+//! [`Error::BodyExceedsLimit`] (see [`From<ParseError> for Error`]) so callers match one
+//! top-level recovery path — never `Error::Parse(ParseError::BodyExceedsLimit(_))`, which
+//! would be Display-identical and easy to miss. Prefer matching `Error::BodyExceedsLimit`.
+
+extern crate alloc;
+
+/// Errors from gzip / deflate / zstd-style content decoding.
+///
+/// Always available at the crate root: response parse can surface
+/// [`ParseError::Decompression`] even when the `gzip` feature (and
+/// [`crate::gzip`] helpers) is disabled — e.g. other codings or future paths.
+/// The [`crate::gzip`] module re-exports this same type when that feature is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DecompressError {
+  /// Invalid or truncated input.
+  InvalidInput,
+  /// Uncompressed output would exceed the configured limit.
+  LimitExceeded,
+}
+
+impl core::fmt::Display for DecompressError {
+  fn fmt(
+    &self,
+    f: &mut core::fmt::Formatter<'_>,
+  ) -> core::fmt::Result {
+    match self {
+      Self::InvalidInput => f.write_str("invalid gzip/deflate input"),
+      Self::LimitExceeded => f.write_str("decompressed output exceeds size limit"),
+    }
+  }
+}
+
+impl core::error::Error for DecompressError {}
+
 /// HTTP/1.1 message parse failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -55,9 +96,15 @@ pub enum ParseError {
   /// Outbound request used `Transfer-Encoding`; this client frames bodies with
   /// `Content-Length` only (RFC 9112 §6.3).
   RequestTransferEncodingUnsupported,
-  /// gzip / deflate / zstd decompression failed.
-  DecompressionFailed,
-  /// Decompressed body larger than the configured size limit.
+  /// Content-coding decompression failed (preserves [`DecompressError`] as `source`).
+  ///
+  /// Limit failures are not stored here: they become [`ParseError::BodyExceedsLimit`]
+  /// (and [`Error::BodyExceedsLimit`] at the client boundary).
+  Decompression(DecompressError),
+  /// Decompressed or wire body larger than the configured size limit.
+  ///
+  /// When converted with [`From<ParseError> for Error`], this becomes
+  /// [`Error::BodyExceedsLimit`] (not nested under [`Error::Parse`]).
   BodyExceedsLimit(usize),
 }
 
@@ -90,7 +137,7 @@ impl ParseError {
       Self::TransferEncodingRequiresHttp11 => "Transfer-Encoding requires HTTP/1.1 or higher",
       Self::ChunkedAppliedMultipleTimes => "chunked transfer coding applied multiple times",
       Self::RequestTransferEncodingUnsupported => "Transfer-Encoding on requests is unsupported; use Content-Length",
-      Self::DecompressionFailed => "failed to decompress response body",
+      Self::Decompression(_) => "failed to decompress response body",
       Self::BodyExceedsLimit(_) => "response body exceeds size limit",
     }
   }
@@ -103,12 +150,20 @@ impl core::fmt::Display for ParseError {
   ) -> core::fmt::Result {
     match self {
       Self::BodyExceedsLimit(limit) => write!(f, "response body exceeds limit of {limit} bytes"),
+      Self::Decompression(e) => write!(f, "failed to decompress response body: {e}"),
       other => f.write_str(other.as_str()),
     }
   }
 }
 
-impl core::error::Error for ParseError {}
+impl core::error::Error for ParseError {
+  fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+    match self {
+      Self::Decompression(e) => Some(e),
+      _ => None,
+    }
+  }
+}
 
 /// DNS lookup failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,11 +276,118 @@ impl core::fmt::Display for InvalidRequest {
 
 impl core::error::Error for InvalidRequest {}
 
+/// [`crate::Response::into_string`] failed; the full response is preserved for recovery.
+///
+/// Implements [`From`] into [`Error`] as [`Error::Utf8Error`] (the UTF-8 cause only —
+/// use [`Self::into_response`] / [`Self::response`] when you still need status/headers).
+///
+/// # Examples
+///
+/// ```
+/// use barehttp::Response;
+///
+/// let bad = Response::parse(b"HTTP/1.1 201 Created\r\nContent-Length: 1\r\n\r\n\xff")
+///   .map_err(barehttp::Error::from)?;
+/// if let Err(err) = bad.into_string() {
+///   assert_eq!(err.response().status_code(), 201);
+///   assert_eq!(err.into_response().body(), &[0xff]);
+/// }
+/// # Ok::<(), barehttp::Error>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntoStringError {
+  // Boxed so `Result<T, IntoStringError>` stays small (C-GOOD-ERR / clippy::result_large_err).
+  response: alloc::boxed::Box<crate::parser::Response>,
+  error: core::str::Utf8Error,
+}
+
+impl IntoStringError {
+  pub(crate) fn new(
+    response: crate::parser::Response,
+    error: core::str::Utf8Error,
+  ) -> Self {
+    Self {
+      response: alloc::boxed::Box::new(response),
+      error,
+    }
+  }
+
+  /// Borrow the response (status, headers, body intact).
+  #[must_use]
+  pub fn response(&self) -> &crate::parser::Response {
+    &self.response
+  }
+
+  /// Recover the response.
+  #[must_use]
+  pub fn into_response(self) -> crate::parser::Response {
+    *self.response
+  }
+
+  /// The UTF-8 error that caused the failure.
+  #[must_use]
+  pub const fn utf8_error(&self) -> core::str::Utf8Error {
+    self.error
+  }
+}
+
+impl core::fmt::Display for IntoStringError {
+  fn fmt(
+    &self,
+    f: &mut core::fmt::Formatter<'_>,
+  ) -> core::fmt::Result {
+    write!(f, "response body is not valid UTF-8: {}", self.error)
+  }
+}
+
+impl core::error::Error for IntoStringError {
+  fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+    Some(&self.error)
+  }
+}
+
 /// Error from [`crate::HttpClient`] and the free `get` / `post` / ... functions.
+///
+/// # Examples
+///
+/// Recover a 4xx/5xx response when status-as-error is enabled:
+///
+/// ```
+/// use barehttp::{Error, Response};
+///
+/// fn take_http_status(err: Error) -> Option<Response> {
+///   match err {
+///     Error::HttpStatus(_code, resp) => Some(*resp),
+///     _ => None,
+///   }
+/// }
+///
+/// let resp = Response::parse(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+///   .map_err(Error::from)?;
+/// let err = Error::HttpStatus(404, Box::new(resp));
+/// let recovered = take_http_status(err).ok_or(Error::InvalidUrl)?;
+/// assert_eq!(recovered.status_code(), 404);
+/// # Ok::<(), Error>(())
+/// ```
+///
+/// Body size limit (lifted out of [`ParseError`] — never nested under [`Error::Parse`]):
+///
+/// ```
+/// use barehttp::{Error, ParseError};
+///
+/// let err: Error = ParseError::BodyExceedsLimit(1024).into();
+/// assert!(matches!(err, Error::BodyExceedsLimit(1024)));
+/// ```
+///
+/// UTF-8 body recovery keeps the full response on [`IntoStringError`] (not on
+/// [`Error::Utf8Error`]); see that type's docs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
   /// Wire / framing parse failure.
+  ///
+  /// Never carries [`ParseError::BodyExceedsLimit`]; that is lifted to
+  /// [`Error::BodyExceedsLimit`] via [`From`].
   Parse(ParseError),
   /// DNS lookup failure.
   Dns(DnsError),
@@ -253,9 +415,16 @@ pub enum Error {
   /// Response header section larger than [`crate::config::Config::max_response_header_size`].
   ResponseHeaderTooLarge,
   /// Body larger than [`crate::config::Config::max_response_body_size`].
+  ///
+  /// Single public recovery path for body limits (transport and parse/decompress).
   BodyExceedsLimit(usize),
   /// Response body is not valid UTF-8.
-  Utf8Error(alloc::string::FromUtf8Error),
+  ///
+  /// Produced when [`crate::Response::to_text`] (returns [`core::str::Utf8Error`])
+  /// or [`IntoStringError`] is converted with `?` / [`From`] into [`Error`]. Prefer
+  /// matching the specialized error type when you need the recoverable
+  /// [`crate::Response`] from [`crate::Response::into_string`].
+  Utf8Error(core::str::Utf8Error),
   /// Bad request construction (see [`InvalidRequest`]).
   InvalidRequest(InvalidRequest),
 }
@@ -317,7 +486,11 @@ impl core::error::Error for Error {
 
 impl From<ParseError> for Error {
   fn from(value: ParseError) -> Self {
-    Self::Parse(value)
+    match value {
+      // Lift so callers never see Display-identical `Parse(BodyExceedsLimit)`.
+      ParseError::BodyExceedsLimit(n) => Self::BodyExceedsLimit(n),
+      other => Self::Parse(other),
+    }
   }
 }
 
@@ -339,8 +512,16 @@ impl From<InvalidRequest> for Error {
   }
 }
 
-impl From<alloc::string::FromUtf8Error> for Error {
-  fn from(value: alloc::string::FromUtf8Error) -> Self {
+impl From<core::str::Utf8Error> for Error {
+  fn from(value: core::str::Utf8Error) -> Self {
     Self::Utf8Error(value)
+  }
+}
+
+impl From<IntoStringError> for Error {
+  /// Maps to [`Error::Utf8Error`]. The response is dropped; call
+  /// [`IntoStringError::into_response`] first if you need it.
+  fn from(value: IntoStringError) -> Self {
+    Self::Utf8Error(value.utf8_error())
   }
 }
