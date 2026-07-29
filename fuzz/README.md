@@ -1,6 +1,6 @@
 # Fuzzing barehttp
 
-cargo-fuzz targets under `fuzz/`. CI builds them on push/PR; longer runs are local.
+cargo-fuzz targets under `fuzz/`. CI runs each target for 60s on push/PR; longer campaigns are local.
 
 Prerequisites:
 

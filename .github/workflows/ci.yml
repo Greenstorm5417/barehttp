@@ -20,24 +20,8 @@ env:
   CARGO_FUZZ_VERSION: "0.13.2"
 
 jobs:
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-  clippy:
-    name: Clippy (${{ matrix.name }})
+  features:
+    name: Features (${{ matrix.name }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -63,40 +47,6 @@ jobs:
         with:
           components: clippy
 
-      - name: Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: clippy-${{ matrix.name }}
-
-      - name: Clippy
-        run: cargo clippy --locked --all-targets ${{ matrix.args }} -- -D warnings
-
-  test:
-    name: Nextest (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: none
-            args: --no-default-features
-          - name: cookie-jar
-            args: --no-default-features --features cookie-jar
-          - name: gzip
-            args: --no-default-features --features gzip
-          - name: zstd
-            args: --no-default-features --features zstd
-          - name: all
-            args: --all-features
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      # Prebuilt binary (not cargo install); version pin keeps cache/install stable.
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
@@ -105,14 +55,22 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: nextest-${{ matrix.name }}
+          key: features-${{ matrix.name }}
+
+      - name: Check
+        run: cargo check --locked ${{ matrix.args }}
+
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked --all-targets ${{ matrix.args }} -- -D warnings
 
       # Unit + integration (local mock server). Ignored httpbin tests stay skipped.
-      - name: Nextest (lib + tests)
+      - name: Test
+        if: ${{ !cancelled() }}
         run: cargo nextest run --profile ci --locked ${{ matrix.args }}
 
-  feature-matrix:
-    name: Feature check
+  embedded:
+    name: Embedded
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -126,18 +84,8 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
-        with:
-          key: feature-matrix
 
-      - name: Check feature combos (host)
-        run: |
-          cargo check --locked --no-default-features
-          cargo check --locked --no-default-features --features cookie-jar
-          cargo check --locked --no-default-features --features gzip
-          cargo check --locked --no-default-features --features zstd
-          cargo check --locked --all-features
-
-      - name: Embedded target (thumbv7em-none-eabi)
+      - name: Check
         run: |
           cargo check --locked --target thumbv7em-none-eabi --no-default-features
           cargo check --locked --target thumbv7em-none-eabi --features gzip
@@ -157,8 +105,6 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
-        with:
-          key: miri
 
       - name: Miri (sync + focused)
         env:
@@ -169,8 +115,8 @@ jobs:
           cargo miri test --lib --features gzip gzip::
           cargo miri test --lib --features cookie-jar cookie_jar::
 
-  fuzz-build:
-    name: Fuzz build
+  fuzz:
+    name: Fuzz
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -193,17 +139,22 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: fuzz-build
+          workspaces: fuzz -> target
 
       # install-action ships a musl-built cargo-fuzz binary; its default --target is
       # therefore x86_64-unknown-linux-musl (CURRENT_PLATFORM of the binary). That
       # conflicts with -Zsanitizer=address (static CRT) and needs a musl std that
       # isn't installed. Pin the GNU host triple instead.
-      - name: Build fuzz targets
-        run: cargo +nightly fuzz build --target x86_64-unknown-linux-gnu
+      # Bounded runs: compile + exercise each harness; longer campaigns stay local.
+      - name: Fuzz targets
+        run: |
+          for target in parse_response parse_uri inflate_gzip; do
+            cargo +nightly fuzz run --target x86_64-unknown-linux-gnu "$target" -- \
+              -max_total_time=60
+          done
 
-  docs:
-    name: Docs
+  stable:
+    name: Stable checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -212,35 +163,36 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
-        with:
-          cache-targets: false
 
-      - name: Build docs
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Docs
+        if: ${{ !cancelled() }}
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --locked --no-deps --all-features
 
-  examples:
-    name: Examples
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: examples
-
-      - name: Build examples
+      - name: Examples
+        if: ${{ !cancelled() }}
         run: cargo build --locked --examples --all-features
+
+      - name: Lockfile
+        if: ${{ !cancelled() }}
+        run: cargo metadata --format-version 1 --locked >/dev/null
+
+      - name: Available dependency updates
+        if: ${{ !cancelled() }}
+        run: cargo update --dry-run
+
+      - name: Dependency tree
+        if: ${{ !cancelled() }}
+        run: cargo tree -e features --all-features
 
   # Compile all benches; run Callgrind with soft limits vs previous baseline in cache.
   # First run on a cold cache always passes; later runs fail on >5% Ir / >10% cycles.
@@ -265,12 +217,9 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
-        with:
-          key: benches
-          cache-targets: true
 
       - name: Cache Gungraun baselines
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             target/gungraun
@@ -318,40 +267,12 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
-        with:
-          key: msrv-1.97
 
       - name: Check (all features)
         run: cargo check --locked --all-features
 
       - name: Nextest (all features)
         run: cargo nextest run --profile ci --locked --all-features
-
-  lockfile:
-    name: Lockfile
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-targets: false
-          shared-key: lockfile
-
-      - name: Verify Cargo.lock matches manifests
-        run: cargo metadata --format-version 1 --locked >/dev/null
-
-      - name: Report available dependency updates (informational)
-        run: cargo update --dry-run
-
-      - name: Dependency tree sanity
-        run: cargo tree -e features --all-features
 
   os-matrix:
     name: OS (${{ matrix.os }})
@@ -375,8 +296,6 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
-        with:
-          key: os-${{ matrix.os }}
 
       - name: Nextest (default / none)
         run: cargo nextest run --profile ci --locked --no-default-features
