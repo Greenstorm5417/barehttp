@@ -48,13 +48,13 @@ pub use client::HttpClient;
 pub use error::Error;
 
 pub use dns::{DnsResolver, OsDnsResolver};
-pub use error::{DnsError, ParseError, SocketError};
+pub use error::{DnsError, InvalidRequest, ParseError, SocketError};
 pub use socket::{BlockingSocket, BlockingSocketFactory};
 pub use socket::{OsBlockingSocket, SocketAddr};
 pub use util::IpAddr;
 
 pub use headers::{Headers, Iter as HeaderIter};
-pub use method::Method;
+pub use method::{Method, ParseMethodError};
 pub use parser::Response;
 pub use parser::uri::{Authority, Host, Uri};
 pub use parser::version::Version;
@@ -81,6 +81,7 @@ pub fn agent() -> Agent {
 /// println!("{}", response.to_text()?);
 /// # Ok::<(), barehttp::Error>(())
 /// ```
+#[must_use]
 pub fn get(url: &str) -> RequestBuilder {
   HttpClient::new().get(url)
 }
@@ -91,29 +92,34 @@ pub fn get(url: &str) -> RequestBuilder {
 ///
 /// ```no_run
 /// let response = barehttp::post("http://example.com/api").send(b"{\"a\":1}")?;
-/// assert!(response.is_success() || response.status() >= 400);
+/// assert!(response.is_success() || response.status_code() >= 400);
 /// # Ok::<(), barehttp::Error>(())
 /// ```
+#[must_use]
 pub fn post(url: &str) -> RequestBuilder {
   HttpClient::new().post(url)
 }
 
 /// PUT using a fresh default OS client (body via [`.send()`](ClientRequestBuilder::send)).
+#[must_use]
 pub fn put(url: &str) -> RequestBuilder {
   HttpClient::new().put(url)
 }
 
 /// DELETE using a fresh default OS client.
+#[must_use]
 pub fn delete(url: &str) -> RequestBuilder {
   HttpClient::new().delete(url)
 }
 
 /// HEAD using a fresh default OS client.
+#[must_use]
 pub fn head(url: &str) -> RequestBuilder {
   HttpClient::new().head(url)
 }
 
 /// PATCH using a fresh default OS client (body via [`.send()`](ClientRequestBuilder::send)).
+#[must_use]
 pub fn patch(url: &str) -> RequestBuilder {
   HttpClient::new().patch(url)
 }

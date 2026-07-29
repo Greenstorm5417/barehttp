@@ -18,6 +18,7 @@ pub struct MockSocket {
   pub connected_host: Option<String>,
   pub read_timeout: Option<u32>,
   pub write_timeout: Option<u32>,
+  pub connect_timeout: Option<u32>,
   pub should_fail_connect: bool,
   /// Fail this many connect attempts, then succeed.
   pub fail_connects_remaining: usize,
@@ -35,6 +36,7 @@ impl MockSocket {
       connected_host: None,
       read_timeout: None,
       write_timeout: None,
+      connect_timeout: None,
       should_fail_connect: false,
       fail_connects_remaining: 0,
     }
@@ -146,6 +148,14 @@ impl BlockingSocket for MockSocket {
     timeout_ms: u32,
   ) -> Result<(), SocketError> {
     self.write_timeout = Some(timeout_ms);
+    Ok(())
+  }
+
+  fn set_connect_timeout(
+    &mut self,
+    timeout_ms: u32,
+  ) -> Result<(), SocketError> {
+    self.connect_timeout = Some(timeout_ms);
     Ok(())
   }
 }

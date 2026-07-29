@@ -21,11 +21,12 @@ pub const DEFAULT_MAX_RESPONSE_BODY_SIZE: usize = 10 * 1024 * 1024;
 /// use core::time::Duration;
 ///
 /// let config = Config::builder()
-///     .timeout_read(Some(Duration::from_secs(30)))
+///     .timeout_read(Some(Duration::from_secs(60)))
 ///     .max_redirects(5)
 ///     .user_agent("my-app/1.0")
 ///     .build();
 /// assert_eq!(config.max_redirects(), 5);
+/// assert_eq!(config.timeout_connect(), Some(Duration::from_secs(10)));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
@@ -53,9 +54,10 @@ impl Default for Config {
       http_status_as_error: true,
       max_response_header_size: 64 * 1024,
       max_response_body_size: DEFAULT_MAX_RESPONSE_BODY_SIZE,
-      timeout_connect: None,
-      timeout_read: None,
-      timeout_write: None,
+      // Non-None so UntilClose / hung peers cannot block forever out of the box.
+      timeout_connect: Some(Duration::from_secs(10)),
+      timeout_read: Some(Duration::from_secs(30)),
+      timeout_write: Some(Duration::from_secs(30)),
       accept: alloc::string::String::from("*/*"),
       https_only: false,
       assume_tls_socket: false,
@@ -102,19 +104,27 @@ impl Config {
     self.max_response_body_size
   }
 
-  /// Connect deadline.
+  /// TCP connect deadline (default 10 seconds).
+  ///
+  /// `None` disables the dedicated connect timeout (OS may block indefinitely).
+  /// OS adapters enforce this with nonblocking connect + `poll`/`select`.
   #[must_use]
   pub const fn timeout_connect(&self) -> Option<Duration> {
     self.timeout_connect
   }
 
-  /// Read deadline.
+  /// Read deadline (default 30 seconds).
+  ///
+  /// `None` means block until data (or peer close). Without a read timeout,
+  /// responses that read until peer close can hang forever.
   #[must_use]
   pub const fn timeout_read(&self) -> Option<Duration> {
     self.timeout_read
   }
 
-  /// Write deadline.
+  /// Write deadline (default 30 seconds).
+  ///
+  /// `None` means block until the send buffer accepts bytes.
   #[must_use]
   pub const fn timeout_write(&self) -> Option<Duration> {
     self.timeout_write

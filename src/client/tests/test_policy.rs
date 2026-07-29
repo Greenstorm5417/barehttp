@@ -103,11 +103,20 @@ fn default_rejects_https_without_tls_socket() {
 
 #[test]
 fn assume_tls_socket_allows_https() {
-  let config = Config::builder()
-    .assume_tls_socket(true)
-    .build();
+  let config = Config::builder().assume_tls_socket(true).build();
   let uri = Uri::parse("https://example.com").unwrap();
   assert!(validate_protocol(&config, &uri).is_ok());
+}
+
+#[test]
+fn assume_tls_rejected_for_cleartext_os_client() {
+  use crate::HttpClient;
+  let client = HttpClient::with_config(Config::builder().assume_tls_socket(true).build());
+  let err = client
+    .get("https://example.com/")
+    .call()
+    .expect_err("cleartext OS socket must not claim TLS");
+  assert_eq!(err, Error::TlsNotConfigured);
 }
 
 #[test]
@@ -301,9 +310,7 @@ fn status_error_when_configured() {
   for status in [404_u16, 500] {
     let mut visited = Vec::new();
     let mut count = 0;
-    let config = Config::builder()
-    .http_status_as_error(true)
-    .build();
+    let config = Config::builder().http_status_as_error(true).build();
     let mut headers = Headers::new();
     headers.insert("X-Err", "yes");
     let raw = RawResponse {
@@ -339,9 +346,7 @@ fn status_error_when_configured() {
 fn status_4xx_is_ok_when_configured_as_response() {
   let mut visited = Vec::new();
   let mut count = 0;
-  let config = Config::builder()
-    .http_status_as_error(false)
-    .build();
+  let config = Config::builder().http_status_as_error(false).build();
   let raw = RawResponse {
     status_code: 404,
     reason: String::from("Not Found"),
@@ -368,9 +373,7 @@ fn status_4xx_is_ok_when_configured_as_response() {
 fn too_many_redirects_is_error() {
   let mut visited = Vec::new();
   let mut count = 0;
-  let config = Config::builder()
-    .max_redirects(2)
-    .build();
+  let config = Config::builder().max_redirects(2).build();
   let raw = make_redirect_response(301, "/next");
 
   process(
@@ -491,9 +494,7 @@ fn sanitize_strips_credentials_on_every_hop() {
 fn max_redirects_zero_does_not_follow() {
   let mut visited = Vec::new();
   let mut count = 0;
-  let config = Config::builder()
-    .max_redirects(0)
-    .build();
+  let config = Config::builder().max_redirects(0).build();
   assert!(
     process(
       &config,
@@ -549,9 +550,7 @@ fn build_request_is_http11_with_host_and_origin_form() {
 #[test]
 fn build_request_sends_connection_close_when_pooling_disabled() {
   let uri = Uri::parse("http://example.com/").unwrap();
-  let config = Config::builder()
-    .max_idle_per_host(0)
-    .build();
+  let config = Config::builder().max_idle_per_host(0).build();
   let mut custom = Headers::new();
   custom.insert("Connection", "keep-alive");
   let bytes = build_request(&uri, Method::Get, "example.com", 80, &custom, None, &config).unwrap();

@@ -124,17 +124,20 @@ fn connector_sets_read_timeout() {
 }
 
 #[test]
-fn connector_sets_write_timeout_on_connect() {
+fn connector_sets_connect_timeout_not_write() {
   let mut socket = MockSocket::empty();
   let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   let config = Config::builder()
     .timeout_connect(Some(Duration::from_secs(3)))
+    .timeout_write(None)
+    .timeout_read(None)
     .build();
 
   let uri = Uri::parse("http://example.com").unwrap();
   let _result = connection::connect(&mut socket, &dns, &uri, &config, false);
 
+  assert_eq!(socket.connect_timeout, Some(3000));
   // Connect timeout must not bleed into post-connect writes.
   assert_eq!(socket.write_timeout, Some(0));
 }
@@ -224,9 +227,7 @@ fn connector_creates_connection_with_config() {
   let mut socket = MockSocket::empty();
   let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
-  let config = Config::builder()
-    .max_response_header_size(16384)
-    .build();
+  let config = Config::builder().max_response_header_size(16384).build();
 
   let uri = Uri::parse("http://example.com").unwrap();
   let result = connection::connect(&mut socket, &dns, &uri, &config, false);
@@ -263,28 +264,35 @@ fn connector_timeout_conversion_handles_large_values() {
 }
 
 #[test]
-fn connector_no_timeouts_when_not_configured() {
+fn connector_applies_default_timeouts() {
   let mut socket = MockSocket::empty();
   let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   let uri = Uri::parse("http://example.com").unwrap();
   let _result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
-  // None → clear to 0 (blocking) so pooled sockets cannot keep a prior timeout.
-  assert_eq!(socket.read_timeout, Some(0));
-  assert_eq!(socket.write_timeout, Some(0));
+  assert_eq!(socket.connect_timeout, Some(10_000));
+  assert_eq!(socket.read_timeout, Some(30_000));
+  assert_eq!(socket.write_timeout, Some(30_000));
 }
 
 #[test]
-fn connector_clears_prior_timeout_when_none() {
+fn connector_clears_prior_timeout_when_explicitly_none() {
   let mut socket = MockSocket::empty();
   socket.read_timeout = Some(5_000);
   socket.write_timeout = Some(5_000);
+  socket.connect_timeout = Some(5_000);
   let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
+  let config = Config::builder()
+    .timeout_connect(None)
+    .timeout_read(None)
+    .timeout_write(None)
+    .build();
   let uri = Uri::parse("http://example.com").unwrap();
-  let _ = connection::connect(&mut socket, &dns, &uri, &Config::default(), true).unwrap();
+  let _ = connection::connect(&mut socket, &dns, &uri, &config, true).unwrap();
 
+  // Explicit None → clear to 0 (blocking) so pooled sockets cannot keep a prior timeout.
   assert_eq!(socket.read_timeout, Some(0));
   assert_eq!(socket.write_timeout, Some(0));
 }

@@ -105,6 +105,7 @@ where
   }
 
   /// Request with an arbitrary method.
+  #[must_use]
   pub fn method(
     &self,
     method: Method,
@@ -114,6 +115,7 @@ where
   }
 
   /// GET (no body).
+  #[must_use]
   pub fn get(
     &self,
     url: impl Into<String>,
@@ -122,6 +124,7 @@ where
   }
 
   /// POST (body via [`ClientRequestBuilder::send`] / [`ClientRequestBuilder::call`]).
+  #[must_use]
   pub fn post(
     &self,
     url: impl Into<String>,
@@ -130,6 +133,7 @@ where
   }
 
   /// PUT (body via [`ClientRequestBuilder::send`] / [`ClientRequestBuilder::call`]).
+  #[must_use]
   pub fn put(
     &self,
     url: impl Into<String>,
@@ -138,6 +142,7 @@ where
   }
 
   /// DELETE (no request body).
+  #[must_use]
   pub fn delete(
     &self,
     url: impl Into<String>,
@@ -146,6 +151,7 @@ where
   }
 
   /// HEAD (no body).
+  #[must_use]
   pub fn head(
     &self,
     url: impl Into<String>,
@@ -154,6 +160,7 @@ where
   }
 
   /// PATCH (body via [`ClientRequestBuilder::send`] / [`ClientRequestBuilder::call`]).
+  #[must_use]
   pub fn patch(
     &self,
     url: impl Into<String>,

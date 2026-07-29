@@ -55,8 +55,29 @@ impl AsRef<str> for Method {
   }
 }
 
+/// Failure from [`Method::from_str`] / [`str::parse`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ParseMethodError {
+  /// Token is not a supported method name.
+  Unknown,
+}
+
+impl fmt::Display for ParseMethodError {
+  fn fmt(
+    &self,
+    f: &mut fmt::Formatter<'_>,
+  ) -> fmt::Result {
+    match self {
+      Self::Unknown => f.write_str("unknown HTTP method"),
+    }
+  }
+}
+
+impl core::error::Error for ParseMethodError {}
+
 impl FromStr for Method {
-  type Err = ();
+  type Err = ParseMethodError;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
     match s {
@@ -66,7 +87,19 @@ impl FromStr for Method {
       "DELETE" => Ok(Self::Delete),
       "HEAD" => Ok(Self::Head),
       "PATCH" => Ok(Self::Patch),
-      _ => Err(()),
+      _ => Err(ParseMethodError::Unknown),
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{Method, ParseMethodError};
+  use core::str::FromStr;
+
+  #[test]
+  fn from_str_known_and_unknown() {
+    assert_eq!(Method::from_str("GET"), Ok(Method::Get));
+    assert_eq!(Method::from_str("NOPE"), Err(ParseMethodError::Unknown));
   }
 }

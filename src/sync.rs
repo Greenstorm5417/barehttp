@@ -1,8 +1,7 @@
 //! Busy-wait mutex for `no_std` + `alloc` shared state.
 //!
-//! # ponytail
-//! Spins until free. For cookie-jar and pool critical sections that stay short.
-//! Does not park threads or poison; acquisition is unfair.
+//! Spins until free; no thread parking (`no_std`). Used for cookie-jar and pool
+//! critical sections that stay short. Does not poison; acquisition is unfair.
 
 use core::cell::UnsafeCell;
 use core::fmt;
@@ -32,6 +31,9 @@ unsafe impl<T: ?Sized + Send> Send for MutexGuard<'_, T> {}
 // `Mutex<T>: Sync` (`T: Send`) and allow sharing `&MutexGuard<Cell<_>>` across threads.
 unsafe impl<T: ?Sized + Sync> Sync for MutexGuard<'_, T> {}
 
+/// Upper bound on consecutive `spin_loop` hints between lock-state reloads.
+const SPIN_BACKOFF_CAP: u32 = 64;
+
 impl<T> Mutex<T> {
   /// Create a mutex around `data`.
   #[must_use]
@@ -45,16 +47,46 @@ impl<T> Mutex<T> {
 
 impl<T: ?Sized> Mutex<T> {
   /// Acquire the lock, spinning until free.
+  ///
+  /// Uses `core::hint::spin_loop` with exponential backoff while the lock appears
+  /// held, so contending threads hammer the atomic less than a tight CAS loop.
   #[inline]
   pub fn lock(&self) -> MutexGuard<'_, T> {
-    while self
-      .locked
-      .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-      .is_err()
-    {
-      core::hint::spin_loop();
+    let mut backoff = 1_u32;
+    loop {
+      // Fast path: uncontended acquire.
+      if self
+        .locked
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
+      {
+        return MutexGuard { lock: self };
+      }
+
+      // Lock looks held — back off with spin hints, then re-check with a cheap load
+      // before attempting another CAS (reduces store traffic under contention).
+      while self.locked.load(Ordering::Relaxed) {
+        for _ in 0..backoff {
+          core::hint::spin_loop();
+        }
+        backoff = (backoff.saturating_mul(2)).min(SPIN_BACKOFF_CAP);
+      }
     }
-    MutexGuard { lock: self }
+  }
+
+  /// Try to acquire the lock without spinning.
+  #[inline]
+  #[allow(dead_code)] // exercised in unit tests; available for non-blocking critical sections
+  pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+    if self
+      .locked
+      .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+      .is_ok()
+    {
+      Some(MutexGuard { lock: self })
+    } else {
+      None
+    }
   }
 }
 
@@ -142,6 +174,20 @@ mod tests {
     drop(g);
     // Would hang forever if unlock failed.
     let _ = m.lock();
+  }
+
+  #[test]
+  fn try_lock_none_while_held() {
+    let m = Mutex::new(0_u32);
+    let _g = m.lock();
+    assert!(m.try_lock().is_none());
+  }
+
+  #[test]
+  fn try_lock_some_when_free() {
+    let m = Mutex::new(1_u32);
+    let g = m.try_lock().expect("free");
+    assert_eq!(*g, 1);
   }
 
   #[test]

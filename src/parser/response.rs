@@ -21,7 +21,7 @@ use ruzstd::decoding::StreamingDecoder;
 ///
 /// let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
 /// let response = Response::parse(raw)?;
-/// assert_eq!(response.status(), 200);
+/// assert_eq!(response.status_code(), 200);
 /// assert_eq!(response.header("content-length"), Some("2"));
 /// assert_eq!(response.to_text()?, "ok");
 /// # Ok::<(), barehttp::Error>(())
@@ -315,8 +315,9 @@ impl Response {
 
   /// Status code (alias of [`Self::status_code`]).
   #[must_use]
+  #[inline]
   pub const fn status(&self) -> u16 {
-    self.status_code
+    self.status_code()
   }
 
   /// Status is 2xx.
@@ -716,5 +717,24 @@ mod response_helpers_tests {
     let resp = Response::parse(&msg).unwrap();
     assert_eq!(resp.body(), b"hi");
     assert!(resp.header("content-encoding").is_none());
+  }
+
+  #[cfg(feature = "zstd")]
+  #[test]
+  fn zstd_decompress_strips_content_encoding_and_length() {
+    use alloc::string::ToString;
+    // `zstd -c` of `hi` (15-byte frame)
+    let zstd_body: &[u8] = &[
+      0x28, 0xb5, 0x2f, 0xfd, 0x04, 0x58, 0x11, 0x00, 0x00, 0x68, 0x69, 0xfa, 0x38, 0x26, 0xea,
+    ];
+    let mut msg = Vec::from(&b"HTTP/1.1 200 OK\r\nContent-Encoding: zstd\r\nContent-Length: "[..]);
+    msg.extend_from_slice(zstd_body.len().to_string().as_bytes());
+    msg.extend_from_slice(b"\r\n\r\n");
+    msg.extend_from_slice(zstd_body);
+
+    let resp = Response::parse(&msg).unwrap();
+    assert_eq!(resp.body(), b"hi");
+    assert!(resp.header("content-encoding").is_none());
+    assert!(resp.header("content-length").is_none());
   }
 }

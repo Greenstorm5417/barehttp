@@ -74,7 +74,10 @@ fn get_200_plain() {
   });
 
   let client = HttpClient::with_config(
-    Config::builder().max_redirects(0).max_idle_per_host(0).build(),
+    Config::builder()
+      .max_redirects(0)
+      .max_idle_per_host(0)
+      .build(),
   );
   let url = format!("http://{addr}/");
   let resp = client.get(&url).call().expect("call");
@@ -115,7 +118,10 @@ fn redirect_follow() {
   });
 
   let client = HttpClient::with_config(
-    Config::builder().max_redirects(5).max_idle_per_host(0).build(),
+    Config::builder()
+      .max_redirects(5)
+      .max_idle_per_host(0)
+      .build(),
   );
   let resp = client.get(format!("http://{addr}/start")).call().unwrap();
   assert_eq!(resp.status(), 200);
@@ -161,7 +167,10 @@ fn body_limit_returns_error() {
   });
 
   let client = HttpClient::with_config(
-    Config::builder().max_response_body_size(16).max_idle_per_host(0).build(),
+    Config::builder()
+      .max_response_body_size(16)
+      .max_idle_per_host(0)
+      .build(),
   );
   let err = client.get(format!("http://{addr}/")).call().unwrap_err();
   assert!(matches!(err, barehttp::Error::BodyExceedsLimit(16)), "got {err:?}");

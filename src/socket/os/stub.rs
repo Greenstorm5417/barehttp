@@ -64,6 +64,13 @@ impl BlockingSocket for OsSocket {
     Err(SocketError::Unsupported)
   }
 
+  fn set_connect_timeout(
+    &mut self,
+    _timeout_ms: u32,
+  ) -> Result<(), SocketError> {
+    Err(SocketError::Unsupported)
+  }
+
   fn is_os_cleartext() -> bool {
     true
   }

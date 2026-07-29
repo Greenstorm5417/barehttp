@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::dns::DnsResolver;
 use crate::error::{Error, SocketError};
 use crate::headers::Headers;
-use crate::parser::chunked::ChunkedDecoder;
+use crate::parser::chunked::{ChunkedDecoder, FeedResult};
 use crate::parser::has_complete_headers;
 use crate::parser::uri::{Host, Uri};
 use crate::parser::version::Version;
@@ -220,20 +220,27 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         Ok(body_bytes)
       },
       BodyReadStrategy::Chunked => {
-        // ponytail: each poll re-scans from scratch (O(n²) on large fragmented bodies).
-        // Incremental stateful decoder would need an input-offset cursor; deferred.
-        // `message_len_if_complete` still avoids a second full decode after the loop.
+        // Stateful feed + cursor: each wire byte is framed once (O(n)), no full-buffer
+        // re-parse. Framing-only (`output: None`) — payload decode happens in the parser.
         let mut raw_bytes = Vec::from(initial_bytes);
         if raw_bytes.len() > max_body {
           self.reusable = false;
           return Err(Error::BodyExceedsLimit(max_body));
         }
+        let mut decoder = ChunkedDecoder::new();
+        let mut cursor = 0usize;
         let mut chunk_buffer = alloc::vec![0u8; 8192];
 
         let consumed = loop {
-          match ChunkedDecoder::message_len_if_complete(&raw_bytes) {
-            Ok(Some(n)) => break n,
-            Ok(None) => {},
+          let unread = raw_bytes.get(cursor..).unwrap_or(&[]);
+          match decoder.feed(unread, None) {
+            Ok(FeedResult::Done { rest }) => {
+              let framed = unread.len().saturating_sub(rest.len());
+              break cursor.saturating_add(framed);
+            },
+            Ok(FeedResult::NeedMore { consumed }) => {
+              cursor = cursor.saturating_add(consumed);
+            },
             Err(e) => {
               self.reusable = false;
               return Err(Error::Parse(e));
@@ -328,12 +335,14 @@ where
       return Err(Error::Dns(crate::error::DnsError::NoAddressesFound));
     }
 
+    // Dedicated connect deadline (OS: nonblocking + poll/select). Never abuse write timeout.
+    let connect_ms = duration_ms_u32(config.timeout_connect()).unwrap_or(0);
+    socket
+      .set_connect_timeout(connect_ms)
+      .map_err(Error::Socket)?;
+
     let mut last_error = None;
     for addr in &addresses {
-      if let Some(ms) = duration_ms_u32(config.timeout_connect()) {
-        socket.set_write_timeout(ms).map_err(Error::Socket)?;
-      }
-
       match socket.connect(&SocketAddr::new(*addr, port), host_for_sni.as_str()) {
         Ok(()) => {
           last_error = None;
@@ -344,11 +353,6 @@ where
     }
     if let Some(e) = last_error {
       return Err(Error::Socket(e));
-    }
-
-    // Connect used SO_SNDTIMEO; don't leave it as the post-connect write timeout.
-    if config.timeout_connect().is_some() && config.timeout_write().is_none() {
-      socket.set_write_timeout(0).map_err(Error::Socket)?;
     }
   }
 

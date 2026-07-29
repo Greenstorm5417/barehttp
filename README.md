@@ -1,6 +1,7 @@
 # barehttp
 
 Blocking HTTP/1.1 client for `no_std` + `alloc`. Cleartext HTTP; no async.
+Design notes: [philosophy.md](philosophy.md).
 
 `https://` needs [`config::Config::assume_tls_socket`] and a [`BlockingSocket`] that terminates TLS.
 [`OsBlockingSocket`] is TCP only. Pairing it with `assume_tls_socket` returns
@@ -32,7 +33,7 @@ let response = barehttp::post("http://example.com/api").send(b"{}")?;
 - Custom [`BlockingSocket`] / [`DnsResolver`] (`connect` gets the hostname for SNI)
 - Connection pooling (`Config::max_idle_per_host` default 3; `0` disables; `max_idle_age` default 15s)
 - Response body size limit (`Config::max_response_body_size`, default ~10 MiB)
-- Optional Cargo features: `cookie-jar`, `gzip` (hand-rolled RFC 1951/1952), `zstd`
+- Optional Cargo features: `gzip` exposes `barehttp::gzip` (hand-rolled RFC 1951/1952); `zstd` is Accept-Encoding + decode only; `cookie-jar` gates the cookie module
 - Request builder: `.form` / `.body` then `.call()`, or `.send(bytes)`; per-request `.timeout_read` / `.timeout_write` / `.timeout_connect`
 
 ## Examples

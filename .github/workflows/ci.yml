@@ -167,6 +167,7 @@ jobs:
           cargo miri setup
           cargo miri test --lib sync::
           cargo miri test --lib --features gzip gzip::
+          cargo miri test --lib --features cookie-jar cookie_jar::
 
   fuzz-build:
     name: Fuzz build

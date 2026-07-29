@@ -41,11 +41,12 @@ See [`fuzz/README.md`](fuzz/README.md).
 rustup toolchain install nightly --component miri
 MIRIFLAGS='-Zmiri-strict-provenance' cargo +nightly miri test --lib sync::
 MIRIFLAGS='-Zmiri-strict-provenance' cargo +nightly miri test --lib --features gzip gzip::
+MIRIFLAGS='-Zmiri-strict-provenance' cargo +nightly miri test --lib --features cookie-jar cookie_jar::
 ```
 
 ## no_std / embedded
 
-The crate is `#![no_std]` + `alloc`. Feature matrix and embedded target:
+The crate is `#![no_std]` + `alloc`. Check combinations and the embedded target:
 
 ```bash
 cargo check --no-default-features

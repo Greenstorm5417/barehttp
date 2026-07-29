@@ -3,8 +3,8 @@
 
 use barehttp::config::Config;
 use barehttp::{
-  BlockingSocket, BlockingSocketFactory, DnsResolver, Error, HttpClient, IpAddr, OsBlockingSocket,
-  OsDnsResolver, SocketAddr,
+  BlockingSocket, BlockingSocketFactory, DnsResolver, Error, HttpClient, IpAddr, OsBlockingSocket, OsDnsResolver,
+  SocketAddr,
 };
 use barehttp::{DnsError, SocketError};
 
@@ -25,7 +25,10 @@ impl DnsResolver for LoggingDns {
   }
 }
 
-/// OS TCP with connect / byte-count logging.
+/// Cleartext [`OsBlockingSocket`] wrapper with connect / byte-count logging.
+///
+/// [`BlockingSocket::is_os_cleartext`] is `true`. Do not enable `assume_tls_socket`
+/// unless this type terminates TLS.
 struct LoggingSocket {
   inner: OsBlockingSocket,
 }
@@ -76,6 +79,18 @@ impl BlockingSocket for LoggingSocket {
   ) -> Result<(), SocketError> {
     self.inner.set_write_timeout(timeout_ms)
   }
+
+  fn set_connect_timeout(
+    &mut self,
+    timeout_ms: u32,
+  ) -> Result<(), SocketError> {
+    self.inner.set_connect_timeout(timeout_ms)
+  }
+
+  fn is_os_cleartext() -> bool {
+    // Cleartext OS TCP: report true so assume_tls_socket is rejected.
+    true
+  }
 }
 
 impl BlockingSocketFactory for LoggingSocket {
@@ -92,6 +107,6 @@ fn main() -> Result<(), Error> {
 
   let response = client.get("http://example.com/").call()?;
   let preview: String = response.to_text()?.chars().take(120).collect();
-  println!("{} {}", response.status(), preview);
+  println!("{} {}", response.status_code(), preview);
   Ok(())
 }

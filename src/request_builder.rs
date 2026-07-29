@@ -1,7 +1,7 @@
 use crate::client::HttpClient;
 use crate::config::Config;
 use crate::dns::DnsResolver;
-use crate::error::Error;
+use crate::error::{Error, InvalidRequest};
 use crate::headers::Headers;
 use crate::method::Method;
 use crate::parser::Response;
@@ -175,7 +175,7 @@ where
   /// Append `name=value` to the Cookie header (`; `-joined) when the request is sent.
   ///
   /// Invalid names/values (`;` or control characters) make [`Self::call`] / [`Self::send`]
-  /// return [`Error::InvalidRequest`].
+  /// return [`Error::InvalidRequest`] with [`InvalidRequest::CookieOctet`].
   pub fn cookie(
     mut self,
     name: impl Into<String>,
@@ -216,12 +216,12 @@ where
   /// let response = barehttp::get("http://example.com")
   ///     .header("Accept", "text/plain")
   ///     .call()?;
-  /// assert!(response.status() > 0);
+  /// assert!(response.status_code() > 0);
   /// # Ok::<(), barehttp::Error>(())
   /// ```
   pub fn call(self) -> Result<Response, Error> {
     if !self.form_data.is_empty() && self.body.is_some() {
-      return Err(Error::InvalidRequest);
+      return Err(Error::InvalidRequest(InvalidRequest::FormAndBody));
     }
 
     let url = append_encoded_pairs(
@@ -235,7 +235,7 @@ where
     let mut headers = self.headers;
     for (name, value) in &self.cookies {
       if !cookie_pair_ok(name) || !cookie_pair_ok(value) {
-        return Err(Error::InvalidRequest);
+        return Err(Error::InvalidRequest(InvalidRequest::CookieOctet));
       }
       headers.merge_cookie(&alloc::format!("{name}={value}"));
     }
@@ -356,8 +356,11 @@ fn cookie_pair_ok(s: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
   use super::{encode_form_pairs, encode_query_pairs};
+  use crate::HttpClient;
+  use crate::error::{Error, InvalidRequest};
 
   #[test]
   fn query_encodes_space_as_percent20() {
@@ -367,5 +370,26 @@ mod tests {
   #[test]
   fn form_encodes_space_as_plus() {
     assert_eq!(encode_form_pairs([("a", "b c")].into_iter()), "a=b+c");
+  }
+
+  #[test]
+  fn form_and_body_is_invalid_request() {
+    let err = HttpClient::new()
+      .post("http://example.com/")
+      .form("a", "1")
+      .body(b"x")
+      .call()
+      .unwrap_err();
+    assert_eq!(err, Error::InvalidRequest(InvalidRequest::FormAndBody));
+  }
+
+  #[test]
+  fn cookie_control_octet_is_invalid_request() {
+    let err = HttpClient::new()
+      .get("http://example.com/")
+      .cookie("a", "b\nc")
+      .call()
+      .unwrap_err();
+    assert_eq!(err, Error::InvalidRequest(InvalidRequest::CookieOctet));
   }
 }

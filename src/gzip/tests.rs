@@ -240,7 +240,10 @@ fn distance_too_far() {
 #[test]
 fn limit_exceeded() {
   assert_eq!(decompress_gzip(GZIP_HI, 1), Err(DecompressError::LimitExceeded));
-  assert_eq!(decompress_raw_deflate(RAW_STORED, 2), Err(DecompressError::LimitExceeded));
+  assert_eq!(
+    decompress_raw_deflate(RAW_STORED, 2),
+    Err(DecompressError::LimitExceeded)
+  );
 }
 
 #[test]
@@ -343,7 +346,10 @@ fn fixture_zlib_and_raw_corpus() {
     decompress_http_deflate(include_bytes!("fixtures/zlib_hi.bin"), 64).unwrap(),
     b"hi"
   );
-  assert_eq!(decompress_raw_deflate(include_bytes!("fixtures/raw_hi.bin"), 64).unwrap(), b"hi");
+  assert_eq!(
+    decompress_raw_deflate(include_bytes!("fixtures/raw_hi.bin"), 64).unwrap(),
+    b"hi"
+  );
 }
 
 #[test]

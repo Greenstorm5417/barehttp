@@ -191,6 +191,36 @@ impl core::fmt::Display for SocketError {
 
 impl core::error::Error for SocketError {}
 
+/// Bad request construction (illegal cookie octets, form fields plus an explicit body, ...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InvalidRequest {
+  /// Both form fields and an explicit body were set.
+  FormAndBody,
+  /// Cookie name or value contained `;` or a control octet.
+  CookieOctet,
+}
+
+impl InvalidRequest {
+  const fn as_str(self) -> &'static str {
+    match self {
+      Self::FormAndBody => "cannot set both form fields and an explicit body",
+      Self::CookieOctet => "cookie name or value contains illegal octets",
+    }
+  }
+}
+
+impl core::fmt::Display for InvalidRequest {
+  fn fmt(
+    &self,
+    f: &mut core::fmt::Formatter<'_>,
+  ) -> core::fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+impl core::error::Error for InvalidRequest {}
+
 /// Error from [`crate::HttpClient`] and the free `get` / `post` / ... functions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -225,8 +255,8 @@ pub enum Error {
   BodyExceedsLimit(usize),
   /// Response body is not valid UTF-8.
   Utf8Error(alloc::string::FromUtf8Error),
-  /// Bad request construction (illegal cookie octets, form fields plus an explicit body, ...).
-  InvalidRequest,
+  /// Bad request construction (see [`InvalidRequest`]).
+  InvalidRequest(InvalidRequest),
 }
 
 impl Error {
@@ -248,7 +278,7 @@ impl Error {
       Self::ResponseHeaderTooLarge => "response headers too large",
       Self::BodyExceedsLimit(_) => "response body exceeds size limit",
       Self::Utf8Error(_) => "invalid UTF-8",
-      Self::InvalidRequest => "invalid request",
+      Self::InvalidRequest(_) => "invalid request",
     }
   }
 }
@@ -265,6 +295,7 @@ impl core::fmt::Display for Error {
       Self::HttpStatus(code, _) => write!(f, "HTTP status {code}"),
       Self::BodyExceedsLimit(limit) => write!(f, "response body exceeds limit of {limit} bytes"),
       Self::Utf8Error(e) => write!(f, "invalid UTF-8: {e}"),
+      Self::InvalidRequest(e) => write!(f, "invalid request: {e}"),
       other => f.write_str(other.as_str()),
     }
   }
@@ -277,6 +308,7 @@ impl core::error::Error for Error {
       Self::Dns(e) => Some(e),
       Self::Socket(e) => Some(e),
       Self::Utf8Error(e) => Some(e),
+      Self::InvalidRequest(e) => Some(e),
       _ => None,
     }
   }
@@ -297,6 +329,12 @@ impl From<DnsError> for Error {
 impl From<SocketError> for Error {
   fn from(value: SocketError) -> Self {
     Self::Socket(value)
+  }
+}
+
+impl From<InvalidRequest> for Error {
+  fn from(value: InvalidRequest) -> Self {
+    Self::InvalidRequest(value)
   }
 }
 

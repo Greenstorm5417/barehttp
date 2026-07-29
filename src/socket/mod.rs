@@ -80,16 +80,32 @@ pub trait BlockingSocket {
     timeout_ms: u32,
   ) -> Result<(), SocketError>;
 
-  /// `true` for the cleartext OS TCP adapter ([`crate::OsBlockingSocket`]).
+  /// Connect deadline in milliseconds (`0` = block until connected / OS default).
   ///
-  /// Default is `false` (TLS wrappers). The client uses this to reject
-  /// [`crate::config::Config::assume_tls_socket`] with a cleartext OS socket.
+  /// OS adapters use nonblocking connect plus `poll`/`select`. The default is a no-op
+  /// so custom adapters may ignore it. Do not use [`Self::set_write_timeout`] as a
+  /// connect deadline.
+  ///
+  /// # Errors
+  /// [`SocketError::Unsupported`] if connect timeouts are unavailable; otherwise OS failures.
+  fn set_connect_timeout(
+    &mut self,
+    timeout_ms: u32,
+  ) -> Result<(), SocketError> {
+    let _ = timeout_ms;
+    Ok(())
+  }
+
+  /// `true` if this socket is (or wraps) cleartext OS TCP.
+  ///
+  /// Defaults to `true`. TLS adapters must return `false`.
+  /// The client rejects [`crate::config::Config::assume_tls_socket`] when this is `true`.
   #[must_use]
   fn is_os_cleartext() -> bool
   where
     Self: Sized,
   {
-    false
+    true
   }
 }
 

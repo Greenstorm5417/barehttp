@@ -267,7 +267,9 @@ impl core::fmt::Debug for Iter<'_> {
     &self,
     f: &mut core::fmt::Formatter<'_>,
   ) -> core::fmt::Result {
-    f.debug_struct("Iter").field("index", &self.index).finish_non_exhaustive()
+    f.debug_struct("Iter")
+      .field("index", &self.index)
+      .finish_non_exhaustive()
   }
 }
 
@@ -662,5 +664,35 @@ mod tests {
     assert_eq!(store.iter().len(), 1);
     store.clear();
     assert_eq!(store.iter().len(), 0);
+  }
+
+  /// Exercises `CookieStore::Iter`'s unsafe lifetime extension under Miri.
+  #[test]
+  fn iter_walks_locked_cookies() {
+    let store = CookieStore::new();
+    store.store_response_cookies(
+      "http://example.com/",
+      &alloc::vec!["session=abc".to_string(), "lang=en".to_string()],
+    );
+
+    let mut pairs = alloc::vec::Vec::new();
+    for cookie in &store {
+      pairs.push((cookie.name().to_string(), cookie.value().to_string()));
+      assert_eq!(cookie.domain(), "example.com");
+      assert_eq!(cookie.path(), "/");
+      assert!(!cookie.secure());
+      assert!(cookie.host_only());
+      assert!(cookie.expiry_time().is_none());
+    }
+    pairs.sort_unstable();
+    assert_eq!(
+      pairs,
+      [
+        ("lang".to_string(), "en".to_string()),
+        ("session".to_string(), "abc".to_string()),
+      ]
+    );
+    assert_eq!(store.iter().len(), 2);
+    assert_eq!(store.iter().count(), 2);
   }
 }

@@ -10,10 +10,21 @@ pub struct ChunkedDecoder {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DecodeState {
   ChunkSize,
+  /// `left` payload bytes still needed for the current chunk.
   ChunkData(usize),
   ChunkDataCrlf,
   TrailerSection,
   Complete,
+}
+
+/// Outcome of [`ChunkedDecoder::feed`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum FeedResult<'a> {
+  /// Need more input. `consumed` bytes at the front of this feed are fully processed
+  /// and must not be presented again.
+  NeedMore { consumed: usize },
+  /// Message complete. `rest` is any bytes after the chunked message.
+  Done { rest: &'a [u8] },
 }
 
 impl ChunkedDecoder {
@@ -46,16 +57,15 @@ impl ChunkedDecoder {
 
   /// Bytes consumed by a complete chunked message, or `None` if more input is needed.
   ///
+  /// Framing-only (`feed` with no output buffer): does not allocate or copy chunk payload.
+  ///
   /// # Errors
   /// [`ParseError`] on illegal framing.
   pub fn message_len_if_complete(input: &[u8]) -> Result<Option<usize>, ParseError> {
     let mut decoder = Self::new();
-    // Discard decoded payload; callers that need the body decode separately.
-    let mut output = alloc::vec::Vec::new();
-    match decoder.decode_chunk(input, &mut output) {
-      Ok(rest) => Ok(Some(input.len().saturating_sub(rest.len()))),
-      Err(ParseError::UnexpectedEndOfInput | ParseError::MissingCrlf) => Ok(None),
-      Err(e) => Err(e),
+    match decoder.feed(input, None)? {
+      FeedResult::Done { rest } => Ok(Some(input.len().saturating_sub(rest.len()))),
+      FeedResult::NeedMore { .. } => Ok(None),
     }
   }
 
@@ -68,60 +78,109 @@ impl ChunkedDecoder {
     Self::message_len_if_complete(input)?.ok_or(ParseError::UnexpectedEndOfInput)
   }
 
-  pub fn decode_chunk<'a>(
-    &'a mut self,
+  /// Incremental feed: processes `input` from the start, never re-scans already-consumed
+  /// prefix across calls when the caller advances by `NeedMore.consumed`.
+  ///
+  /// When `output` is `Some`, chunk payload is appended; when `None`, framing is
+  /// validated only (payload skipped).
+  ///
+  /// # Errors
+  /// [`ParseError`] on illegal framing.
+  pub fn feed<'a>(
+    &mut self,
     input: &'a [u8],
-    output: &mut alloc::vec::Vec<u8>,
-  ) -> Result<&'a [u8], ParseError> {
+    mut output: Option<&mut alloc::vec::Vec<u8>>,
+  ) -> Result<FeedResult<'a>, ParseError> {
     let mut remaining = input;
 
     loop {
       match self.state {
         DecodeState::ChunkSize => {
           if remaining.is_empty() {
-            return Err(ParseError::UnexpectedEndOfInput);
+            return Ok(FeedResult::NeedMore {
+              consumed: input.len().saturating_sub(remaining.len()),
+            });
           }
-          let (size, rest) = Self::parse_chunk_size(remaining)?;
-          remaining = rest;
-
-          if size == 0 {
-            self.state = DecodeState::TrailerSection;
-          } else {
-            self.state = DecodeState::ChunkData(size);
+          match Self::parse_chunk_size(remaining) {
+            Ok((size, rest)) => {
+              remaining = rest;
+              self.state = if size == 0 {
+                DecodeState::TrailerSection
+              } else {
+                DecodeState::ChunkData(size)
+              };
+            },
+            Err(ParseError::UnexpectedEndOfInput | ParseError::MissingCrlf) => {
+              return Ok(FeedResult::NeedMore {
+                consumed: input.len().saturating_sub(remaining.len()),
+              });
+            },
+            Err(e) => return Err(e),
           }
         },
-        DecodeState::ChunkData(size) => {
-          if remaining.len() < size {
-            return Err(ParseError::UnexpectedEndOfInput);
+        DecodeState::ChunkData(left) => {
+          if remaining.is_empty() {
+            return Ok(FeedResult::NeedMore {
+              consumed: input.len().saturating_sub(remaining.len()),
+            });
           }
-
+          let take = left.min(remaining.len());
           let data = remaining
-            .get(..size)
+            .get(..take)
             .ok_or(ParseError::UnexpectedEndOfInput)?;
-          output.extend_from_slice(data);
-
+          if let Some(out) = output.as_deref_mut() {
+            out.extend_from_slice(data);
+          }
           remaining = remaining
-            .get(size..)
+            .get(take..)
             .ok_or(ParseError::UnexpectedEndOfInput)?;
+          let next = left.saturating_sub(take);
+          if next > 0 {
+            self.state = DecodeState::ChunkData(next);
+            return Ok(FeedResult::NeedMore {
+              consumed: input.len().saturating_sub(remaining.len()),
+            });
+          }
           self.state = DecodeState::ChunkDataCrlf;
         },
-        DecodeState::ChunkDataCrlf => {
-          remaining = expect_crlf(remaining)?;
-          self.state = DecodeState::ChunkSize;
+        DecodeState::ChunkDataCrlf => match expect_crlf(remaining) {
+          Ok(rest) => {
+            remaining = rest;
+            self.state = DecodeState::ChunkSize;
+          },
+          Err(ParseError::MissingCrlf) => {
+            return Ok(FeedResult::NeedMore {
+              consumed: input.len().saturating_sub(remaining.len()),
+            });
+          },
+          Err(e) => return Err(e),
         },
         DecodeState::TrailerSection => {
           if !trailer_section_looks_complete(remaining) {
-            return Err(ParseError::UnexpectedEndOfInput);
+            return Ok(FeedResult::NeedMore {
+              consumed: input.len().saturating_sub(remaining.len()),
+            });
           }
           let (trailers, rest) = parse_header_fields(remaining)?;
           self.trailers = trailers;
           self.state = DecodeState::Complete;
-          return Ok(rest);
+          return Ok(FeedResult::Done { rest });
         },
         DecodeState::Complete => {
-          return Ok(remaining);
+          return Ok(FeedResult::Done { rest: remaining });
         },
       }
+    }
+  }
+
+  pub fn decode_chunk<'a>(
+    &'a mut self,
+    input: &'a [u8],
+    output: &mut alloc::vec::Vec<u8>,
+  ) -> Result<&'a [u8], ParseError> {
+    match self.feed(input, Some(output))? {
+      FeedResult::Done { rest } => Ok(rest),
+      FeedResult::NeedMore { .. } => Err(ParseError::UnexpectedEndOfInput),
     }
   }
 
@@ -191,4 +250,103 @@ fn trailer_section_looks_complete(data: &[u8]) -> bool {
     return true;
   }
   data.windows(4).any(|w| w == b"\r\n\r\n") || data.windows(2).any(|w| w == b"\n\n")
+}
+
+#[cfg(test)]
+mod tests {
+  #![allow(clippy::unwrap_used, clippy::expect_used, clippy::shadow_reuse, clippy::panic)]
+
+  use super::{ChunkedDecoder, FeedResult};
+  use alloc::vec::Vec;
+
+  #[test]
+  fn feed_byte_at_a_time_decodes() {
+    let wire = b"5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n";
+    let mut decoder = ChunkedDecoder::new();
+    let mut out = Vec::new();
+    let mut pending = Vec::new();
+    for &b in wire {
+      pending.push(b);
+      match decoder.feed(&pending, Some(&mut out)).unwrap() {
+        FeedResult::NeedMore { consumed } => {
+          pending.drain(..consumed);
+        },
+        FeedResult::Done { rest } => {
+          assert!(rest.is_empty());
+          assert_eq!(out, b"Hello World");
+          return;
+        },
+      }
+    }
+    panic!("expected Done");
+  }
+
+  #[test]
+  fn feed_consumed_sum_equals_message_len() {
+    // Each wire byte reported as consumed exactly once across incremental feeds.
+    let payload = alloc::vec![b'x'; 128];
+    let mut wire = Vec::new();
+    wire.extend_from_slice(b"80\r\n");
+    wire.extend_from_slice(&payload);
+    wire.extend_from_slice(b"\r\n0\r\n\r\n");
+
+    let mut decoder = ChunkedDecoder::new();
+    let mut offset = 0usize;
+    let mut consumed_sum = 0usize;
+    for end in 1..=wire.len() {
+      match decoder
+        .feed(wire.get(offset..end).unwrap_or(&[]), None)
+        .unwrap()
+      {
+        FeedResult::NeedMore { consumed } => {
+          consumed_sum = consumed_sum.saturating_add(consumed);
+          offset += consumed;
+        },
+        FeedResult::Done { rest } => {
+          let framed = end.saturating_sub(offset).saturating_sub(rest.len());
+          consumed_sum = consumed_sum.saturating_add(framed);
+          offset += framed;
+          break;
+        },
+      }
+    }
+    assert_eq!(offset, wire.len());
+    assert_eq!(consumed_sum, wire.len());
+  }
+
+  #[test]
+  fn feed_advances_past_payload_without_output() {
+    // Growing buffer + offset cursor: already-validated bytes are never re-fed.
+    let wire = b"5\r\nHello\r\n0\r\n\r\n";
+    let mut decoder = ChunkedDecoder::new();
+    let mut buf = Vec::new();
+    let mut offset = 0usize;
+    for &b in wire {
+      buf.push(b);
+      match decoder
+        .feed(buf.get(offset..).unwrap_or(&[]), None)
+        .unwrap()
+      {
+        FeedResult::Done { rest } => {
+          assert!(rest.is_empty());
+          assert_eq!(offset + (buf.len() - offset), wire.len());
+          return;
+        },
+        FeedResult::NeedMore { consumed } => {
+          offset += consumed;
+        },
+      }
+    }
+    panic!("expected Done");
+  }
+
+  #[test]
+  fn message_len_matches_feed() {
+    let wire = b"A\r\n0123456789\r\n0\r\nX-T: v\r\n\r\n";
+    assert_eq!(ChunkedDecoder::message_len_if_complete(wire).unwrap(), Some(wire.len()));
+    assert_eq!(
+      ChunkedDecoder::message_len_if_complete(wire.get(..wire.len() - 1).unwrap()).unwrap(),
+      None
+    );
+  }
 }

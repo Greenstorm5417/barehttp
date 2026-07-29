@@ -253,9 +253,12 @@ mod tests {
 
   #[test]
   fn from_iterator_and_extend() {
-    let h: Headers = [(String::from("A"), String::from("1")), (String::from("B"), String::from("2"))]
-      .into_iter()
-      .collect();
+    let h: Headers = [
+      (String::from("A"), String::from("1")),
+      (String::from("B"), String::from("2")),
+    ]
+    .into_iter()
+    .collect();
     assert_eq!(h.get("a"), Some("1"));
     let mut h2 = Headers::new();
     h2.extend([(String::from("C"), String::from("3"))]);

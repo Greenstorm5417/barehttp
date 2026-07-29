@@ -32,7 +32,7 @@ fn run_against(host: &str) -> Result<(), String> {
     .get(&set_url)
     .call()
     .map_err(|e| format!("SET request: {e}"))?;
-  let set_status = set_resp.status();
+  let set_status = set_resp.status_code();
   // After following the 302, we should land on /cookies with 200.
   println!("after set+redirect: {set_status}");
   if set_status != 200 {
@@ -51,7 +51,7 @@ fn run_against(host: &str) -> Result<(), String> {
     .call()
     .map_err(|e| format!("GET cookies: {e}"))?;
   let body = get_resp.to_text().map_err(|e| format!("body: {e}"))?;
-  println!("get cookies: {} {}", get_resp.status(), body);
+  println!("get cookies: {} {}", get_resp.status_code(), body);
 
   if !body.contains("abc123") && !body.contains("session") {
     return Err(format!("response body did not echo cookie: {body}"));

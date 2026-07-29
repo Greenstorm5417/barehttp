@@ -11,7 +11,7 @@ fn main() -> Result<(), barehttp::Error> {
 
   println!(
     "{} {}",
-    response.status(),
+    response.status_code(),
     response.to_text()?.chars().take(120).collect::<String>()
   );
   Ok(())

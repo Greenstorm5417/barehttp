@@ -1,10 +1,11 @@
 use crate::error::SocketError;
 use core::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
+use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use windows_sys::Win32::Networking::WinSock::{
-  AF_INET, AF_INET6, INVALID_SOCKET, IPPROTO_TCP, SD_BOTH, SO_RCVTIMEO, SO_SNDTIMEO, SOCK_STREAM, SOCKADDR_IN,
-  SOCKADDR_IN6, SOCKET, SOCKET_ERROR, SOL_SOCKET, WSADATA, WSAGetLastError, WSAStartup, closesocket, connect, recv,
-  send, setsockopt, shutdown, socket,
+  AF_INET, AF_INET6, FIONBIO, INVALID_SOCKET, IPPROTO_TCP, SD_BOTH, SO_ERROR, SO_RCVTIMEO, SO_SNDTIMEO, SOCK_STREAM,
+  SOCKADDR_IN, SOCKADDR_IN6, SOCKET, SOCKET_ERROR, SOL_SOCKET, WSADATA, WSAGetLastError, WSAStartup, closesocket,
+  connect, fd_set, getsockopt, ioctlsocket, recv, select, send, setsockopt, shutdown, socket, timeval,
 };
 
 static WSA_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -27,6 +28,9 @@ fn ensure_wsa_initialized() -> Result<(), SocketError> {
   Ok(())
 }
 
+const WSAEWOULDBLOCK: i32 = 10035;
+const WSAEINPROGRESS: i32 = 10036;
+
 const fn map_wsa_error(code: i32) -> SocketError {
   match code {
     10061 => SocketError::ConnectionRefused,
@@ -43,6 +47,17 @@ fn get_last_wsa_error() -> SocketError {
   map_wsa_error(unsafe { WSAGetLastError() })
 }
 
+fn get_wsa_errno() -> i32 {
+  // SAFETY: thread-local Winsock last-error after a failing Winsock call.
+  unsafe { WSAGetLastError() }
+}
+
+/// Monotonic milliseconds for connect-deadline accounting (`GetTickCount64`).
+fn monotonic_ms() -> u64 {
+  // SAFETY: `GetTickCount64` is a process-wide tick counter; no pointers.
+  unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() }
+}
+
 /// Cap a byte length for Winsock `i32` buffer APIs (`recv` / `send`).
 fn winsock_buf_len(len: usize) -> i32 {
   i32::try_from(len).unwrap_or(i32::MAX)
@@ -55,6 +70,7 @@ pub struct OsSocket {
   connected: bool,
   read_timeout_ms: Option<u32>,
   write_timeout_ms: Option<u32>,
+  connect_timeout_ms: Option<u32>,
 }
 
 impl OsSocket {
@@ -69,6 +85,7 @@ impl OsSocket {
       connected: false,
       read_timeout_ms: None,
       write_timeout_ms: None,
+      connect_timeout_ms: None,
     })
   }
 }
@@ -194,6 +211,14 @@ impl crate::socket::BlockingSocket for OsSocket {
     }
     Ok(())
   }
+
+  fn set_connect_timeout(
+    &mut self,
+    timeout_ms: u32,
+  ) -> Result<(), SocketError> {
+    self.connect_timeout_ms = Some(timeout_ms);
+    Ok(())
+  }
 }
 
 impl OsSocket {
@@ -224,6 +249,131 @@ impl OsSocket {
     Ok(())
   }
 
+  fn set_nonblocking(
+    &self,
+    nonblocking: bool,
+  ) -> Result<(), SocketError> {
+    let mut mode: u32 = u32::from(nonblocking);
+    // SAFETY: live SOCKET; `FIONBIO` with a valid `u32` mode pointer.
+    let result = unsafe { ioctlsocket(self.socket, FIONBIO, &raw mut mode) };
+    if result == SOCKET_ERROR {
+      return Err(get_last_wsa_error());
+    }
+    Ok(())
+  }
+
+  fn wait_until_connected(
+    &self,
+    timeout_ms: u32,
+  ) -> Result<(), SocketError> {
+    let start = monotonic_ms();
+    let total_ms = u64::from(timeout_ms);
+    loop {
+      let elapsed = monotonic_ms().saturating_sub(start);
+      let remaining = total_ms.saturating_sub(elapsed);
+      if remaining == 0 {
+        return Err(SocketError::TimedOut);
+      }
+
+      let mut write_fds = fd_set {
+        fd_count: 1,
+        fd_array: [0; 64],
+      };
+      write_fds.fd_array[0] = self.socket;
+      let mut except_fds = write_fds;
+
+      #[allow(
+        clippy::cast_possible_wrap,
+        clippy::cast_possible_truncation,
+        clippy::integer_division
+      )]
+      let mut tv = timeval {
+        tv_sec: (remaining / 1000) as i32,
+        tv_usec: ((remaining % 1000) * 1000) as i32,
+      };
+
+      // SAFETY: `write_fds` / `except_fds` are initialized with one valid SOCKET;
+      // `tv` is a valid timeout; nfds is ignored on Windows.
+      let ready = unsafe { select(0, ptr::null_mut(), &raw mut write_fds, &raw mut except_fds, &raw mut tv) };
+      if ready == SOCKET_ERROR {
+        let err = get_last_wsa_error();
+        if matches!(err, SocketError::Interrupted) {
+          // Shrink remaining via `start`/`elapsed` on the next iteration.
+          continue;
+        }
+        return Err(err);
+      }
+      if ready == 0 {
+        return Err(SocketError::TimedOut);
+      }
+      break;
+    }
+
+    let mut so_error: i32 = 0;
+    let mut len = i32::try_from(core::mem::size_of::<i32>()).map_err(|_| SocketError::Unsupported)?;
+    // SAFETY: live SOCKET; `so_error`/`len` are valid buffers for `SO_ERROR`.
+    let result = unsafe {
+      getsockopt(
+        self.socket,
+        SOL_SOCKET,
+        SO_ERROR,
+        &raw mut so_error as *mut _,
+        &raw mut len,
+      )
+    };
+    if result == SOCKET_ERROR {
+      return Err(get_last_wsa_error());
+    }
+    if so_error != 0 {
+      return Err(map_wsa_error(so_error));
+    }
+    Ok(())
+  }
+
+  fn connect_with_timeout(
+    &mut self,
+    addr: *const windows_sys::Win32::Networking::WinSock::SOCKADDR,
+    namelen: i32,
+  ) -> Result<(), SocketError> {
+    let timeout_ms = self.connect_timeout_ms.unwrap_or(0);
+    if timeout_ms == 0 {
+      // SAFETY: live SOCKET; `addr` points at a valid sockaddr of `namelen` bytes.
+      let result = unsafe { connect(self.socket, addr, namelen) };
+      if result == SOCKET_ERROR {
+        return Err(get_last_wsa_error());
+      }
+      self.connected = true;
+      return Ok(());
+    }
+
+    self.set_nonblocking(true)?;
+    // SAFETY: same as blocking path; nonblocking connect may return WSAEWOULDBLOCK.
+    let result = unsafe { connect(self.socket, addr, namelen) };
+    if result != SOCKET_ERROR {
+      self.set_nonblocking(false)?;
+      self.connected = true;
+      return Ok(());
+    }
+
+    let errno = get_wsa_errno();
+    if errno != WSAEWOULDBLOCK && errno != WSAEINPROGRESS {
+      let _ = self.set_nonblocking(false);
+      return Err(map_wsa_error(errno));
+    }
+
+    match self.wait_until_connected(timeout_ms) {
+      Ok(()) => {
+        self.set_nonblocking(false)?;
+        self.connected = true;
+        Ok(())
+      },
+      Err(e) => {
+        let _ = self.set_nonblocking(false);
+        Err(e)
+      },
+    }
+  }
+
   fn connect_ipv4(
     &mut self,
     addr: &SocketAddrV4,
@@ -233,22 +383,16 @@ impl OsSocket {
     let ip = u32::from_ne_bytes(addr.ip().octets());
     let namelen = i32::try_from(core::mem::size_of::<SOCKADDR_IN>()).map_err(|_| SocketError::Unsupported)?;
 
-    // SAFETY: sockaddr is fully initialized POD; pointer valid for `namelen` bytes; socket live.
-    let result = unsafe {
+    // SAFETY: sockaddr is fully initialized POD; pointer valid for `namelen` during connect.
+    let sockaddr = unsafe {
       let mut sockaddr: SOCKADDR_IN = core::mem::zeroed();
       sockaddr.sin_family = AF_INET;
       sockaddr.sin_port = addr.port().to_be();
       sockaddr.sin_addr.S_un.S_addr = ip;
-
-      connect(self.socket, &raw const sockaddr as *const _, namelen)
+      sockaddr
     };
 
-    if result == SOCKET_ERROR {
-      return Err(get_last_wsa_error());
-    }
-
-    self.connected = true;
-    Ok(())
+    self.connect_with_timeout(&raw const sockaddr as *const _, namelen)
   }
 
   fn connect_ipv6(
@@ -259,25 +403,18 @@ impl OsSocket {
 
     let namelen = i32::try_from(core::mem::size_of::<SOCKADDR_IN6>()).map_err(|_| SocketError::Unsupported)?;
 
-    // SAFETY: sockaddr is fully initialized POD (union Byte / scope_id views written below);
-    // pointer valid for `namelen` bytes; socket live.
-    let result = unsafe {
+    // SAFETY: sockaddr is fully initialized POD; pointer valid for `namelen` during connect.
+    let sockaddr = unsafe {
       let mut sockaddr: SOCKADDR_IN6 = core::mem::zeroed();
       sockaddr.sin6_family = AF_INET6;
       sockaddr.sin6_port = addr.port().to_be();
       sockaddr.sin6_flowinfo = 0;
       sockaddr.sin6_addr.u.Byte = addr.ip().octets();
       sockaddr.Anonymous.sin6_scope_id = addr.scope_id();
-
-      connect(self.socket, &raw const sockaddr as *const _, namelen)
+      sockaddr
     };
 
-    if result == SOCKET_ERROR {
-      return Err(get_last_wsa_error());
-    }
-
-    self.connected = true;
-    Ok(())
+    self.connect_with_timeout(&raw const sockaddr as *const _, namelen)
   }
 
   fn apply_read_timeout(

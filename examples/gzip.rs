@@ -17,6 +17,6 @@ fn main() -> Result<(), barehttp::Error> {
     body.chars().take(200).collect::<String>()
   );
 
-  println!("{} {}", response.status(), body);
+  println!("{} {}", response.status_code(), body);
   Ok(())
 }
