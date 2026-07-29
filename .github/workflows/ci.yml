@@ -381,15 +381,15 @@ jobs:
           cargo bench --locked --bench dhat_e2e --all-features
 
   msrv:
-    name: MSRV (1.85)
+    name: MSRV (1.87)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
-      - name: Install Rust 1.85
-        uses: dtolnay/rust-toolchain@1.85
+      - name: Install Rust 1.87
+        uses: dtolnay/rust-toolchain@1.87
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2

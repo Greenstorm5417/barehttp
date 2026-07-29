@@ -42,7 +42,7 @@ Cargo build artifacts use [`Swatinem/rust-cache`](https://github.com/Swatinem/ru
 | trybuild / `tests/ui` | yes | yes |
 | fmt / docs / examples / lockfile | yes | yes |
 | Benches | smoke (short Criterion, Callgrind, dhat) | full (longer Criterion, Callgrind+Cachegrind, dhat, adversarial if present) |
-| MSRV 1.85 | yes | yes |
+| MSRV 1.87 | yes | yes |
 | OS matrix (Windows / macOS) | yes | yes |
 | Docker interop | **no** | yes (`scripts/run-interop.sh`) |
 | ASan / LSan | **no** | yes (nightly `-Zbuild-std`) |
