@@ -42,8 +42,8 @@ pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
         addresses.push(ip_v4(sockaddr.sin_addr.S_un.S_addr.to_ne_bytes()));
       } else if info.ai_family == i32::from(AF_INET6) && !info.ai_addr.is_null() {
         let sockaddr = ptr::read_unaligned(info.ai_addr.cast::<SOCKADDR_IN6>());
-        // SAFETY: IN6_ADDR.u is a union; Byte is the octet view.
-        let octets = unsafe { sockaddr.sin6_addr.u.Byte };
+        // IN6_ADDR.u is a union; Byte is the octet view (already in unsafe).
+        let octets = sockaddr.sin6_addr.u.Byte;
         addresses.push(ip_v6(octets));
       }
 

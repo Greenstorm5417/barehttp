@@ -145,20 +145,20 @@ jobs:
         run: cargo build --locked --examples --all-features
 
   msrv:
-    name: MSRV (1.85)
+    name: MSRV (1.97)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Install Rust 1.85
-        uses: dtolnay/rust-toolchain@1.85
+      - name: Install Rust 1.97
+        uses: dtolnay/rust-toolchain@1.97
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: msrv-1.85
+          key: msrv-1.97
 
       - name: Check (all features)
         run: cargo check --locked --all-features

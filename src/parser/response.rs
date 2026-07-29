@@ -320,7 +320,7 @@ pub enum BodyReadStrategy {
   UntilClose,
 }
 
-fn coding_is_supported(coding: &str) -> bool {
+const fn coding_is_supported(coding: &str) -> bool {
   #[cfg(feature = "gzip-decompression")]
   if coding.eq_ignore_ascii_case("gzip") || coding.eq_ignore_ascii_case("deflate") {
     return true;

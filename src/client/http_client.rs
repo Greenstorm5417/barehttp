@@ -308,7 +308,7 @@ fn raw_to_response(
 }
 
 /// Check scheme against `assume_tls_socket` and `https_only`.
-pub fn validate_protocol(
+pub const fn validate_protocol(
   config: &Config,
   uri: &Uri,
 ) -> Result<(), Error> {

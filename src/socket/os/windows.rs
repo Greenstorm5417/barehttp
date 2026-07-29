@@ -38,10 +38,7 @@ const fn map_wsa_error(code: i32) -> SocketError {
 }
 
 fn get_last_wsa_error() -> SocketError {
-  unsafe {
-    let code = WSAGetLastError();
-    map_wsa_error(code)
-  }
+  map_wsa_error(unsafe { WSAGetLastError() })
 }
 
 /// OS blocking TCP socket (`WinSock`).

@@ -113,13 +113,13 @@ impl Headers {
 
   /// Number of fields (including duplicate names).
   #[must_use]
-  pub fn len(&self) -> usize {
+  pub const fn len(&self) -> usize {
     self.headers.len()
   }
 
   /// `true` when there are no fields.
   #[must_use]
-  pub fn is_empty(&self) -> bool {
+  pub const fn is_empty(&self) -> bool {
     self.headers.is_empty()
   }
 

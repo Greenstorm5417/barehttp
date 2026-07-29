@@ -159,10 +159,10 @@ fn is_valid_host_field_value(value: &str) -> bool {
       _ => false,
     };
   }
-  if let Some((name, port)) = host.rsplit_once(':') {
-    if name.is_empty() || port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
-      return false;
-    }
+  if let Some((name, port)) = host.rsplit_once(':')
+    && (name.is_empty() || port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()))
+  {
+    return false;
   }
   true
 }
