@@ -23,6 +23,8 @@ cookie-jar = []
 
 gzip = []
 zstd = ["dep:ruzstd"]
+# Gates Valgrind-backed Gungraun benches (Linux-only dev-dep below).
+bench-gungraun = []
 
 [dependencies]
 bytes = { version = "1.12.1", default-features = false }
@@ -33,11 +35,14 @@ ruzstd = { version = "0.9.0", default-features = false, optional = true }
 
 [dev-dependencies]
 # Test-only; never a runtime dep of the library.
-flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
 proptest = "1.6"
-criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
-gungraun = { version = "0.19.4", features = ["client_requests"] }
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 dhat = "0.3.3"
+
+# Valgrind client requests — unsupported on Windows/macOS; keep out of their test graphs.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gungraun = { version = "0.19.4", features = ["client_requests"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2.189", default-features = false }
@@ -80,10 +85,12 @@ harness = false
 [[bench]]
 name = "gungraun_callgrind"
 harness = false
+required-features = ["bench-gungraun"]
 
 [[bench]]
 name = "gungraun_cachegrind"
 harness = false
+required-features = ["bench-gungraun"]
 
 [[bench]]
 name = "dhat_parser"

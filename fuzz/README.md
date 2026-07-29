@@ -16,10 +16,12 @@ cargo install cargo-fuzz
 | `inflate_gzip` | Arbitrary bytes → gzip / zlib / raw inflate (`gzip`) |
 
 ```bash
-cargo +nightly fuzz build
-cargo +nightly fuzz build parse_response
+# If cargo-fuzz was installed via binstall / a musl prebuilt, pass the GNU host
+# triple (CI does this). `cargo install cargo-fuzz` from source usually needs no flag.
+cargo +nightly fuzz build --target x86_64-unknown-linux-gnu
+cargo +nightly fuzz build --target x86_64-unknown-linux-gnu parse_response
 
-cargo +nightly fuzz run parse_response
-cargo +nightly fuzz run parse_uri
-cargo +nightly fuzz run inflate_gzip -- -max_total_time=60
+cargo +nightly fuzz run --target x86_64-unknown-linux-gnu parse_response
+cargo +nightly fuzz run --target x86_64-unknown-linux-gnu parse_uri
+cargo +nightly fuzz run --target x86_64-unknown-linux-gnu inflate_gzip -- -max_total_time=60
 ```

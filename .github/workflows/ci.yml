@@ -195,8 +195,12 @@ jobs:
         with:
           key: fuzz-build
 
+      # install-action ships a musl-built cargo-fuzz binary; its default --target is
+      # therefore x86_64-unknown-linux-musl (CURRENT_PLATFORM of the binary). That
+      # conflicts with -Zsanitizer=address (static CRT) and needs a musl std that
+      # isn't installed. Pin the GNU host triple instead.
       - name: Build fuzz targets
-        run: cargo +nightly fuzz build
+        run: cargo +nightly fuzz build --target x86_64-unknown-linux-gnu
 
   docs:
     name: Docs

@@ -45,7 +45,7 @@ cargo bench --bench criterion_e2e --all-features
 cargo bench --bench criterion_hot_paths --all-features -- \
   --warm-up-time 0.2 --measurement-time 0.5 --sample-size 10
 
-# Gungraun (needs Valgrind + gungraun-runner on Linux)
+# Gungraun (Linux only; Valgrind + gungraun-runner; needs feature bench-gungraun)
 cargo bench --bench gungraun_callgrind --all-features
 cargo bench --bench gungraun_cachegrind --all-features
 
