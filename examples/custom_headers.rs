@@ -2,13 +2,12 @@
 //!
 //! Demonstrates how to set custom headers on requests.
 
-use barehttp::response::ResponseExt;
 use barehttp::{Error, HttpClient};
 
 fn main() -> Result<(), Error> {
   println!("=== Custom Headers Examples ===\n");
 
-  let client = HttpClient::new()?;
+  let client = HttpClient::new();
 
   // Example 1: Single custom header
   println!("1. Single custom header:");

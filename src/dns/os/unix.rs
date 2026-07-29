@@ -3,7 +3,7 @@ use crate::error::DnsError;
 use crate::util::IpAddr;
 use alloc::vec::Vec;
 use core::ptr;
-use libc::{AF_INET, AF_INET6, addrinfo, sockaddr_in};
+use libc::{AF_INET, AF_INET6, addrinfo, sockaddr_in, sockaddr_in6};
 
 pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
   let mut host_cstring = Vec::with_capacity(host.len() + 1);
@@ -48,7 +48,19 @@ pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
         let addr_bytes = sockaddr.sin_addr.s_addr.to_ne_bytes();
         addresses.push(IpAddr::V4(addr_bytes));
       } else if info.ai_family == AF_INET6 && !info.ai_addr.is_null() {
-        // IPv6 support can be added here if needed
+        let sockaddr = ptr::read_unaligned(info.ai_addr.cast::<sockaddr_in6>());
+        let addr_bytes = sockaddr.sin6_addr.s6_addr;
+        let mut addr = [0u16; 8];
+        for i in 0usize..8 {
+          let idx1 = i.wrapping_mul(2);
+          let idx2 = idx1.wrapping_add(1);
+          if let (Some(&b1), Some(&b2), Some(dest)) =
+            (addr_bytes.get(idx1), addr_bytes.get(idx2), addr.get_mut(i))
+          {
+            *dest = u16::from_be_bytes([b1, b2]);
+          }
+        }
+        addresses.push(IpAddr::V6(addr));
       }
 
       current = info.ai_next;

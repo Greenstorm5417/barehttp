@@ -3,10 +3,6 @@
 pub enum ParseError {
   /// Invalid HTTP version format
   InvalidHttpVersion,
-  /// Invalid HTTP method
-  InvalidMethod,
-  /// Invalid request target/path
-  InvalidRequestTarget,
   /// Invalid HTTP status code
   InvalidStatusCode,
   /// Invalid reason phrase in status line
@@ -25,16 +21,10 @@ pub enum ParseError {
   UnexpectedEndOfInput,
   /// Invalid whitespace in message
   InvalidWhitespace,
-  /// Line exceeds maximum allowed length
-  LineTooLong,
   /// Invalid chunk size in chunked transfer encoding
   InvalidChunkSize,
   /// Invalid Content-Length header value
   InvalidContentLength,
-  /// Response header section exceeds size limit
-  HeaderTooLarge,
-  /// Invalid state transition in response reader
-  InvalidState,
   /// Both Transfer-Encoding and Content-Length present (RFC 9112 Section 6.3)
   ConflictingFraming,
   /// Transfer-Encoding present but chunked is not the final encoding (RFC 9112 Section 6.3)
@@ -59,35 +49,12 @@ pub enum ParseError {
   MultipleHostHeaders,
   /// Invalid Host header value format (RFC 9112 Section 3.2)
   InvalidHostHeaderValue,
-  /// Request-target URI exceeds maximum allowed length (RFC 9112 Section 3)
-  UriTooLong,
   /// Transfer-Encoding used with HTTP version < 1.1 (RFC 9112 Section 6.1)
   TransferEncodingRequiresHttp11,
   /// Chunked appears multiple times in Transfer-Encoding (RFC 9112 Section 6.1)
   ChunkedAppliedMultipleTimes,
   /// Failed to decompress response body (gzip/deflate)
   DecompressionFailed,
-}
-
-impl ParseError {
-  /// Returns true if this error represents an unrecoverable framing error
-  /// that requires the connection to be closed per RFC 9112 Section 6.3.
-  ///
-  /// These errors indicate potential request smuggling attacks or ambiguous
-  /// message framing that makes it unsafe to reuse the connection.
-  #[must_use]
-  pub const fn requires_connection_closure(self) -> bool {
-    matches!(
-      self,
-      Self::ConflictingFraming
-        | Self::ChunkedNotFinal
-        | Self::InvalidContentLength
-        | Self::UnexpectedEndOfInput
-        | Self::ExtraDataAfterResponse
-        | Self::WhitespaceBeforeHeaders
-        | Self::InvalidTransferEncodingForStatus
-    )
-  }
 }
 
 impl core::fmt::Display for ParseError {
@@ -97,8 +64,6 @@ impl core::fmt::Display for ParseError {
   ) -> core::fmt::Result {
     match self {
       Self::InvalidHttpVersion => write!(f, "invalid HTTP version"),
-      Self::InvalidMethod => write!(f, "invalid method"),
-      Self::InvalidRequestTarget => write!(f, "invalid request target"),
       Self::InvalidStatusCode => write!(f, "invalid status code"),
       Self::InvalidReasonPhrase => write!(f, "invalid reason phrase"),
       Self::InvalidHeaderName => write!(f, "invalid header name"),
@@ -108,11 +73,8 @@ impl core::fmt::Display for ParseError {
       Self::BareCarriageReturn => write!(f, "bare CR not allowed"),
       Self::UnexpectedEndOfInput => write!(f, "unexpected end of input"),
       Self::InvalidWhitespace => write!(f, "invalid whitespace"),
-      Self::LineTooLong => write!(f, "line too long"),
       Self::InvalidChunkSize => write!(f, "invalid chunk size"),
       Self::InvalidContentLength => write!(f, "invalid Content-Length value"),
-      Self::HeaderTooLarge => write!(f, "response header too large"),
-      Self::InvalidState => write!(f, "invalid parser state"),
       Self::ConflictingFraming => {
         write!(f, "both Transfer-Encoding and Content-Length present")
       },
@@ -139,7 +101,6 @@ impl core::fmt::Display for ParseError {
       },
       Self::MultipleHostHeaders => write!(f, "multiple Host headers present"),
       Self::InvalidHostHeaderValue => write!(f, "invalid Host header value format"),
-      Self::UriTooLong => write!(f, "request-target URI exceeds maximum allowed length"),
       Self::TransferEncodingRequiresHttp11 => {
         write!(f, "Transfer-Encoding requires HTTP/1.1 or higher")
       },
@@ -150,3 +111,5 @@ impl core::fmt::Display for ParseError {
     }
   }
 }
+
+impl core::error::Error for ParseError {}

@@ -1,77 +1,33 @@
-use crate::error::ParseError;
+/// Check if buffer contains complete HTTP headers (`\r\n\r\n` or LF-only `\n\n`).
+#[inline]
+pub fn has_complete_headers(data: &[u8]) -> bool {
+  data.windows(4).any(|w| w == b"\r\n\r\n") || data.windows(2).any(|w| w == b"\n\n")
+}
 
-/// Detects HTTP framing boundaries in byte streams
+/// Heuristic: does `data` look like a complete chunked body?
 ///
-/// RFC 9112 Section 2: Message Format
-/// HTTP messages consist of a start-line, header fields, and optional message body.
-/// The end of header section is indicated by CRLF CRLF sequence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FramingDetector;
-
-impl FramingDetector {
-  /// Search for the end of HTTP headers (CRLF CRLF sequence)
-  ///
-  /// RFC 9112 Section 2.1: Message Format
-  /// Returns the position after the CRLF CRLF if found, None otherwise
-  #[allow(dead_code)]
-  pub fn find_header_end(data: &[u8]) -> Option<usize> {
-    // RFC 9112 Section 2: header section ends with CRLF CRLF
-    data
-      .windows(4)
-      .position(|w| w == b"\r\n\r\n")
-      .map(|pos| pos + 4)
+/// RFC 9112 Section 7.1: last chunk is size 0, then optional trailers, then blank line.
+/// Minimal forms: `0\r\n\r\n` / `0\n\n` (`ChunkedDecoder` accepts LF-only).
+pub fn has_chunked_terminator(data: &[u8]) -> bool {
+  // ponytail: Connection read-stop only — ChunkedDecoder is authoritative.
+  // End-anchored so mid-body `0\r\n\r\n` / `0\n\n` in chunk data does not stop early.
+  // Ceiling: chunk data ending with `\n0\r\n...\r\n\r\n` can still false-positive;
+  // drive ChunkedDecoder in the read loop if that bites.
+  if data.ends_with(b"0\r\n\r\n") || data.ends_with(b"0\n\n") {
+    return true;
   }
-
-  /// Check if buffer contains complete HTTP headers
-  ///
-  /// This is more efficient than `find_header_end` when you only need
-  /// to know if headers are complete, not where they end.
-  #[inline]
-  pub fn has_complete_headers(data: &[u8]) -> bool {
-    data.windows(4).any(|w| w == b"\r\n\r\n")
+  // Trailers after last chunk: ...0\r\n<field>\r\n...\r\n\r\n or LF-only equivalent
+  if data.len() >= 5 && data.ends_with(b"\r\n\r\n") {
+    if data.starts_with(b"0\r\n") {
+      return true;
+    }
+    return data.windows(4).any(|w| w == b"\n0\r\n");
   }
-
-  /// Search for the terminating chunk in chunked transfer encoding
-  ///
-  /// RFC 9112 Section 7.1: Chunked Transfer Coding
-  /// The chunked encoding ends with a chunk of size 0 followed by trailer section
-  /// Minimal form: "0\r\n\r\n"
-  ///
-  /// Returns true if the terminating chunk sequence is found
-  pub fn has_chunked_terminator(data: &[u8]) -> bool {
-    // RFC 9112 Section 7.1: last chunk is "0" followed by CRLF and trailer
-    // Most minimal form is "0\r\n\r\n" (5 bytes)
-    data.windows(5).any(|w| w == b"0\r\n\r\n")
+  if data.len() >= 3 && data.ends_with(b"\n\n") {
+    if data.starts_with(b"0\n") {
+      return true;
+    }
+    return data.windows(3).any(|w| w == b"\n0\n");
   }
-
-  /// Parse Content-Length header value
-  ///
-  /// RFC 9112 Section 6.2: Content-Length
-  /// The Content-Length field value consists of one or more digits
-  #[allow(dead_code)]
-  pub fn parse_content_length(value: &[u8]) -> Result<usize, ParseError> {
-    let s = core::str::from_utf8(value).map_err(|_| ParseError::InvalidContentLength)?;
-    s.trim()
-      .parse()
-      .map_err(|_| ParseError::InvalidContentLength)
-  }
-
-  /// Extract headers section from response buffer
-  ///
-  /// Returns the header bytes (including status line, excluding final CRLF CRLF)
-  /// and remaining bytes after headers
-  #[allow(dead_code)]
-  pub fn split_headers(data: &[u8]) -> Result<(&[u8], &[u8]), ParseError> {
-    let end_pos = Self::find_header_end(data).ok_or(ParseError::UnexpectedEndOfInput)?;
-
-    // Headers include everything up to (but not including) the final CRLF CRLF
-    let headers = data
-      .get(..end_pos.saturating_sub(4))
-      .ok_or(ParseError::UnexpectedEndOfInput)?;
-    let remaining = data
-      .get(end_pos..)
-      .ok_or(ParseError::UnexpectedEndOfInput)?;
-
-    Ok((headers, remaining))
-  }
+  false
 }

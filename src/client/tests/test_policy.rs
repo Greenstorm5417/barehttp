@@ -4,6 +4,7 @@ use crate::error::Error;
 use crate::headers::Headers;
 use crate::method::Method;
 use crate::parser::uri::Uri;
+use crate::parser::version::Version;
 use crate::transport::RawResponse;
 use alloc::string::String;
 use alloc::vec;
@@ -20,6 +21,7 @@ fn make_redirect_response(
     status_code: status,
     reason: String::from("Redirect"),
     headers,
+    version: Version::HTTP_11,
     body_bytes: Vec::new(),
   }
 }
@@ -28,6 +30,7 @@ fn make_redirect_response(
 fn https_only_policy_rejects_http() {
   let policy = RequestPolicy::new(&Config {
     protocol_restriction: ProtocolRestriction::HttpsOnly,
+    assume_tls_socket: true,
     ..Default::default()
   });
 
@@ -38,13 +41,41 @@ fn https_only_policy_rejects_http() {
 }
 
 #[test]
-fn https_only_policy_allows_https() {
+fn https_only_policy_allows_https_with_tls_socket() {
   let policy = RequestPolicy::new(&Config {
     protocol_restriction: ProtocolRestriction::HttpsOnly,
+    assume_tls_socket: true,
     ..Default::default()
   });
 
   let uri = Uri::parse("https://example.com").unwrap();
+  assert!(policy.validate_protocol(&uri).is_ok());
+}
+
+#[test]
+fn default_rejects_https_without_tls_socket() {
+  let policy = RequestPolicy::new(&Config::default());
+  let uri = Uri::parse("https://example.com").unwrap();
+  assert!(matches!(
+    policy.validate_protocol(&uri),
+    Err(Error::HttpsRequired)
+  ));
+}
+
+#[test]
+fn assume_tls_socket_allows_https() {
+  let policy = RequestPolicy::new(&Config {
+    assume_tls_socket: true,
+    ..Default::default()
+  });
+  let uri = Uri::parse("https://example.com").unwrap();
+  assert!(policy.validate_protocol(&uri).is_ok());
+}
+
+#[test]
+fn default_allows_http() {
+  let policy = RequestPolicy::new(&Config::default());
+  let uri = Uri::parse("http://example.com").unwrap();
   assert!(policy.validate_protocol(&uri).is_ok());
 }
 
@@ -59,6 +90,7 @@ fn policy_drops_body_for_head_requests() {
     status_code: 200,
     reason: String::from("OK"),
     headers,
+    version: Version::HTTP_11,
     body_bytes: b"1234567890".to_vec(),
   };
 
@@ -215,6 +247,7 @@ fn status_4xx_is_error_when_configured() {
     status_code: 404,
     reason: String::from("Not Found"),
     headers: Headers::new(),
+    version: Version::HTTP_11,
     body_bytes: Vec::new(),
   };
 
@@ -242,6 +275,7 @@ fn status_5xx_is_error_when_configured() {
     status_code: 500,
     reason: String::from("Internal Server Error"),
     headers: Headers::new(),
+    version: Version::HTTP_11,
     body_bytes: Vec::new(),
   };
 
@@ -269,6 +303,7 @@ fn status_4xx_is_ok_when_configured_as_response() {
     status_code: 404,
     reason: String::from("Not Found"),
     headers: Headers::new(),
+    version: Version::HTTP_11,
     body_bytes: Vec::new(),
   };
 
@@ -330,6 +365,101 @@ fn too_many_redirects_is_error() {
 }
 
 #[test]
+fn same_origin_redirect_keeps_credentials_flag_clear() {
+  let mut policy = RequestPolicy::new(&Config::default());
+  let raw = make_redirect_response(302, "/next");
+
+  let decision = policy
+    .process_raw_response(
+      raw,
+      &Uri::parse("http://a.com/path").unwrap(),
+      "http://a.com/path",
+      Method::Get,
+      None,
+    )
+    .unwrap();
+
+  match decision {
+    PolicyDecision::Redirect { cross_origin, next_uri, .. } => {
+      assert!(!cross_origin);
+      assert_eq!(next_uri, "http://a.com/next");
+    },
+    PolicyDecision::Return(_) => panic!("Expected PolicyDecision::Redirect"),
+  }
+}
+
+#[test]
+fn cross_origin_redirect_sets_flag() {
+  let mut policy = RequestPolicy::new(&Config::default());
+  let raw = make_redirect_response(302, "http://b.com/next");
+
+  let decision = policy
+    .process_raw_response(
+      raw,
+      &Uri::parse("http://a.com/path").unwrap(),
+      "http://a.com/path",
+      Method::Get,
+      None,
+    )
+    .unwrap();
+
+  match decision {
+    PolicyDecision::Redirect { cross_origin, .. } => assert!(cross_origin),
+    PolicyDecision::Return(_) => panic!("Expected PolicyDecision::Redirect"),
+  }
+}
+
+#[test]
+fn different_port_is_cross_origin() {
+  let mut policy = RequestPolicy::new(&Config::default());
+  let raw = make_redirect_response(302, "http://a.com:9090/next");
+
+  let decision = policy
+    .process_raw_response(
+      raw,
+      &Uri::parse("http://a.com:8080/path").unwrap(),
+      "http://a.com:8080/path",
+      Method::Get,
+      None,
+    )
+    .unwrap();
+
+  match decision {
+    PolicyDecision::Redirect { cross_origin, .. } => assert!(cross_origin),
+    PolicyDecision::Return(_) => panic!("Expected PolicyDecision::Redirect"),
+  }
+}
+
+#[test]
+fn sanitize_strips_credentials_cross_origin_and_hop_by_hop() {
+  use crate::client::policy::sanitize_redirect_headers;
+
+  let mut headers = Headers::new();
+  headers.insert("Authorization", "Bearer secret");
+  headers.insert("Cookie", "sid=1");
+  headers.insert("Connection", "keep-alive");
+  headers.insert("X-Custom", "keep");
+
+  sanitize_redirect_headers(&mut headers, true, false);
+  assert!(!headers.contains("Authorization"));
+  assert!(!headers.contains("Cookie"));
+  assert!(!headers.contains("Connection"));
+  assert_eq!(headers.get("X-Custom"), Some("keep"));
+
+  let mut same_origin = Headers::new();
+  same_origin.insert("Authorization", "Bearer secret");
+  same_origin.insert("TE", "trailers");
+  sanitize_redirect_headers(&mut same_origin, false, false);
+  assert_eq!(same_origin.get("Authorization"), Some("Bearer secret"));
+  assert!(!same_origin.contains("TE"));
+
+  let mut drop_body = Headers::new();
+  drop_body.insert("Content-Length", "99");
+  sanitize_redirect_headers(&mut drop_body, false, true);
+  assert!(!drop_body.contains("Content-Length"));
+}
+
+#[test]
 fn no_follow_policy_returns_redirect_response() {
   let mut policy = RequestPolicy::new(&Config {
     redirect_policy: RedirectPolicy::NoFollow,
@@ -351,5 +481,42 @@ fn no_follow_policy_returns_redirect_response() {
     PolicyDecision::Redirect { .. } => {
       panic!("Should not follow redirect with NoFollow policy")
     },
+  }
+}
+
+#[test]
+fn chunked_trailers_reach_response() {
+  let mut policy = RequestPolicy::new(&Config::default());
+
+  let mut headers = Headers::new();
+  headers.insert("Transfer-Encoding", "chunked");
+
+  let raw = RawResponse {
+    status_code: 200,
+    reason: String::from("OK"),
+    headers,
+    version: Version::HTTP_11,
+    body_bytes: b"5\r\nhello\r\n0\r\nX-Trailer: value\r\n\r\n".to_vec(),
+  };
+
+  let decision = policy
+    .process_raw_response(
+      raw,
+      &Uri::parse("http://example.com").unwrap(),
+      "http://example.com",
+      Method::Get,
+      None,
+    )
+    .unwrap();
+
+  match decision {
+    PolicyDecision::Return(resp) => {
+      assert_eq!(resp.body.as_bytes(), b"hello");
+      assert_eq!(
+        resp.trailers,
+        vec![(String::from("X-Trailer"), String::from("value"))]
+      );
+    },
+    PolicyDecision::Redirect { .. } => panic!("Expected PolicyDecision::Return"),
   }
 }

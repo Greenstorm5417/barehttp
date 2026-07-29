@@ -1,4 +1,4 @@
-use crate::parser::http::StatusLine;
+use crate::parser::status_line::StatusLine;
 
 #[test]
 fn test_status_200_with_reason() {
@@ -6,7 +6,7 @@ fn test_status_200_with_reason() {
   let result = StatusLine::parse(input);
   assert!(result.is_ok());
   let (line, _) = result.unwrap();
-  assert_eq!(line.status.code(), 200);
+  assert_eq!(line.status.as_u16(), 200);
   assert_eq!(line.reason, b"OK");
 }
 
@@ -16,7 +16,7 @@ fn test_status_404_with_reason() {
   let result = StatusLine::parse(input);
   assert!(result.is_ok());
   let (line, _) = result.unwrap();
-  assert_eq!(line.status.code(), 404);
+  assert_eq!(line.status.as_u16(), 404);
   assert_eq!(line.reason, b"Not Found");
 }
 
@@ -26,7 +26,7 @@ fn test_status_with_no_reason_phrase() {
   let result = StatusLine::parse(input);
   assert!(result.is_ok());
   let (line, _) = result.unwrap();
-  assert_eq!(line.status.code(), 204);
+  assert_eq!(line.status.as_u16(), 204);
   assert_eq!(line.reason.len(), 0);
 }
 
@@ -45,7 +45,7 @@ fn test_informational_status_100() {
   let result = StatusLine::parse(input);
   assert!(result.is_ok());
   let (line, _) = result.unwrap();
-  assert_eq!(line.status.code(), 100);
+  assert_eq!(line.status.as_u16(), 100);
 }
 
 #[test]
@@ -54,7 +54,7 @@ fn test_redirection_status_301() {
   let result = StatusLine::parse(input);
   assert!(result.is_ok());
   let (line, _) = result.unwrap();
-  assert_eq!(line.status.code(), 301);
+  assert_eq!(line.status.as_u16(), 301);
 }
 
 #[test]
@@ -63,7 +63,7 @@ fn test_client_error_status_400() {
   let result = StatusLine::parse(input);
   assert!(result.is_ok());
   let (line, _) = result.unwrap();
-  assert_eq!(line.status.code(), 400);
+  assert_eq!(line.status.as_u16(), 400);
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn test_server_error_status_503() {
   let result = StatusLine::parse(input);
   assert!(result.is_ok());
   let (line, _) = result.unwrap();
-  assert_eq!(line.status.code(), 503);
+  assert_eq!(line.status.as_u16(), 503);
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn test_custom_status_code_299() {
   let result = StatusLine::parse(input);
   assert!(result.is_ok());
   let (line, _) = result.unwrap();
-  assert_eq!(line.status.code(), 299);
+  assert_eq!(line.status.as_u16(), 299);
 }
 
 #[test]
@@ -162,5 +162,5 @@ fn test_websocket_upgrade_101() {
   let result = StatusLine::parse(input);
   assert!(result.is_ok());
   let (line, _) = result.unwrap();
-  assert_eq!(line.status.code(), 101);
+  assert_eq!(line.status.as_u16(), 101);
 }

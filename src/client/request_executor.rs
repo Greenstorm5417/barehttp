@@ -1,205 +1,166 @@
-/// Single HTTP request execution logic
-///
-/// This module handles the low-level details of executing a single HTTP request:
-/// - Socket management (pooling/creation)
-/// - Connection establishment
-/// - Request serialization
-/// - Response reading
-/// - Connection reuse logic
+//! One HTTP hop: pool/connect, send, read, maybe return socket to pool.
+
 use crate::config::Config;
 use crate::dns::DnsResolver;
 use crate::error::Error;
-use crate::headers::{HeaderName, Headers};
+use crate::headers::Headers;
 use crate::method::Method;
-use crate::parser::RequestBuilder as ParserRequestBuilder;
+use crate::parser::WireRequest;
 use crate::parser::uri::Uri;
 use crate::socket::BlockingSocket;
 use crate::transport::{ConnectionPool, Connector, PoolKey, RawResponse, ResponseBodyExpectation};
+use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-/// Executes a single HTTP request without redirect handling
-pub struct RequestExecutor<'a, S, D> {
-  pool: &'a Arc<ConnectionPool<S>>,
-  dns: &'a D,
-  config: &'a Config,
-}
-
-impl<'a, S, D> RequestExecutor<'a, S, D>
+/// Execute a single request (no redirects).
+pub fn execute<S, D>(
+  pool: &Arc<ConnectionPool<S>>,
+  dns: &D,
+  config: &Config,
+  uri: &Uri,
+  method: Method,
+  custom_headers: &Headers,
+  body: Option<&[u8]>,
+) -> Result<RawResponse, Error>
 where
   S: BlockingSocket,
   D: DnsResolver,
 {
-  pub const fn new(
-    pool: &'a Arc<ConnectionPool<S>>,
-    dns: &'a D,
-    config: &'a Config,
-  ) -> Self {
-    Self { pool, dns, config }
+  let host_str = host_from_uri(uri);
+  let port = port_from_uri(uri);
+  let pool_key = PoolKey::new(uri.scheme().to_ascii_lowercase(), host_str.clone(), port);
+
+  let mut socket = get_or_create_socket(pool, config, &pool_key)?;
+  let connector = Connector::new(&mut socket, dns);
+  let mut conn = connector.connect(uri, config)?;
+
+  let request_bytes = build_request(uri, method, &host_str, port, custom_headers, body, config)?;
+  conn.send_request(&request_bytes)?;
+
+  let expectation = if method == Method::Head {
+    ResponseBodyExpectation::NoBody
+  } else {
+    ResponseBodyExpectation::Normal
+  };
+  let raw = conn.read_raw_response(expectation)?;
+
+  if config.connection_pooling && conn.is_reusable() {
+    pool.return_connection(pool_key, socket);
   }
 
-  /// Execute a single HTTP request and return raw response
-  pub fn execute(
-    &self,
-    uri: &Uri,
-    method: Method,
-    custom_headers: &Headers,
-    body: Option<&[u8]>,
-  ) -> Result<RawResponse, Error> {
-    // Extract host information from URI (copy to avoid lifetime issues)
-    let host_str = Self::extract_host_from_uri(uri)?;
-    let port = Self::extract_port_from_uri(uri);
-    let pool_key = PoolKey::new(host_str.clone(), port);
+  Ok(raw)
+}
 
-    // Get or create socket
-    let mut socket = self.get_or_create_socket(&pool_key)?;
+fn host_from_uri(uri: &Uri) -> String {
+  let Some(auth) = uri.authority() else {
+    return String::new();
+  };
+  match auth.host() {
+    crate::parser::uri::Host::RegName(name) => String::from(*name),
+    crate::parser::uri::Host::IpAddr(addr) => alloc::format!("{addr}"),
+  }
+}
 
-    // Establish connection
-    let connector = Connector::new(&mut socket, self.dns);
-    let mut conn = connector.connect(uri, self.config)?;
+fn port_from_uri(uri: &Uri) -> u16 {
+  uri
+    .authority()
+    .and_then(crate::parser::uri::Authority::port)
+    .unwrap_or_else(|| {
+      if uri.scheme().eq_ignore_ascii_case("https") {
+        443
+      } else {
+        80
+      }
+    })
+}
 
-    // Build and send request
-    let request_bytes = self.build_request(uri, method, &host_str, port, custom_headers, body)?;
-    conn.send_request(&request_bytes)?;
+fn get_or_create_socket<S>(
+  pool: &Arc<ConnectionPool<S>>,
+  config: &Config,
+  pool_key: &PoolKey,
+) -> Result<S, Error>
+where
+  S: BlockingSocket,
+{
+  if config.connection_pooling
+    && let Some(s) = pool.get(pool_key)
+  {
+    return Ok(s);
+  }
+  S::new().map_err(Error::Socket)
+}
 
-    // Read response
-    let expectation = if method == Method::Head {
-      ResponseBodyExpectation::NoBody
-    } else {
-      ResponseBodyExpectation::Normal
-    };
-    let raw = conn.read_raw_response(expectation)?;
-
-    // Handle connection pooling
-    self.handle_connection_reuse(conn.is_reusable(), pool_key, socket);
-
-    Ok(raw)
+fn build_request(
+  uri: &Uri,
+  method: Method,
+  host_str: &str,
+  port: u16,
+  custom_headers: &Headers,
+  body: Option<&[u8]>,
+  config: &Config,
+) -> Result<Vec<u8>, Error> {
+  if uri
+    .authority()
+    .and_then(crate::parser::uri::Authority::userinfo)
+    .is_some()
+  {
+    // Credentials in the URL are not sent as Authorization (avoid silent drop).
+    return Err(Error::Parse(crate::error::ParseError::InvalidUri));
   }
 
-  /// Extract hostname from URI
-  fn extract_host_from_uri(uri: &Uri) -> Result<String, Error> {
-    let authority = uri.authority();
-    authority.map_or_else(
-      || Ok(String::new()),
-      |auth| match auth.host() {
-        crate::parser::uri::Host::RegName(name) => Ok(String::from(*name)),
-        crate::parser::uri::Host::IpAddr(_) => Err(Error::IpAddressNotSupported),
-      },
-    )
+  let host_header = if (uri.scheme().eq_ignore_ascii_case("http") && port == 80)
+    || (uri.scheme().eq_ignore_ascii_case("https") && port == 443)
+  {
+    String::from(host_str)
+  } else {
+    format!("{host_str}:{port}")
+  };
+
+  let mut builder =
+    WireRequest::new(method.as_str(), &uri.path_and_query()).header(Headers::HOST, host_header.as_str());
+
+  if !config.connection_pooling {
+    builder = builder.header(Headers::CONNECTION, "close");
   }
 
-  /// Extract port from URI with defaults
-  fn extract_port_from_uri(uri: &Uri) -> u16 {
-    uri
-      .authority()
-      .and_then(super::super::parser::uri::Authority::port)
-      .unwrap_or_else(|| {
-        if uri.scheme() == "https" {
-          443
-        } else {
-          80
-        }
-      })
+  if let Some(ref user_agent) = config.user_agent {
+    builder = builder.header(Headers::USER_AGENT, user_agent.as_str());
   }
 
-  /// Get socket from pool or create new one
-  fn get_or_create_socket(
-    &self,
-    pool_key: &PoolKey,
-  ) -> Result<S, Error> {
-    if self.config.connection_pooling {
-      self
-        .pool
-        .get(pool_key)
-        .map_or_else(|| S::new().map_err(Error::Socket), |s| Ok(s))
-    } else {
-      S::new().map_err(Error::Socket)
-    }
+  if let Some(ref accept) = config.accept
+    && !custom_headers.contains(Headers::ACCEPT)
+  {
+    builder = builder.header(Headers::ACCEPT, accept.as_str());
   }
 
-  /// Build HTTP request bytes
-  fn build_request(
-    &self,
-    uri: &Uri,
-    method: Method,
-    host_str: &str,
-    port: u16,
-    custom_headers: &Headers,
-    body: Option<&[u8]>,
-  ) -> Result<Vec<u8>, Error> {
-    use alloc::format;
+  if !custom_headers.contains(Headers::ACCEPT_ENCODING) {
+    #[allow(unused_mut)]
+    let mut encodings: Vec<&str> = Vec::new();
 
-    // Build Host header with port if non-default
-    let host_header = if (uri.scheme() == "http" && port == 80) || (uri.scheme() == "https" && port == 443) {
-      String::from(host_str)
-    } else {
-      format!("{host_str}:{port}")
-    };
-
-    let mut builder =
-      ParserRequestBuilder::new(method.as_str(), &uri.path_and_query()).header(HeaderName::HOST, host_header.as_str());
-
-    // RFC 9112 Section 9.3: Send Connection: close if pooling is disabled
-    if !self.config.connection_pooling {
-      builder = builder.header(HeaderName::CONNECTION, "close");
-    }
-
-    // Add default headers from config
-    if let Some(ref user_agent) = self.config.user_agent {
-      builder = builder.header(HeaderName::USER_AGENT, user_agent.as_str());
-    }
-
-    // Only add default Accept if user hasn't specified it in custom headers
-    if let Some(ref accept) = self.config.accept
-      && !custom_headers.contains(HeaderName::ACCEPT)
+    #[cfg(feature = "gzip-decompression")]
     {
-      builder = builder.header(HeaderName::ACCEPT, accept.as_str());
+      encodings.push("gzip");
+      encodings.push("deflate");
     }
 
-    // Add Accept-Encoding header based on enabled decompression features
-    // Only add if user hasn't specified it in custom headers
-    if !custom_headers.contains(HeaderName::ACCEPT_ENCODING) {
-      #[allow(unused_mut)]
-      let mut encodings: Vec<&str> = Vec::new();
+    #[cfg(feature = "zstd-decompression")]
+    encodings.push("zstd");
 
-      #[cfg(feature = "gzip-decompression")]
-      {
-        encodings.push("gzip");
-        encodings.push("deflate");
-      }
-
-      #[cfg(feature = "zstd-decompression")]
-      encodings.push("zstd");
-
-      if !encodings.is_empty() {
-        let accept_encoding = encodings.join(", ");
-        builder = builder.header(HeaderName::ACCEPT_ENCODING, accept_encoding.as_str());
-      }
-    }
-
-    // Add custom headers
-    for (name, value) in custom_headers {
-      builder = builder.header(name.as_str(), value.as_str());
-    }
-
-    // Add body if present
-    if let Some(body_data) = body {
-      builder = builder.body(body_data.to_vec());
-    }
-
-    builder.build().map_err(Error::Parse)
-  }
-
-  /// Handle connection reuse based on pooling config
-  fn handle_connection_reuse(
-    &self,
-    is_reusable: bool,
-    pool_key: PoolKey,
-    socket: S,
-  ) {
-    if self.config.connection_pooling && is_reusable {
-      self.pool.return_connection(pool_key, socket);
+    if !encodings.is_empty() {
+      let accept_encoding = encodings.join(", ");
+      builder = builder.header(Headers::ACCEPT_ENCODING, accept_encoding.as_str());
     }
   }
+
+  for (name, value) in custom_headers {
+    builder = builder.header(name.as_str(), value.as_str());
+  }
+
+  if let Some(body_data) = body {
+    builder = builder.body(body_data.to_vec());
+  }
+
+  builder.build().map_err(Error::Parse)
 }

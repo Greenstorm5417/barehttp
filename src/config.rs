@@ -1,21 +1,10 @@
 use core::time::Duration;
 
-/// Policy for forwarding authorization headers during redirects
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RedirectAuthHeaders {
-  /// Never forward authorization headers on redirects
-  Never,
-  /// Forward authorization headers only when redirecting to the same host
-  SameHost,
-}
-
 /// HTTP redirect following behavior
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedirectPolicy {
   /// Follow redirects and return the final response
   Follow,
-  /// Follow redirects but return the last redirect response
-  FollowReturnLast,
   /// Do not follow redirects
   NoFollow,
 }
@@ -53,8 +42,6 @@ pub struct Config {
   pub max_redirects: u32,
   /// How to handle 4xx/5xx status codes
   pub http_status_handling: HttpStatusHandling,
-  /// Policy for forwarding auth headers on redirects
-  pub redirect_auth_headers: RedirectAuthHeaders,
   /// Maximum size for response headers in bytes
   pub max_response_header_size: usize,
   /// Timeout for establishing connection
@@ -65,16 +52,16 @@ pub struct Config {
   pub accept: Option<alloc::string::String>,
   /// Protocol restrictions (HTTP/HTTPS)
   pub protocol_restriction: ProtocolRestriction,
+  /// Allow `https://` when your [`crate::BlockingSocket`] already does TLS (default `false`).
+  ///
+  /// The OS socket is cleartext; without this flag, `https://` is rejected.
+  pub assume_tls_socket: bool,
   /// Enable connection pooling for persistent connections
   pub connection_pooling: bool,
   /// Maximum idle connections to keep per host
   pub max_idle_per_host: usize,
   /// Timeout for idle connections in the pool (in seconds)
   pub idle_timeout: Option<Duration>,
-  /// Maximum allowed URI length in bytes (RFC 9112 Section 3)
-  /// Server should respond with 414 (URI Too Long) if exceeded
-  /// None means no limit
-  pub max_uri_length: Option<usize>,
 }
 
 impl Default for Config {
@@ -85,16 +72,15 @@ impl Default for Config {
       redirect_policy: RedirectPolicy::Follow,
       max_redirects: 10,
       http_status_handling: HttpStatusHandling::AsError,
-      redirect_auth_headers: RedirectAuthHeaders::Never,
       max_response_header_size: 64 * 1024,
       timeout_connect: None,
       timeout_read: None,
       accept: Some(alloc::string::String::from("*/*")),
       protocol_restriction: ProtocolRestriction::Any,
+      assume_tls_socket: false,
       connection_pooling: true,
       max_idle_per_host: 5,
       idle_timeout: Some(Duration::from_secs(90)),
-      max_uri_length: Some(8192), // RFC 9112 Section 3: reasonable default
     }
   }
 }
@@ -165,16 +151,6 @@ impl ConfigBuilder {
     self
   }
 
-  /// Set the policy for forwarding authorization headers on redirects
-  #[must_use]
-  pub const fn redirect_auth_headers(
-    mut self,
-    policy: RedirectAuthHeaders,
-  ) -> Self {
-    self.config.redirect_auth_headers = policy;
-    self
-  }
-
   /// Set the maximum response header size in bytes
   #[must_use]
   pub const fn max_response_header_size(
@@ -222,6 +198,16 @@ impl ConfigBuilder {
     restriction: ProtocolRestriction,
   ) -> Self {
     self.config.protocol_restriction = restriction;
+    self
+  }
+
+  /// Allow `https://` because the socket adapter performs TLS.
+  #[must_use]
+  pub const fn assume_tls_socket(
+    mut self,
+    enabled: bool,
+  ) -> Self {
+    self.config.assume_tls_socket = enabled;
     self
   }
 
@@ -281,7 +267,6 @@ mod tests {
     assert_eq!(config.redirect_policy, RedirectPolicy::Follow);
     assert_eq!(config.max_redirects, 10);
     assert_eq!(config.http_status_handling, HttpStatusHandling::AsError);
-    assert_eq!(config.redirect_auth_headers, RedirectAuthHeaders::Never);
     assert_eq!(config.max_response_header_size, 64 * 1024);
     assert!(config.timeout_connect.is_none());
     assert!(config.timeout_read.is_none());

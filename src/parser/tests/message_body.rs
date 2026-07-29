@@ -67,9 +67,7 @@ fn test_body_both_transfer_encoding_and_content_length() {
 fn test_body_invalid_content_length_non_numeric() {
   let input = b"HTTP/1.1 200 OK\r\nContent-Length: abc\r\n\r\n";
   let result = Response::parse(input);
-  assert!(result.is_ok());
-  let response = result.unwrap();
-  assert!(response.body.is_empty());
+  assert!(result.is_err());
 }
 
 #[test]
@@ -83,11 +81,12 @@ fn test_body_content_length_with_extra_data() {
 
 #[test]
 fn test_body_no_content_length_no_transfer_encoding() {
+  // RFC 9112 §6.3: no CL/TE → body is until connection close (remaining buffer)
   let input = b"HTTP/1.1 200 OK\r\n\r\nSome body content";
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert!(response.body.is_empty());
+  assert_eq!(response.body.as_bytes(), b"Some body content");
 }
 
 #[test]

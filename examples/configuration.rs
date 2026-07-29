@@ -3,7 +3,6 @@
 //! Demonstrates how to configure the HTTP client with custom settings.
 
 use barehttp::config::{ConfigBuilder, HttpStatusHandling, RedirectPolicy};
-use barehttp::response::ResponseExt;
 use barehttp::{Error, HttpClient};
 use core::time::Duration;
 
@@ -17,7 +16,7 @@ fn main() -> Result<(), Error> {
     .user_agent("barehttp-config-example/1.0")
     .build();
 
-  let client = HttpClient::with_config(config)?;
+  let client = HttpClient::with_config(config);
 
   let response = client.get("http://httpbin.org/delay/2").call()?;
   println!("✓ Request completed with timeout setting");
@@ -29,7 +28,7 @@ fn main() -> Result<(), Error> {
     .redirect_policy(RedirectPolicy::NoFollow)
     .build();
 
-  let client = HttpClient::with_config(config)?;
+  let client = HttpClient::with_config(config);
 
   let response = client.get("http://httpbin.org/redirect/1").call()?;
   println!("Status: {} (redirect not followed)", response.status_code);
@@ -43,7 +42,7 @@ fn main() -> Result<(), Error> {
     .http_status_handling(HttpStatusHandling::AsResponse)
     .build();
 
-  let client = HttpClient::with_config(config)?;
+  let client = HttpClient::with_config(config);
 
   let response = client.get("http://httpbin.org/status/404").call()?;
   println!("Status: {} (returned as response, not error)", response.status_code);
@@ -56,7 +55,7 @@ fn main() -> Result<(), Error> {
     .redirect_policy(RedirectPolicy::Follow)
     .build();
 
-  let client = HttpClient::with_config(config)?;
+  let client = HttpClient::with_config(config);
 
   let response = client.get("http://httpbin.org/redirect/1").call()?;
   println!("✓ Followed redirect (max 2)");

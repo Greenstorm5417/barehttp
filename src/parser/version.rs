@@ -69,14 +69,8 @@ impl Version {
     Ok(Self::new(major - b'0', minor - b'0'))
   }
 
-  /// HTTP/0.9
-  pub const HTTP_09: Self = Self { major: 0, minor: 9 };
   /// HTTP/1.0
   pub const HTTP_10: Self = Self { major: 1, minor: 0 };
   /// HTTP/1.1
   pub const HTTP_11: Self = Self { major: 1, minor: 1 };
-  /// HTTP/2.0
-  pub const HTTP_2: Self = Self { major: 2, minor: 0 };
-  /// HTTP/3.0
-  pub const HTTP_3: Self = Self { major: 3, minor: 0 };
 }

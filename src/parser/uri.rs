@@ -42,13 +42,13 @@ impl<'a> Uri<'a> {
   }
 
   pub fn path_and_query(&self) -> alloc::string::String {
-    self.query.map_or_else(
-      || alloc::string::String::from(self.path),
-      |query| alloc::format!("{}?{}", self.path, query),
-    )
+    let path = if self.path.is_empty() { "/" } else { self.path };
+    self
+      .query
+      .map_or_else(|| alloc::string::String::from(path), |query| alloc::format!("{path}?{query}"))
   }
 
-  /// Resolves a relative URL against this URI as a base
+  /// Resolves a relative URL against this URI as a base (RFC 3986 §5.2).
   ///
   /// # Errors
   /// Returns `ParseError::InvalidUri` if the location is not a valid relative or absolute URL
@@ -56,38 +56,73 @@ impl<'a> Uri<'a> {
     &self,
     location: &str,
   ) -> Result<alloc::string::String, ParseError> {
-    if location.starts_with("http://") || location.starts_with("https://") {
-      Ok(alloc::string::String::from(location))
-    } else if location.starts_with('/') {
-      let authority = self.authority.as_ref().ok_or(ParseError::InvalidUri)?;
-      let port = authority.port.unwrap_or_else(|| {
-        if self.scheme == "https" {
-          443
-        } else {
-          80
-        }
-      });
+    // Absolute http(s) URI — normalize scheme to lowercase so == "https" checks work
+    if let Some((scheme, rest)) = location.split_once(':')
+      && (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
+    {
+      let scheme_lower = scheme.to_ascii_lowercase();
+      return Ok(alloc::format!("{scheme_lower}:{rest}"));
+    }
 
-      let host_str = match &authority.host {
-        Host::RegName(name) => *name,
-        Host::IpAddr(_) => return Err(ParseError::InvalidUri),
-      };
+    // Network-path reference: //authority/...
+    if let Some(rest) = location.strip_prefix("//") {
+      return Ok(alloc::format!("{}://{rest}", self.scheme));
+    }
 
-      if (self.scheme == "http" && port == 80) || (self.scheme == "https" && port == 443) {
-        Ok(alloc::format!(
-          "{scheme}://{host}{location}",
-          scheme = self.scheme,
-          host = host_str
-        ))
-      } else {
-        Ok(alloc::format!(
-          "{scheme}://{host}:{port}{location}",
-          scheme = self.scheme,
-          host = host_str
-        ))
-      }
+    // Query-only reference: keep base path, replace query
+    if location.starts_with('?') {
+      let path = if self.path.is_empty() { "/" } else { self.path };
+      return self.recompose_with_path(&alloc::format!("{path}{location}"));
+    }
+
+    let path = if location.starts_with('/') {
+      alloc::string::String::from(location)
     } else {
-      Err(ParseError::InvalidUri)
+      // RFC 3986 §5.2.3 merge: replace final base segment with relative reference
+      if self.path.is_empty() {
+        alloc::format!("/{location}")
+      } else {
+        let dir_end = self.path.rfind('/').map_or(0, |i| i.saturating_add(1));
+        let prefix = self.path.get(..dir_end).unwrap_or("");
+        alloc::format!("{prefix}{location}")
+      }
+    };
+
+    self.recompose_with_path(&path)
+  }
+
+  fn recompose_with_path(
+    &self,
+    path: &str,
+  ) -> Result<alloc::string::String, ParseError> {
+    let authority = self.authority.as_ref().ok_or(ParseError::InvalidUri)?;
+    let port = authority.port.unwrap_or_else(|| {
+      if self.scheme.eq_ignore_ascii_case("https") {
+        443
+      } else {
+        80
+      }
+    });
+
+    let host_str = match &authority.host {
+      Host::RegName(name) => alloc::string::String::from(*name),
+      Host::IpAddr(addr) => alloc::format!("{addr}"),
+    };
+
+    if (self.scheme.eq_ignore_ascii_case("http") && port == 80)
+      || (self.scheme.eq_ignore_ascii_case("https") && port == 443)
+    {
+      Ok(alloc::format!(
+        "{scheme}://{host}{path}",
+        scheme = self.scheme,
+        host = host_str
+      ))
+    } else {
+      Ok(alloc::format!(
+        "{scheme}://{host}:{port}{path}",
+        scheme = self.scheme,
+        host = host_str
+      ))
     }
   }
 }
@@ -99,6 +134,10 @@ impl<'a> Authority<'a> {
 
   pub const fn port(&self) -> Option<u16> {
     self.port
+  }
+
+  pub const fn userinfo(&self) -> Option<&str> {
+    self.userinfo
   }
 }
 

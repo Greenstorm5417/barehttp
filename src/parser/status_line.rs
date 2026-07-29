@@ -1,65 +1,27 @@
-use super::status::StatusCode as StatusCodeType;
+//! Status-line parse (`HTTP/1.x <code> <reason>`).
+
+use super::status::StatusCode;
 use super::version::Version;
 use crate::error::ParseError;
 
-pub type HttpVersion = Version;
-
-impl HttpVersion {
-  /// # Errors
-  /// Returns an error if the input is not a valid HTTP version string.
-  pub fn parse_http(input: &[u8]) -> Result<(Self, &[u8]), ParseError> {
-    if input.len() < 8 {
-      return Err(ParseError::InvalidHttpVersion);
-    }
-
-    let version = Self::parse(input).map_err(|_| ParseError::InvalidHttpVersion)?;
-    let remaining = input.get(8..).ok_or(ParseError::InvalidHttpVersion)?;
-    Ok((version, remaining))
-  }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StatusCode {
-  inner: StatusCodeType,
-}
-
-impl StatusCode {
-  pub fn parse(input: &[u8]) -> Result<(Self, &[u8]), ParseError> {
-    if input.len() < 3 {
-      return Err(ParseError::InvalidStatusCode);
-    }
-
-    let d0 = *input.first().ok_or(ParseError::InvalidStatusCode)?;
-    let d1 = *input.get(1).ok_or(ParseError::InvalidStatusCode)?;
-    let d2 = *input.get(2).ok_or(ParseError::InvalidStatusCode)?;
-
-    if !d0.is_ascii_digit() || !d1.is_ascii_digit() || !d2.is_ascii_digit() {
-      return Err(ParseError::InvalidStatusCode);
-    }
-
-    #[allow(clippy::cast_lossless)]
-    let code = u16::from(d0 - b'0') * 100 + u16::from(d1 - b'0') * 10 + u16::from(d2 - b'0');
-
-    let inner = StatusCodeType::new(code).ok_or(ParseError::InvalidStatusCode)?;
-    let remaining = input.get(3..).ok_or(ParseError::InvalidStatusCode)?;
-    Ok((Self { inner }, remaining))
-  }
-
-  pub const fn code(self) -> u16 {
-    self.inner.as_u16()
-  }
-}
-
+/// Parsed HTTP status line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusLine<'a> {
-  pub version: HttpVersion,
+  /// HTTP version.
+  pub version: Version,
+  /// Status code.
   pub status: StatusCode,
+  /// Reason phrase bytes (may be empty).
   pub reason: &'a [u8],
 }
 
 impl<'a> StatusLine<'a> {
   pub fn parse(input: &'a [u8]) -> Result<(Self, &'a [u8]), ParseError> {
-    let (version, rest1) = HttpVersion::parse_http(input)?;
+    if input.len() < 8 {
+      return Err(ParseError::InvalidHttpVersion);
+    }
+    let version = Version::parse(input).map_err(|_| ParseError::InvalidHttpVersion)?;
+    let rest1 = input.get(8..).ok_or(ParseError::InvalidHttpVersion)?;
 
     let first_char = rest1.first().copied();
     if rest1.is_empty() || first_char != Some(b' ') {

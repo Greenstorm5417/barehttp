@@ -1,6 +1,6 @@
 use crate::error::SocketError;
 use crate::socket::{SocketAddr, SocketFlags};
-use libc::{c_int, c_void, sockaddr, sockaddr_in, socklen_t, timeval};
+use libc::{c_int, c_void, sockaddr, sockaddr_in, sockaddr_in6, socklen_t, timeval};
 
 const fn map_errno(err: c_int) -> SocketError {
   match err {
@@ -17,6 +17,9 @@ const fn map_errno(err: c_int) -> SocketError {
 
 fn get_last_error() -> SocketError {
   unsafe {
+    #[cfg(target_os = "macos")]
+    let err = *libc::__error();
+    #[cfg(not(target_os = "macos"))]
     let err = *libc::__errno_location();
     map_errno(err)
   }
@@ -50,7 +53,7 @@ impl OsSocket {
     match addr {
       SocketAddr::Ip { addr: ip_addr, port } => match ip_addr {
         crate::util::IpAddr::V4(ipv4) => self.connect_ipv4(*ipv4, *port)?,
-        crate::util::IpAddr::V6(_ipv6) => return Err(SocketError::Unsupported),
+        crate::util::IpAddr::V6(ipv6) => self.connect_ipv6(*ipv6, *port)?,
       },
       SocketAddr::Hostname { host, port: host_port } => {
         let host_str = core::str::from_utf8(host).map_err(|_| SocketError::InvalidAddress)?;
@@ -67,7 +70,7 @@ impl OsSocket {
         for ip_addr in &addresses {
           let result = match ip_addr {
             crate::util::IpAddr::V4(ipv4) => self.connect_ipv4(*ipv4, *host_port),
-            crate::util::IpAddr::V6(_) => Err(SocketError::Unsupported),
+            crate::util::IpAddr::V6(ipv6) => self.connect_ipv6(*ipv6, *host_port),
           };
 
           if result.is_ok() {
@@ -85,16 +88,37 @@ impl OsSocket {
     Ok(())
   }
 
+  /// Fresh fd per attempt: failed connect leaves the socket unusable on Linux.
+  fn recreate(
+    &mut self,
+    family: c_int,
+  ) -> Result<(), SocketError> {
+    unsafe {
+      if self.fd >= 0 {
+        libc::close(self.fd);
+        self.fd = -1;
+      }
+      let fd = libc::socket(family, libc::SOCK_STREAM, libc::IPPROTO_TCP);
+      if fd < 0 {
+        return Err(get_last_error());
+      }
+      self.fd = fd;
+    }
+    Ok(())
+  }
+
   fn connect_ipv4(
     &mut self,
     addr: [u8; 4],
     port: u16,
   ) -> Result<(), SocketError> {
+    self.recreate(libc::AF_INET)?;
+
     unsafe {
       let mut sockaddr: sockaddr_in = core::mem::zeroed();
       #[allow(clippy::cast_possible_truncation)]
       {
-        sockaddr.sin_family = libc::AF_INET as u16;
+        sockaddr.sin_family = libc::AF_INET as _;
       }
       sockaddr.sin_port = port.to_be();
       sockaddr.sin_addr.s_addr = u32::from_ne_bytes(addr);
@@ -104,6 +128,49 @@ impl OsSocket {
         self.fd,
         &raw const sockaddr as *const sockaddr,
         core::mem::size_of::<sockaddr_in>() as socklen_t,
+      );
+
+      if result < 0 {
+        return Err(get_last_error());
+      }
+    }
+
+    self.connected = true;
+    Ok(())
+  }
+
+  fn connect_ipv6(
+    &mut self,
+    addr: [u16; 8],
+    port: u16,
+  ) -> Result<(), SocketError> {
+    self.recreate(libc::AF_INET6)?;
+
+    unsafe {
+      let mut sockaddr: sockaddr_in6 = core::mem::zeroed();
+      #[allow(clippy::cast_possible_truncation)]
+      {
+        sockaddr.sin6_family = libc::AF_INET6 as _;
+      }
+      sockaddr.sin6_port = port.to_be();
+      let mut bytes = [0u8; 16];
+      for (i, seg) in addr.iter().enumerate() {
+        let [hi, lo] = seg.to_be_bytes();
+        let base = i.wrapping_mul(2);
+        if let Some(slot) = bytes.get_mut(base) {
+          *slot = hi;
+        }
+        if let Some(slot) = bytes.get_mut(base.wrapping_add(1)) {
+          *slot = lo;
+        }
+      }
+      sockaddr.sin6_addr.s6_addr = bytes;
+
+      #[allow(clippy::cast_possible_truncation)]
+      let result = libc::connect(
+        self.fd,
+        &raw const sockaddr as *const sockaddr,
+        core::mem::size_of::<sockaddr_in6>() as socklen_t,
       );
 
       if result < 0 {
@@ -241,10 +308,15 @@ impl OsSocket {
     timeout_ms: u32,
   ) -> Result<(), SocketError> {
     unsafe {
-      #[allow(clippy::cast_lossless, clippy::integer_division)]
+      #[allow(
+        clippy::cast_lossless,
+        clippy::integer_division,
+        clippy::cast_possible_wrap,
+        clippy::cast_possible_truncation
+      )]
       let timeout = timeval {
-        tv_sec: i64::from(timeout_ms.wrapping_div(1000)),
-        tv_usec: i64::from((timeout_ms % 1000).wrapping_mul(1000)),
+        tv_sec: (timeout_ms.wrapping_div(1000)) as _,
+        tv_usec: ((timeout_ms % 1000).wrapping_mul(1000)) as _,
       };
 
       #[allow(clippy::cast_possible_truncation)]
@@ -268,10 +340,15 @@ impl OsSocket {
     timeout_ms: u32,
   ) -> Result<(), SocketError> {
     unsafe {
-      #[allow(clippy::cast_lossless, clippy::integer_division)]
+      #[allow(
+        clippy::cast_lossless,
+        clippy::integer_division,
+        clippy::cast_possible_wrap,
+        clippy::cast_possible_truncation
+      )]
       let timeout = timeval {
-        tv_sec: i64::from(timeout_ms.wrapping_div(1000)),
-        tv_usec: i64::from((timeout_ms % 1000).wrapping_mul(1000)),
+        tv_sec: (timeout_ms.wrapping_div(1000)) as _,
+        tv_usec: ((timeout_ms % 1000).wrapping_mul(1000)) as _,
       };
 
       #[allow(clippy::cast_possible_truncation)]

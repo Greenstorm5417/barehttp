@@ -27,3 +27,6 @@ impl core::fmt::Display for DnsError {
     }
   }
 }
+
+impl core::error::Error for DnsError {}
+

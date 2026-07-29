@@ -2,10 +2,9 @@ use crate::client::HttpClient;
 use crate::config::Config;
 use crate::dns::DnsResolver;
 use crate::error::Error;
-use crate::headers::{HeaderName, Headers};
+use crate::headers::Headers;
 use crate::method::Method;
 use crate::parser::Response;
-use crate::parser::version::Version;
 use crate::socket::BlockingSocket;
 use crate::util::percent_encode;
 use alloc::string::String;
@@ -65,7 +64,6 @@ pub struct ClientRequestBuilder<S, D, B = WithoutBody> {
   query_params: Vec<(String, String)>,
   form_data: Vec<(String, String)>,
   body: Option<Vec<u8>>,
-  version: Version,
   request_config: Option<Config>,
   _phantom: PhantomData<B>,
 }
@@ -114,54 +112,13 @@ where
     self
   }
 
-  /// Add a raw (non-encoded) query parameter
-  #[must_use]
-  pub fn query_raw(
-    mut self,
-    key: impl Into<String>,
-    value: impl Into<String>,
-  ) -> Self {
-    let key_str = key.into();
-    let value_str = value.into();
-    self.query_params.push((key_str, value_str));
-    self
-  }
-
-  /// Add multiple raw (non-encoded) query parameters from an iterator
-  #[must_use]
-  pub fn query_pairs_raw<I, K, V>(
-    mut self,
-    iter: I,
-  ) -> Self
-  where
-    I: IntoIterator<Item = (K, V)>,
-    K: Into<String>,
-    V: Into<String>,
-  {
-    self
-      .query_params
-      .extend(iter.into_iter().map(|(k, v)| (k.into(), v.into())));
-    self
-  }
-
-  /// Add a form data field (application/x-www-form-urlencoded)
-  #[must_use]
-  pub fn form(
-    mut self,
-    key: impl Into<String>,
-    value: impl Into<String>,
-  ) -> Self {
-    self.form_data.push((key.into(), value.into()));
-    self
-  }
-
   /// Set the Content-Type header
   #[must_use]
   pub fn content_type(
     self,
     content_type: impl Into<String>,
   ) -> Self {
-    self.header(HeaderName::CONTENT_TYPE, content_type)
+    self.header(Headers::CONTENT_TYPE, content_type)
   }
 
   /// Add a cookie to the request
@@ -172,7 +129,7 @@ where
   /// # Example
   /// ```no_run
   /// # use barehttp::HttpClient;
-  /// let mut client = HttpClient::new()?;
+  /// let client = HttpClient::new();
   /// client.get("http://example.com")
   ///     .cookie("session", "abc123")
   ///     .cookie("user", "john")
@@ -191,14 +148,14 @@ where
     let cookie_value = format!("{name_str}={value_str}");
 
     // Check if Cookie header already exists
-    if let Some(existing) = self.headers.get(HeaderName::COOKIE) {
+    if let Some(existing) = self.headers.get(Headers::COOKIE) {
       // Append to existing cookies with semicolon separator
       let combined = format!("{existing}; {cookie_value}");
-      self.headers.remove(HeaderName::COOKIE);
-      self.headers.insert(HeaderName::COOKIE, combined);
+      self.headers.remove(Headers::COOKIE);
+      self.headers.insert(Headers::COOKIE, combined);
     } else {
       // Create new Cookie header
-      self.headers.insert(HeaderName::COOKIE, cookie_value);
+      self.headers.insert(Headers::COOKIE, cookie_value);
     }
 
     self
@@ -228,7 +185,7 @@ where
 
   /// Get immutable reference to request headers
   #[must_use]
-  pub const fn headers_ref(&self) -> &Headers {
+  pub const fn headers(&self) -> &Headers {
     &self.headers
   }
 
@@ -236,22 +193,6 @@ where
   #[must_use]
   pub const fn headers_mut(&mut self) -> &mut Headers {
     &mut self.headers
-  }
-
-  /// Set the HTTP protocol version
-  #[must_use]
-  pub const fn version(
-    mut self,
-    version: Version,
-  ) -> Self {
-    self.version = version;
-    self
-  }
-
-  /// Get the HTTP protocol version
-  #[must_use]
-  pub const fn version_ref(&self) -> Version {
-    self.version
   }
 
   /// Override the client configuration for this request
@@ -266,7 +207,7 @@ where
 
   /// Get the request-specific configuration if set
   #[must_use]
-  pub const fn config_ref(&self) -> Option<&Config> {
+  pub const fn config(&self) -> Option<&Config> {
     self.request_config.as_ref()
   }
 
@@ -312,19 +253,6 @@ where
     }
     body.into_bytes()
   }
-
-  fn build_form_body(&self) -> Vec<u8> {
-    let mut body = String::new();
-    for (i, (key, value)) in self.form_data.iter().enumerate() {
-      if i > 0 {
-        body.push('&');
-      }
-      body.push_str(&percent_encode(key));
-      body.push('=');
-      body.push_str(&percent_encode(value));
-    }
-    body.into_bytes()
-  }
 }
 
 impl<S, D> ClientRequestBuilder<S, D, WithoutBody>
@@ -346,7 +274,6 @@ where
       query_params: Vec::new(),
       form_data: Vec::new(),
       body: None,
-      version: Version::HTTP_11,
       request_config: None,
       _phantom: PhantomData,
     }
@@ -356,33 +283,9 @@ where
   /// Returns an error if the request fails
   pub fn call(self) -> Result<Response, Error> {
     let url = self.build_url();
-
-    let body = if self.form_data.is_empty() {
-      self.body
-    } else {
-      Some(self.build_form_body())
-    };
-
     self
       .client
-      .request(self.method, &url, &self.headers, body, self.request_config.as_ref())
-  }
-
-  /// Force this request to allow a body (e.g., for DELETE with body)
-  #[must_use]
-  pub fn force_send_body(self) -> ClientRequestBuilder<S, D, WithBody> {
-    ClientRequestBuilder {
-      client: self.client,
-      method: self.method,
-      url: self.url,
-      headers: self.headers,
-      query_params: self.query_params,
-      form_data: self.form_data,
-      body: self.body,
-      version: self.version,
-      request_config: self.request_config,
-      _phantom: PhantomData,
-    }
+      .request(self.method, &url, &self.headers, None, self.request_config.as_ref())
   }
 }
 
@@ -405,10 +308,20 @@ where
       query_params: Vec::new(),
       form_data: Vec::new(),
       body: None,
-      version: Version::HTTP_11,
       request_config: None,
       _phantom: PhantomData,
     }
+  }
+
+  /// Add a form data field (`application/x-www-form-urlencoded`).
+  #[must_use]
+  pub fn form(
+    mut self,
+    key: impl Into<String>,
+    value: impl Into<String>,
+  ) -> Self {
+    self.form_data.push((key.into(), value.into()));
+    self
   }
 
   /// Set the request body
@@ -426,35 +339,21 @@ where
   pub fn call(self) -> Result<Response, Error> {
     let url = self.build_url();
 
+    let mut headers = self.headers;
     let body = if self.form_data.is_empty() {
       self.body
     } else {
-      Some(self.build_form_body())
+      if !headers.contains(Headers::CONTENT_TYPE) {
+        headers.insert(Headers::CONTENT_TYPE, "application/x-www-form-urlencoded");
+      }
+      Some(Self::build_form_url_encoded(
+        self.form_data.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+      ))
     };
 
     self
       .client
-      .request(self.method, &url, &self.headers, body, self.request_config.as_ref())
-  }
-
-  /// # Errors
-  /// Returns an error if the request fails
-  pub fn send_string(
-    mut self,
-    content: impl Into<String>,
-  ) -> Result<Response, Error> {
-    self.body = Some(content.into().into_bytes());
-    self.call()
-  }
-
-  /// # Errors
-  /// Returns an error if the request fails
-  pub fn send_bytes(
-    mut self,
-    bytes: Vec<u8>,
-  ) -> Result<Response, Error> {
-    self.body = Some(bytes);
-    self.call()
+      .request(self.method, &url, &headers, body, self.request_config.as_ref())
   }
 
   /// # Errors
@@ -481,7 +380,7 @@ where
     let form_body = Self::build_form_url_encoded(iter);
     self
       .headers
-      .insert(HeaderName::CONTENT_TYPE, "application/x-www-form-urlencoded");
+      .insert(Headers::CONTENT_TYPE, "application/x-www-form-urlencoded");
     self.body = Some(form_body);
     self.call()
   }

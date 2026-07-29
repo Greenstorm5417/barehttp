@@ -8,3 +8,4 @@
 mod test_connection;
 mod test_connection_state;
 mod test_connector;
+mod test_pool;

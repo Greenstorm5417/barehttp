@@ -475,3 +475,35 @@ fn test_error_leftover_input() {
     Err(ParseError::InvalidUri)
   ));
 }
+
+#[test]
+fn test_resolve_path_relative_location() {
+  let base = Uri::parse("http://example.com/dir/page.html").unwrap();
+  assert_eq!(
+    base.resolve_relative("other.html").unwrap(),
+    "http://example.com/dir/other.html"
+  );
+}
+
+#[test]
+fn test_path_and_query_empty_path_with_query() {
+  let uri = Uri::parse("http://example.com?a=1").unwrap();
+  assert_eq!(uri.path_and_query(), "/?a=1");
+}
+
+#[test]
+fn test_resolve_network_path_and_query_only() {
+  let base = Uri::parse("http://example.com/dir/page.html").unwrap();
+  assert_eq!(
+    base.resolve_relative("//other.com/x").unwrap(),
+    "http://other.com/x"
+  );
+  assert_eq!(
+    base.resolve_relative("?next=1").unwrap(),
+    "http://example.com/dir/page.html?next=1"
+  );
+  assert_eq!(
+    base.resolve_relative("HTTPS://other.com/y").unwrap(),
+    "https://other.com/y"
+  );
+}

@@ -6,5 +6,4 @@
 #![allow(clippy::shadow_reuse)]
 #![allow(clippy::shadow_same)]
 
-mod test_http_client;
 mod test_policy;

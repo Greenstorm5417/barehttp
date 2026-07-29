@@ -39,3 +39,6 @@ impl core::fmt::Display for SocketError {
     }
   }
 }
+
+impl core::error::Error for SocketError {}
+

@@ -2,7 +2,6 @@
 //!
 //! Demonstrates simple GET and POST requests using barehttp.
 
-use barehttp::response::ResponseExt;
 use barehttp::{Error, HttpClient};
 
 fn main() -> Result<(), Error> {
@@ -16,7 +15,7 @@ fn main() -> Result<(), Error> {
 
   // Using HttpClient for repeated requests
   println!("2. Using HttpClient:");
-  let client = HttpClient::new()?;
+  let client = HttpClient::new();
 
   let response = client
     .get("http://httpbin.org/get")

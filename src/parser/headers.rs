@@ -1,20 +1,18 @@
 use crate::error::ParseError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HeaderField<'a> {
-  pub name: &'a [u8],
-  pub value: &'a [u8],
-}
+/// Header-section parser (RFC 9112 §5, obs-fold aware).
+pub struct HeaderField;
 
-impl<'a> HeaderField<'a> {
-  /// Parse header fields with obs-fold (obsolete line folding) support.
-  /// RFC 9112 Section 5.2: User agents MUST replace obs-fold with one or more SP octets.
+impl HeaderField {
+  /// Parse header fields with obs-fold support.
   ///
-  /// This function collects all header fields, handling obs-fold by replacing CRLF+whitespace
-  /// with a single space character.
+  /// RFC 9112 §5.2: replace obs-fold with SP. Returns owned name/value pairs and remainder.
+  ///
+  /// # Errors
+  /// Returns [`ParseError`] on malformed headers or whitespace before the first field.
   pub fn parse(
-    input: &'a [u8]
-  ) -> Result<(alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)>, &'a [u8]), ParseError> {
+    input: &[u8],
+  ) -> Result<(alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)>, &[u8]), ParseError> {
     use alloc::vec::Vec;
 
     let mut headers = Vec::new();

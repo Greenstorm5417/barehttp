@@ -42,27 +42,8 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
       
-      - name: Start httpbin container
-        run: |
-          docker run -d -p 80:80 --name httpbin kennethreitz/httpbin
-          echo "Waiting for httpbin to be ready..."
-          for i in {1..30}; do
-            if curl -s http://localhost/status/200 > /dev/null; then
-              echo "httpbin is ready!"
-              break
-            fi
-            echo "Waiting for httpbin... ($i/30)"
-            sleep 1
-          done
-      
       - name: Run tests
         run: cargo test --verbose --all-features
-        env:
-          HTTPBIN_URL: http://localhost
-      
-      - name: Stop httpbin container
-        if: always()
-        run: docker stop httpbin && docker rm httpbin
       
       - name: Run doc tests
         run: cargo test --doc --verbose
@@ -128,47 +109,13 @@ jobs:
         run: cargo build --examples --verbose
 
   update-readme:
-    name: Update README
+    name: README check
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    permissions:
-      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Check if relevant files changed
-        id: changed-files
+
+      - name: Note
         run: |
-          if git diff --name-only HEAD^ HEAD | grep -E '^(src/lib\.rs|Cargo\.toml|scripts/update_readme\.rs)$'; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
-      
-      - name: Set up Rust
-        if: steps.changed-files.outputs.changed == 'true'
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
-      
-      - name: Run README generator
-        if: steps.changed-files.outputs.changed == 'true'
-        run: rustc scripts/update_readme.rs -o update_readme && ./update_readme
-      
-      - name: Check for changes
-        if: steps.changed-files.outputs.changed == 'true'
-        id: git-check
-        run: |
-          git diff --exit-code README.md || echo "changed=true" >> $GITHUB_OUTPUT
-      
-      - name: Commit and push if changed
-        if: steps.changed-files.outputs.changed == 'true' && steps.git-check.outputs.changed == 'true'
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add README.md
-          git commit -m "chore: auto-update README.md from lib.rs [skip ci]"
-          git push
+          echo "README.md is hand-maintained; do not overwrite from lib.rs crate docs."
+          test -f README.md

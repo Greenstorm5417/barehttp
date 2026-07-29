@@ -1,3 +1,5 @@
+use core::fmt;
+
 /// IP address (IPv4 or IPv6)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IpAddr {
@@ -23,6 +25,34 @@ impl IpAddr {
     match self {
       Self::V4(_) => None,
       Self::V6(addr) => Some(addr),
+    }
+  }
+}
+
+impl fmt::Display for IpAddr {
+  fn fmt(
+    &self,
+    f: &mut fmt::Formatter<'_>,
+  ) -> fmt::Result {
+    match self {
+      Self::V4(octets) => {
+        write!(
+          f,
+          "{}.{}.{}.{}",
+          octets[0], octets[1], octets[2], octets[3]
+        )
+      },
+      Self::V6(segments) => {
+        // ponytail: no RFC 5952 zero-compression; fine for Host headers
+        write!(f, "[")?;
+        for (i, seg) in segments.iter().enumerate() {
+          if i > 0 {
+            write!(f, ":")?;
+          }
+          write!(f, "{seg:x}")?;
+        }
+        write!(f, "]")
+      },
     }
   }
 }

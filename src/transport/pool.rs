@@ -7,16 +7,18 @@ use spin::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolKey {
+  scheme: String,
   host: String,
   port: u16,
 }
 
 impl PoolKey {
   pub const fn new(
+    scheme: String,
     host: String,
     port: u16,
   ) -> Self {
-    Self { host, port }
+    Self { scheme, host, port }
   }
 }
 

@@ -1,6 +1,7 @@
 use crate::error::Error;
-use crate::headers::{HeaderName, Headers};
-use crate::parser::framing::FramingDetector;
+use crate::headers::Headers;
+use crate::parser::framing::{has_chunked_terminator, has_complete_headers};
+use crate::parser::version::Version;
 use crate::parser::{BodyReadStrategy, Response};
 use crate::socket::BlockingSocket;
 use crate::transport::connection_state::ConnectionState;
@@ -22,6 +23,7 @@ pub struct RawResponse {
   pub status_code: u16,
   pub reason: String,
   pub headers: Headers,
+  pub version: Version,
   pub body_bytes: Vec<u8>,
 }
 
@@ -50,7 +52,15 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
     &mut self,
     request_bytes: &[u8],
   ) -> Result<(), Error> {
-    self.socket.write(request_bytes).map_err(Error::Socket)?;
+    let mut offset = 0usize;
+    while offset < request_bytes.len() {
+      let chunk = request_bytes.get(offset..).ok_or(Error::Socket(crate::error::SocketError::NotConnected))?;
+      let n = self.socket.write(chunk).map_err(Error::Socket)?;
+      if n == 0 {
+        return Err(Error::Socket(crate::error::SocketError::NotConnected));
+      }
+      offset = offset.saturating_add(n);
+    }
 
     // RFC 9112 Section 9.6: If the client sends "Connection: close", it MUST NOT
     // send further requests on that connection.
@@ -73,6 +83,9 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
   /// - `NoBody`: For HEAD requests, 204/304 responses, CONNECT, etc.
   /// - Normal: Standard responses that may have bodies
   ///
+  /// 1xx interim responses are discarded; reading continues until a non-1xx
+  /// final response (RFC 9112 §15).
+  ///
   /// This is wire-protocol behavior, not a policy decision.
   pub fn read_raw_response(
     &mut self,
@@ -80,62 +93,87 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
   ) -> Result<RawResponse, Error> {
     let max_header_size = self.max_header_size;
     let mut buffer = alloc::vec![0u8; max_header_size.min(8192)];
-    let mut total_read = 0usize;
     let mut header_buffer = Vec::new();
 
     loop {
-      let n = match self.socket.read(&mut buffer) {
-        Ok(n) => n,
-        Err(e) => {
-          // RFC 9112 Section 9.5: If timing out, implementation SHOULD issue a graceful close
-          if e == crate::error::SocketError::TimedOut {
-            let _ = self.socket.shutdown();
+      while !has_complete_headers(&header_buffer) {
+        if header_buffer.len() > max_header_size {
+          return Err(Error::ResponseHeaderTooLarge);
+        }
+        let n = match self.socket.read(&mut buffer) {
+          Ok(n) => n,
+          Err(e) => {
+            // RFC 9112 Section 9.5: If timing out, implementation SHOULD issue a graceful close
+            if e == crate::error::SocketError::TimedOut {
+              let _ = self.socket.shutdown();
+            }
+            return Err(Error::Socket(e));
+          },
+        };
+        if n == 0 {
+          break;
+        }
+        if let Some(slice) = buffer.get(..n) {
+          header_buffer.extend_from_slice(slice);
+        }
+      }
+
+      let (status_code, reason, headers, version, remaining_after_headers) =
+        Response::parse_headers_only(&header_buffer).map_err(Error::Parse)?;
+
+      // RFC 9112: discard 1xx and keep reading the final response
+      if (100..200).contains(&status_code) {
+        header_buffer = remaining_after_headers.to_vec();
+        continue;
+      }
+
+      let body_bytes = match expectation {
+        // HEAD / no-body: no entity body on the wire (RFC 9112); don't poison the pool.
+        ResponseBodyExpectation::NoBody => Vec::new(),
+        ResponseBodyExpectation::Normal => {
+          let body_strategy = match Response::body_read_strategy(&headers, status_code) {
+            Ok(s) => s,
+            Err(e) => {
+              self.state.mark_received_close();
+              return Err(Error::Parse(e));
+            },
+          };
+          if matches!(body_strategy, BodyReadStrategy::UntilClose) {
+            // UntilClose ends the connection; never pool it.
+            self.state.mark_received_close();
           }
-          return Err(Error::Socket(e));
+          self.read_body(body_strategy, remaining_after_headers)?
         },
       };
-      if n == 0 {
-        break;
+
+      // RFC 9112 Section 9.3 / 9.6: HTTP/1.0 defaults to close unless keep-alive
+      if version == Version::HTTP_10 {
+        let keep_alive = headers.get(Headers::CONNECTION).is_some_and(|v| {
+          v.split(',')
+            .any(|t| t.trim().eq_ignore_ascii_case("keep-alive"))
+        });
+        if !keep_alive {
+          self.state.mark_received_close();
+        }
       }
 
-      if let Some(slice) = buffer.get(..n) {
-        header_buffer.extend_from_slice(slice);
+      // RFC 9112 Section 9.6: Connection header is a comma-separated token list
+      if let Some(conn_value) = headers.get(Headers::CONNECTION)
+        && conn_value
+          .split(',')
+          .any(|t| t.trim().eq_ignore_ascii_case("close"))
+      {
+        self.state.mark_received_close();
       }
-      total_read += n;
 
-      if total_read > max_header_size {
-        return Err(Error::ResponseHeaderTooLarge);
-      }
-
-      if FramingDetector::has_complete_headers(&header_buffer) {
-        break;
-      }
+      return Ok(RawResponse {
+        status_code,
+        reason,
+        headers,
+        version,
+        body_bytes,
+      });
     }
-
-    let (status_code, reason, headers, remaining_after_headers) =
-      Response::parse_headers_only(&header_buffer).map_err(Error::Parse)?;
-
-    let body_bytes = match expectation {
-      ResponseBodyExpectation::NoBody => Vec::new(),
-      ResponseBodyExpectation::Normal => {
-        let body_strategy = Response::body_read_strategy(&headers, status_code);
-        self.read_body(body_strategy, remaining_after_headers)?
-      },
-    };
-
-    // RFC 9112 Section 9.6: Check if server sent Connection: close
-    if let Some(conn_value) = headers.get(HeaderName::CONNECTION)
-      && conn_value.eq_ignore_ascii_case("close")
-    {
-      self.state.mark_received_close();
-    }
-
-    Ok(RawResponse {
-      status_code,
-      reason,
-      headers,
-      body_bytes,
-    })
   }
 
   fn read_body(
@@ -185,7 +223,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         let mut chunk_buffer = alloc::vec![0u8; 8192];
 
         loop {
-          if FramingDetector::has_chunked_terminator(&raw_bytes) {
+          if has_chunked_terminator(&raw_bytes) {
             break;
           }
 

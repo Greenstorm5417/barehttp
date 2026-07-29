@@ -1,3 +1,6 @@
+#![allow(missing_docs, clippy::must_use_candidate, clippy::return_self_not_must_use)]
+
+/// Bitflags for [`crate::BlockingSocket::set_flags`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SocketFlags {
   bits: u32,

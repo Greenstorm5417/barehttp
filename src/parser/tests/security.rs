@@ -24,8 +24,6 @@ fn test_request_smuggling_conflicting_content_lengths() {
   // should be rejected to prevent request smuggling attacks
   let input = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 10\r\n\r\nHelloWorld";
   let result = Response::parse(input);
-  // Our parser uses the first Content-Length (5), but the body is 10 bytes,
-  // so it correctly rejects the extra data after reading 5 bytes
   assert!(result.is_err(), "Should reject conflicting Content-Length headers");
 }
 
@@ -47,9 +45,7 @@ fn test_oversized_chunk_size_overflow() {
 fn test_negative_content_length_rejected() {
   let input = b"HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n";
   let result = Response::parse(input);
-  assert!(result.is_ok());
-  let response = result.unwrap();
-  assert!(response.body.is_empty());
+  assert!(result.is_err());
 }
 
 #[test]

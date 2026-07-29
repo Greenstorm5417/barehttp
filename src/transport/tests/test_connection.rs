@@ -1,5 +1,6 @@
 use crate::error::{Error, SocketError};
 use crate::headers::Headers;
+use crate::parser::version::Version;
 use crate::socket::{BlockingSocket, SocketAddr, SocketFlags};
 use crate::transport::connection::{Connection, RawResponse, ResponseBodyExpectation};
 use alloc::format;
@@ -11,6 +12,8 @@ struct MockSocket {
   read_data: Vec<u8>,
   read_pos: usize,
   written: Vec<u8>,
+  /// Cap bytes returned per `write` call (simulates short writes).
+  max_write: usize,
 }
 
 impl MockSocket {
@@ -19,6 +22,19 @@ impl MockSocket {
       read_data: response.as_bytes().to_vec(),
       read_pos: 0,
       written: Vec::new(),
+      max_write: usize::MAX,
+    }
+  }
+
+  fn with_max_write(
+    response: &str,
+    max_write: usize,
+  ) -> Self {
+    Self {
+      read_data: response.as_bytes().to_vec(),
+      read_pos: 0,
+      written: Vec::new(),
+      max_write,
     }
   }
 
@@ -33,6 +49,7 @@ impl BlockingSocket for MockSocket {
       read_data: Vec::new(),
       read_pos: 0,
       written: Vec::new(),
+      max_write: usize::MAX,
     })
   }
 
@@ -61,8 +78,9 @@ impl BlockingSocket for MockSocket {
     &mut self,
     buf: &[u8],
   ) -> Result<usize, SocketError> {
-    self.written.extend_from_slice(buf);
-    Ok(buf.len())
+    let n = buf.len().min(self.max_write);
+    self.written.extend_from_slice(&buf[..n]);
+    Ok(n)
   }
 
   fn shutdown(&mut self) -> Result<(), SocketError> {
@@ -245,6 +263,7 @@ fn raw_response_can_be_cloned() {
     status_code: 200,
     reason: String::from("OK"),
     headers,
+    version: Version::HTTP_11,
     body_bytes: vec![1, 2, 3],
   };
 
@@ -256,8 +275,8 @@ fn raw_response_can_be_cloned() {
 }
 
 #[test]
-fn read_response_1xx_informational() {
-  let response = "HTTP/1.1 100 Continue\r\n\r\n";
+fn read_response_1xx_informational_skipped() {
+  let response = "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello";
   let mut socket = MockSocket::new(response);
   let mut conn = Connection::new(&mut socket, 8192);
 
@@ -265,8 +284,8 @@ fn read_response_1xx_informational() {
 
   assert!(result.is_ok());
   let raw = result.unwrap();
-  assert_eq!(raw.status_code, 100);
-  assert!(raw.body_bytes.is_empty());
+  assert_eq!(raw.status_code, 200);
+  assert_eq!(raw.body_bytes, b"Hello");
 }
 
 #[test]
@@ -308,4 +327,56 @@ fn read_response_chunked_multiple_chunks() {
   assert!(result.is_ok());
   let raw = result.unwrap();
   assert!(!raw.body_bytes.is_empty());
+}
+
+#[test]
+fn send_request_retries_short_writes() {
+  let mut socket = MockSocket::with_max_write("", 7);
+  let mut conn = Connection::new(&mut socket, 8192);
+
+  let request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+  assert!(conn.send_request(request).is_ok());
+  assert_eq!(socket.get_written().as_bytes(), request);
+}
+
+#[test]
+fn connection_close_token_in_list_marks_non_reusable() {
+  let response = "HTTP/1.1 200 OK\r\nConnection: keep-alive, Close\r\nContent-Length: 0\r\n\r\n";
+  let mut socket = MockSocket::new(response);
+  let mut conn = Connection::new(&mut socket, 8192);
+
+  assert!(conn.read_raw_response(ResponseBodyExpectation::Normal).is_ok());
+  assert!(!conn.is_reusable());
+}
+
+#[test]
+fn connection_keep_alive_alone_stays_reusable() {
+  let response = "HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
+  let mut socket = MockSocket::new(response);
+  let mut conn = Connection::new(&mut socket, 8192);
+
+  assert!(conn.read_raw_response(ResponseBodyExpectation::Normal).is_ok());
+  assert!(conn.is_reusable());
+}
+
+#[test]
+fn no_body_connection_close_still_marks_non_reusable() {
+  let response = "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 5\r\n\r\n";
+  let mut socket = MockSocket::new(response);
+  let mut conn = Connection::new(&mut socket, 8192);
+
+  assert!(conn.read_raw_response(ResponseBodyExpectation::NoBody).is_ok());
+  assert!(!conn.is_reusable());
+}
+
+#[test]
+fn header_limit_ignores_body_bytes_past_complete_headers() {
+  // Headers fit under 64; body would push total past the limit if counted.
+  let response = "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n".to_string() + &"B".repeat(100);
+  let mut socket = MockSocket::new(&response);
+  let mut conn = Connection::new(&mut socket, 64);
+
+  let result = conn.read_raw_response(ResponseBodyExpectation::Normal);
+  assert!(result.is_ok());
+  assert_eq!(result.unwrap().body_bytes.len(), 100);
 }
