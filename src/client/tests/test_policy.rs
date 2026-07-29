@@ -1,4 +1,4 @@
-use crate::client::http_client::{build_request, follow_redirect, sanitize_redirect_headers, validate_protocol};
+use crate::client::{build_request, follow_redirect, sanitize_redirect_headers, validate_protocol};
 use crate::config::Config;
 use crate::error::Error;
 use crate::headers::Headers;

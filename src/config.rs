@@ -3,17 +3,16 @@ use core::time::Duration;
 /// Default max response body size (~10 MiB), matching ureq.
 pub const DEFAULT_MAX_RESPONSE_BODY_SIZE: usize = 10 * 1024 * 1024;
 
-/// Defaults and knobs for [`crate::HttpClient`]: timeouts, redirects, headers,
-/// pooling, and TLS / HTTPS policy.
+/// Client settings for [`crate::HttpClient`]: timeouts, redirects, default headers,
+/// pooling, and HTTPS policy.
 ///
-/// Pooling is enabled when [`Self::max_idle_per_host`] is greater than zero.
+/// Pooling is on when [`Self::max_idle_per_host`] is greater than zero.
 /// Build with [`Config::builder`] or struct update on [`Config::default`].
 ///
 /// # `assume_tls_socket`
 ///
-/// Means your [`crate::BlockingSocket`] already terminates TLS. Do not combine
-/// with cleartext [`crate::OsBlockingSocket`]; that pair is rejected as
-/// `Error::TlsNotConfigured`.
+/// Your [`crate::BlockingSocket`] already terminates TLS. Combining this with
+/// cleartext [`crate::OsBlockingSocket`] returns `Error::TlsNotConfigured`.
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Config {

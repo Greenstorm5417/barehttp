@@ -3,37 +3,29 @@
 /// Space becomes `%20` (query-string style).
 #[must_use]
 pub fn percent_encode(input: &str) -> alloc::string::String {
-  use alloc::string::String;
-  use core::fmt::Write;
-
-  let mut result = String::new();
-  for byte in input.bytes() {
-    match byte {
-      b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-        result.push(byte as char);
-      },
-      _ => {
-        result.push('%');
-        let _ = write!(result, "{byte:02X}");
-      },
-    }
-  }
-  result
+  encode(input.as_bytes(), false)
 }
 
 /// Encode for `application/x-www-form-urlencoded` (space as `+`).
 #[must_use]
 pub fn form_url_encode(input: &str) -> alloc::string::String {
+  encode(input.as_bytes(), true)
+}
+
+fn encode(
+  input: &[u8],
+  space_as_plus: bool,
+) -> alloc::string::String {
   use alloc::string::String;
   use core::fmt::Write;
 
   let mut result = String::new();
-  for byte in input.bytes() {
+  for &byte in input {
     match byte {
       b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
         result.push(byte as char);
       },
-      b' ' => result.push('+'),
+      b' ' if space_as_plus => result.push('+'),
       _ => {
         result.push('%');
         let _ = write!(result, "{byte:02X}");
@@ -87,5 +79,30 @@ pub fn now_unix_secs() -> u64 {
   #[cfg(not(any(unix, windows)))]
   {
     0
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn percent_encode_space_and_reserved() {
+    assert_eq!(percent_encode("a b"), "a%20b");
+    assert_eq!(percent_encode("a+b"), "a%2Bb");
+    assert_eq!(percent_encode("un-reserved._~"), "un-reserved._~");
+  }
+
+  #[test]
+  fn form_url_encode_space_as_plus() {
+    assert_eq!(form_url_encode("a b"), "a+b");
+    assert_eq!(form_url_encode("a+b"), "a%2Bb");
+    assert_eq!(form_url_encode("ok"), "ok");
+  }
+
+  #[test]
+  fn encode_modes_match_public_helpers() {
+    assert_eq!(percent_encode("x y!"), encode(b"x y!", false));
+    assert_eq!(form_url_encode("x y!"), encode(b"x y!", true));
   }
 }

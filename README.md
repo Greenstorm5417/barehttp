@@ -2,13 +2,11 @@
 
 Blocking HTTP/1.1 client for `no_std` + `alloc`. No async runtime.
 
-Cleartext HTTP by default. `https://` is rejected unless you set
-`Config::assume_tls_socket` and your [`BlockingSocket`] terminates TLS.
-The built-in OS socket is TCP only; it does not speak TLS.
+Cleartext HTTP by default. `https://` needs `Config::assume_tls_socket`
+and a [`BlockingSocket`] that terminates TLS. The OS socket is TCP only.
 
-Do not set `assume_tls_socket` with [`OsBlockingSocket`] (cleartext).
-That combination returns `Error::TlsNotConfigured`. Use a TLS-capable
-socket adapter instead.
+`assume_tls_socket` with [`OsBlockingSocket`] returns
+`Error::TlsNotConfigured`. Use a TLS-capable socket adapter.
 
 ```rust
 use barehttp::HttpClient;
@@ -32,22 +30,20 @@ let response = barehttp::post("http://example.com/api").send(b"{}")?;
 
 ## Features
 
-- `no_std` + `alloc`, blocking I/O
-- Custom `BlockingSocket` and `DnsResolver` (`connect` receives hostname for SNI)
-- Connection pooling on by default (`Config::max_idle_per_host` default 3; `0` disables; `max_idle_age` default 15s)
+- Custom `BlockingSocket` / `DnsResolver` (`connect` gets the hostname for SNI)
+- Connection pooling (`Config::max_idle_per_host` default 3; `0` disables; `max_idle_age` default 15s)
 - Response body size limit (`Config::max_response_body_size`, default ~10 MiB)
-- Cargo features: `cookie-jar`, `gzip-decompression`, `zstd-decompression`
-- Request builder: `.call()` after optional `.form` / `.body`; `.send(bytes)` sets the body then runs `.call()`; per-request `.timeout_read` / `.timeout_write` / `.timeout_connect`
+- Optional Cargo features: `cookie-jar`, `gzip-decompression` (hand-rolled RFC 1951/1952), `zstd-decompression`
+- Request builder: `.form` / `.body` then `.call()`, or `.send(bytes)`; per-request `.timeout_read` / `.timeout_write` / `.timeout_connect`
 
 ## TLS / HTTPS
 
-barehttp does not implement TLS. For `https://` URLs:
+barehttp does not implement TLS. For `https://`:
 
-1. Provide a `BlockingSocket` whose `connect` / read / write already speak TLS
-   to the peer (or wrap one that does). `connect` receives the URI hostname
-   for SNI.
-2. Set `Config { assume_tls_socket: true, .. }` so the client accepts the
-   `https` scheme. Without that flag you get `Error::TlsNotConfigured`.
+1. Use a `BlockingSocket` whose `connect` / read / write speak TLS (or wrap one
+   that does). `connect` receives the URI hostname for SNI.
+2. Set `Config { assume_tls_socket: true, .. }` so the client accepts `https`.
+   Without that flag you get `Error::TlsNotConfigured`.
 
 ```rust
 use barehttp::config::Config;

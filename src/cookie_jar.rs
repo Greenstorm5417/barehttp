@@ -169,12 +169,7 @@ impl CookieStore {
       matching_cookies.push(cookie);
     }
 
-    matching_cookies.sort_by(|a, b| {
-      b.path
-        .len()
-        .cmp(&a.path.len())
-        .then_with(|| a.creation_time.cmp(&b.creation_time))
-    });
+    sort_cookies_for_send(&mut matching_cookies);
 
     let mut result = String::new();
     for (i, cookie) in matching_cookies.iter().enumerate() {
@@ -307,6 +302,29 @@ fn path_matches(
   }
 
   false
+}
+
+/// RFC 6265 cookie ordering: longer path first, then earlier creation time.
+/// Insertion sort — jars are tiny; avoids pulling in `slice::sort` monomorphization.
+fn sort_cookies_for_send(cookies: &mut [&StoredCookie]) {
+  for i in 1..cookies.len() {
+    let mut j = i;
+    while j > 0 {
+      let Some(prev) = cookies.get(j - 1).copied() else {
+        break;
+      };
+      let Some(cur) = cookies.get(j).copied() else {
+        break;
+      };
+      let swap = cur.path.len() > prev.path.len()
+        || (cur.path.len() == prev.path.len() && cur.creation_time < prev.creation_time);
+      if !swap {
+        break;
+      }
+      cookies.swap(j - 1, j);
+      j -= 1;
+    }
+  }
 }
 
 fn default_path(request_path: &str) -> String {
@@ -453,6 +471,30 @@ mod tests {
     store.store_response_cookies("http://example.com/", &alloc::vec!["id=second".to_string()]);
     let cookies_second = store.get_request_cookies("http://example.com/", false);
     assert_eq!(cookies_second, "id=second");
+  }
+
+  #[test]
+  fn cookie_send_order_longer_path_first_then_creation() {
+    let store = CookieStore::new();
+    // Shorter path first in time, then longer path — wire order must be longer path first.
+    store.store_response_cookies("http://example.com/a/b", &alloc::vec!["a=1; Path=/".to_string()]);
+    store.store_response_cookies("http://example.com/a/b", &alloc::vec!["b=2; Path=/a".to_string()]);
+    store.store_response_cookies("http://example.com/a/b", &alloc::vec!["c=3; Path=/a/b".to_string()]);
+    assert_eq!(
+      store.get_request_cookies("http://example.com/a/b", false),
+      "c=3; b=2; a=1"
+    );
+  }
+
+  #[test]
+  fn cookie_send_order_same_path_creation_time() {
+    let store = CookieStore::new();
+    store.store_response_cookies("http://example.com/", &alloc::vec!["first=1; Path=/".to_string()]);
+    store.store_response_cookies("http://example.com/", &alloc::vec!["second=2; Path=/".to_string()]);
+    assert_eq!(
+      store.get_request_cookies("http://example.com/", false),
+      "first=1; second=2"
+    );
   }
 
   #[test]

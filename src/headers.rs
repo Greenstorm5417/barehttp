@@ -36,9 +36,7 @@ impl Headers {
     value: impl Into<String>,
   ) {
     let owned_name = name.into();
-    self
-      .headers
-      .retain(|(n, _)| !n.eq_ignore_ascii_case(&owned_name));
+    self.remove(&owned_name);
     self.headers.push((owned_name, value.into()));
   }
 
@@ -61,12 +59,13 @@ impl Headers {
     &self,
     name: &str,
   ) -> Vec<&str> {
-    self
-      .headers
-      .iter()
-      .filter(|(n, _)| n.eq_ignore_ascii_case(name))
-      .map(|(_, v)| v.as_str())
-      .collect()
+    let mut out = Vec::new();
+    for (n, v) in &self.headers {
+      if n.eq_ignore_ascii_case(name) {
+        out.push(v.as_str());
+      }
+    }
+    out
   }
 
   /// Whether any field matches `name` (case-insensitive).
@@ -160,5 +159,50 @@ impl<'a> IntoIterator for &'a Headers {
 
   fn into_iter(self) -> Self::IntoIter {
     self.headers.iter()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn set_replaces_all_case_insensitive_values() {
+    let mut h = Headers::new();
+    h.insert("Content-Type", "text/plain");
+    h.insert("content-type", "text/html");
+    h.set("CONTENT-TYPE", "application/json");
+    assert_eq!(h.get_all("content-type"), alloc::vec!["application/json"]);
+    assert_eq!(h.len(), 1);
+  }
+
+  #[test]
+  fn remove_drops_all_case_insensitive() {
+    let mut h = Headers::new();
+    h.insert("X-A", "1");
+    h.insert("x-a", "2");
+    h.insert("Host", "example.com");
+    h.remove("x-a");
+    assert!(!h.contains("X-A"));
+    assert_eq!(h.get("host"), Some("example.com"));
+  }
+
+  #[test]
+  fn get_all_preserves_order_of_duplicates() {
+    let mut h = Headers::new();
+    h.insert("Set-Cookie", "a=1");
+    h.insert("Set-Cookie", "b=2");
+    assert_eq!(h.get_all("set-cookie"), alloc::vec!["a=1", "b=2"]);
+  }
+
+  #[test]
+  fn merge_cookie_appends_or_inserts() {
+    let mut h = Headers::new();
+    h.merge_cookie("a=1");
+    assert_eq!(h.get(Headers::COOKIE), Some("a=1"));
+    h.merge_cookie("b=2");
+    assert_eq!(h.get(Headers::COOKIE), Some("a=1; b=2"));
+    h.merge_cookie("");
+    assert_eq!(h.get(Headers::COOKIE), Some("a=1; b=2"));
   }
 }

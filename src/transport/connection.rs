@@ -3,7 +3,7 @@ use crate::dns::DnsResolver;
 use crate::error::{Error, SocketError};
 use crate::headers::Headers;
 use crate::parser::chunked::ChunkedDecoder;
-use crate::parser::framing::has_complete_headers;
+use crate::parser::has_complete_headers;
 use crate::parser::uri::{Host, Uri};
 use crate::parser::version::Version;
 use crate::parser::{BodyReadStrategy, Response};

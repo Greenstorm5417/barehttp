@@ -277,15 +277,7 @@ where
     K: AsRef<str>,
     V: AsRef<str>,
   {
-    let mut encoded = String::new();
-    for (k, v) in iter {
-      if !encoded.is_empty() {
-        encoded.push('&');
-      }
-      encoded.push_str(&form_url_encode(k.as_ref()));
-      encoded.push('=');
-      encoded.push_str(&form_url_encode(v.as_ref()));
-    }
+    let encoded = encode_form_pairs(iter);
     if !self.headers.contains(Headers::CONTENT_TYPE) {
       self
         .headers
@@ -310,15 +302,20 @@ fn encode_query_pairs<'a>(pairs: impl Iterator<Item = (&'a str, &'a str)>) -> St
   out
 }
 
-fn encode_form_pairs<'a>(pairs: impl Iterator<Item = (&'a str, &'a str)>) -> String {
+fn encode_form_pairs<I, K, V>(pairs: I) -> String
+where
+  I: IntoIterator<Item = (K, V)>,
+  K: AsRef<str>,
+  V: AsRef<str>,
+{
   let mut out = String::new();
-  for (i, (key, value)) in pairs.enumerate() {
+  for (i, (key, value)) in pairs.into_iter().enumerate() {
     if i > 0 {
       out.push('&');
     }
-    out.push_str(&form_url_encode(key));
+    out.push_str(&form_url_encode(key.as_ref()));
     out.push('=');
-    out.push_str(&form_url_encode(value));
+    out.push_str(&form_url_encode(value.as_ref()));
   }
   out
 }

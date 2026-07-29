@@ -9,9 +9,6 @@ use crate::parser::version::{Version, parse_status_line};
 use alloc::string::String;
 use alloc::vec::Vec;
 
-#[cfg(feature = "gzip-decompression")]
-use miniz_oxide::inflate::{TINFLStatus, decompress_to_vec_with_limit, decompress_to_vec_zlib_with_limit};
-
 #[cfg(feature = "zstd-decompression")]
 use ruzstd::decoding::StreamingDecoder;
 
@@ -56,19 +53,26 @@ impl Response {
       return Err(ParseError::BodyExceedsLimit(max_body));
     }
 
-    let encodings = headers.get_all("content-encoding");
-    if encodings.is_empty() {
+    let encodings_empty = !headers
+      .iter()
+      .any(|(n, _)| n.eq_ignore_ascii_case("content-encoding"));
+    if encodings_empty {
       return Ok(body_bytes);
     }
 
     // RFC 9110: comma-separated codings, applied in listed order → decompress reverse.
-    let tokens: Vec<String> = encodings
-      .iter()
-      .flat_map(|v| v.split(','))
-      .map(str::trim)
-      .filter(|t| !t.is_empty() && !t.eq_ignore_ascii_case("identity"))
-      .map(String::from)
-      .collect();
+    let mut tokens = Vec::new();
+    for (name, value) in headers.iter() {
+      if !name.eq_ignore_ascii_case("content-encoding") {
+        continue;
+      }
+      for part in value.split(',') {
+        let t = part.trim();
+        if !t.is_empty() && !t.eq_ignore_ascii_case("identity") {
+          tokens.push(String::from(t));
+        }
+      }
+    }
 
     if tokens.is_empty() {
       return Ok(body_bytes);
@@ -125,18 +129,18 @@ impl Response {
     let (version, status, reason, after_status) = parse_status_line(data)?;
     let (headers_bytes, remaining) = parse_header_fields(after_status)?;
 
-    let mut headers = Vec::new();
+    let mut headers = Headers::new();
     for (name_bytes, value_bytes) in &headers_bytes {
-      headers.push((
+      headers.insert(
         String::from_utf8_lossy(name_bytes).into_owned(),
         String::from_utf8_lossy(value_bytes).into_owned(),
-      ));
+      );
     }
 
     Ok((
       status,
       String::from_utf8_lossy(reason).into_owned(),
-      Headers::from_vec(headers),
+      headers,
       version,
       remaining,
     ))
@@ -177,31 +181,35 @@ impl Response {
         return Err(ParseError::ConflictingFraming);
       }
 
-      let te = headers
-        .get_all(Headers::TRANSFER_ENCODING)
-        .iter()
-        .map(|v| v.trim())
-        .filter(|v| !v.is_empty())
-        .collect::<Vec<_>>()
-        .join(",")
-        .to_lowercase();
-
-      let codings: Vec<&str> = te
-        .split(',')
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(|t| t.split(';').next().unwrap_or(t).trim())
-        .filter(|t| !t.is_empty())
-        .collect();
+      let mut chunked_count = 0usize;
+      let mut last_is_chunked = false;
+      for (name, value) in headers.iter() {
+        if !name.eq_ignore_ascii_case(Headers::TRANSFER_ENCODING) {
+          continue;
+        }
+        for part in value.split(',') {
+          let token = part
+            .split(';')
+            .next()
+            .unwrap_or(part)
+            .trim();
+          if token.is_empty() {
+            continue;
+          }
+          let is_chunked = token.eq_ignore_ascii_case("chunked");
+          if is_chunked {
+            chunked_count = chunked_count.saturating_add(1);
+          }
+          last_is_chunked = is_chunked;
+        }
+      }
 
       // RFC 9112 §6.1: MUST NOT apply chunked more than once
-      let chunked_count = codings.iter().filter(|t| **t == "chunked").count();
       if chunked_count > 1 {
         return Err(ParseError::ChunkedAppliedMultipleTimes);
       }
 
-      let last = codings.last().copied().unwrap_or("");
-      if last == "chunked" {
+      if last_is_chunked {
         return Ok(BodyReadStrategy::Chunked);
       }
       if chunked_count > 0 {
@@ -340,17 +348,19 @@ fn decompress_coding(
 ) -> Result<Vec<u8>, ParseError> {
   #[cfg(feature = "gzip-decompression")]
   if coding.eq_ignore_ascii_case("gzip") {
-    let deflate_data = gzip_deflate_payload(&body_bytes).ok_or(ParseError::DecompressionFailed)?;
-    return map_inflate_result(decompress_to_vec_with_limit(deflate_data, max_body), max_body);
+    return match crate::gzip::decompress_gzip(&body_bytes, max_body) {
+      Ok(v) => Ok(v),
+      Err(crate::gzip::DecompressError::LimitExceeded) => Err(ParseError::BodyExceedsLimit(max_body)),
+      Err(crate::gzip::DecompressError::InvalidInput) => Err(ParseError::DecompressionFailed),
+    };
   }
 
   #[cfg(feature = "gzip-decompression")]
   if coding.eq_ignore_ascii_case("deflate") {
-    // Servers send either zlib-wrapped (RFC 1950) or raw DEFLATE (RFC 1951).
-    return match decompress_to_vec_zlib_with_limit(&body_bytes, max_body) {
+    return match crate::gzip::decompress_http_deflate(&body_bytes, max_body) {
       Ok(v) => Ok(v),
-      Err(e) if e.status == TINFLStatus::HasMoreOutput => Err(ParseError::BodyExceedsLimit(max_body)),
-      Err(_) => map_inflate_result(decompress_to_vec_with_limit(&body_bytes, max_body), max_body),
+      Err(crate::gzip::DecompressError::LimitExceeded) => Err(ParseError::BodyExceedsLimit(max_body)),
+      Err(crate::gzip::DecompressError::InvalidInput) => Err(ParseError::DecompressionFailed),
     };
   }
 
@@ -381,57 +391,6 @@ fn decompress_coding(
   Err(ParseError::DecompressionFailed)
 }
 
-#[cfg(feature = "gzip-decompression")]
-fn map_inflate_result(
-  result: Result<Vec<u8>, miniz_oxide::inflate::DecompressError>,
-  max_body: usize,
-) -> Result<Vec<u8>, ParseError> {
-  match result {
-    Ok(v) => Ok(v),
-    Err(e) if e.status == TINFLStatus::HasMoreOutput => Err(ParseError::BodyExceedsLimit(max_body)),
-    Err(_) => Err(ParseError::DecompressionFailed),
-  }
-}
-
-/// RFC 1952: skip gzip header/footer, return raw deflate payload.
-#[cfg(feature = "gzip-decompression")]
-fn gzip_deflate_payload(data: &[u8]) -> Option<&[u8]> {
-  if data.len() < 18 {
-    return None;
-  }
-  if data.first().copied() != Some(0x1f) || data.get(1).copied() != Some(0x8b) {
-    return None;
-  }
-  let flags = data.get(3).copied()?;
-  let mut i = 10usize;
-  if flags & 0x04 != 0 {
-    let b0 = data.get(i).copied()?;
-    let b1 = data.get(i + 1).copied()?;
-    let xlen = usize::from(u16::from_le_bytes([b0, b1]));
-    i = i.checked_add(2)?.checked_add(xlen)?;
-  }
-  if flags & 0x08 != 0 {
-    while *data.get(i)? != 0 {
-      i = i.checked_add(1)?;
-    }
-    i = i.checked_add(1)?;
-  }
-  if flags & 0x10 != 0 {
-    while *data.get(i)? != 0 {
-      i = i.checked_add(1)?;
-    }
-    i = i.checked_add(1)?;
-  }
-  if flags & 0x02 != 0 {
-    i = i.checked_add(2)?;
-  }
-  let end = data.len().checked_sub(8)?;
-  if end < i {
-    return None;
-  }
-  data.get(i..end)
-}
-
 fn parse_content_length_str(value: &str) -> Option<usize> {
   let trimmed = value.trim();
   if trimmed.is_empty() {
@@ -439,15 +398,20 @@ fn parse_content_length_str(value: &str) -> Option<usize> {
   }
 
   if trimmed.contains(',') {
-    let parts: Vec<&str> = trimmed.split(',').map(str::trim).collect();
-    let first = parts.first()?.parse::<usize>().ok()?;
-    if parts.iter().all(|p| p.parse::<usize>().ok() == Some(first)) {
-      return Some(first);
+    let mut first: Option<usize> = None;
+    for part in trimmed.split(',') {
+      let p = part.trim();
+      let n = p.parse::<usize>().ok()?;
+      match first {
+        None => first = Some(n),
+        Some(prev) if prev != n => return None,
+        _ => {},
+      }
     }
-    return None;
+    return first;
   }
 
-  if !trimmed.chars().all(|c| c.is_ascii_digit()) {
+  if !trimmed.bytes().all(|b| b.is_ascii_digit()) {
     return None;
   }
 
@@ -568,6 +532,38 @@ mod response_helpers_tests {
   }
 
   #[test]
+  fn body_read_strategy_rejects_duplicate_chunked_in_one_line() {
+    let mut headers = Headers::new();
+    headers.insert("Transfer-Encoding", "chunked, chunked");
+    assert!(matches!(
+      Response::body_read_strategy(&headers, 200, Version::HTTP_11),
+      Err(ParseError::ChunkedAppliedMultipleTimes)
+    ));
+  }
+
+  #[test]
+  fn body_read_strategy_comma_list_with_params() {
+    let mut headers = Headers::new();
+    headers.insert("Transfer-Encoding", "gzip;q=1.0, chunked");
+    assert_eq!(
+      Response::body_read_strategy(&headers, 200, Version::HTTP_11).unwrap(),
+      BodyReadStrategy::Chunked
+    );
+  }
+
+  #[test]
+  fn parse_headers_only_builds_headers() {
+    let input = b"HTTP/1.1 200 OK\r\nHost: a\r\nX-A: 1\r\n\r\nbody";
+    let (code, reason, headers, ver, rest) = Response::parse_headers_only(input).unwrap();
+    assert_eq!(code, 200);
+    assert_eq!(reason, "OK");
+    assert_eq!(ver, Version::HTTP_11);
+    assert_eq!(headers.get("host"), Some("a"));
+    assert_eq!(headers.get("x-a"), Some("1"));
+    assert_eq!(rest, b"body");
+  }
+
+  #[test]
   fn unsupported_content_encoding_left_as_is() {
     let input = b"HTTP/1.1 200 OK\r\nContent-Encoding: br\r\nContent-Length: 4\r\n\r\ndata";
     let resp = Response::parse(input).unwrap();
@@ -618,11 +614,12 @@ mod response_helpers_tests {
   #[test]
   fn raw_deflate_accepted_after_zlib_fails() {
     use alloc::string::ToString;
-    let deflated = miniz_oxide::deflate::compress_to_vec(b"hi", 6);
+    // raw DEFLATE of b"hi" (RFC 1951; not zlib-wrapped)
+    let deflated: &[u8] = &[0xcb, 0xc8, 0x04, 0x00];
     let mut msg = Vec::from(&b"HTTP/1.1 200 OK\r\nContent-Encoding: deflate\r\nContent-Length: "[..]);
     msg.extend_from_slice(deflated.len().to_string().as_bytes());
     msg.extend_from_slice(b"\r\n\r\n");
-    msg.extend_from_slice(&deflated);
+    msg.extend_from_slice(deflated);
 
     let resp = Response::parse(&msg).unwrap();
     assert_eq!(resp.body.as_slice(), b"hi");

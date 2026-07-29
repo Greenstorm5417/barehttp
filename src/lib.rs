@@ -1,6 +1,7 @@
-//! Blocking HTTP client for `no_std` + `alloc`. Cleartext HTTP unless your socket
-//! terminates TLS (`Config::assume_tls_socket`). Setting that flag with
-//! [`OsBlockingSocket`] yields [`Error::TlsNotConfigured`].
+//! Blocking HTTP/1.1 client for `no_std` + `alloc`. Speaks cleartext HTTP.
+//! For `https://`, supply a TLS-terminating [`BlockingSocket`] and set
+//! [`config::Config::assume_tls_socket`]. Pairing that flag with [`OsBlockingSocket`]
+//! returns [`Error::TlsNotConfigured`].
 //!
 //! ```no_run
 //! let response = barehttp::get("http://httpbin.org/get").call()?;
@@ -8,8 +9,8 @@
 //! # Ok::<(), barehttp::Error>(())
 //! ```
 //!
-//! Configure via [`config::Config`]. [`HttpClient`] follows redirects and accepts
-//! custom headers. Read the body with [`Response::text`] / [`Response::is_success`].
+//! Tune with [`config::Config`]. [`HttpClient`] follows redirects.
+//! Bodies: [`Response::text`], [`Response::is_success`].
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -55,10 +56,9 @@ pub mod cookie_jar;
 pub use client::HttpClient;
 pub use error::Error;
 
-pub use dns::adapter::DnsResolver;
-pub use dns::resolver::OsDnsResolver;
+pub use dns::{DnsResolver, OsDnsResolver};
 pub use error::{DnsError, ParseError, SocketError};
-pub use socket::adapter::BlockingSocket;
+pub use socket::BlockingSocket;
 pub use socket::{OsBlockingSocket, SocketAddr};
 pub use util::IpAddr;
 
@@ -124,6 +124,8 @@ pub mod request_builder;
 mod client;
 mod dns;
 mod error;
+#[cfg(feature = "gzip-decompression")]
+mod gzip;
 mod headers;
 mod method;
 pub(crate) mod parser;

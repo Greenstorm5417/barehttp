@@ -1,7 +1,8 @@
-use crate::dns::os::{host_cstring, ip_v4, ip_v6};
+use crate::dns::os::host_cstring;
 use crate::error::DnsError;
 use crate::util::IpAddr;
 use alloc::vec::Vec;
+use core::net::{Ipv4Addr, Ipv6Addr};
 use core::ptr;
 use libc::{AF_INET, AF_INET6, addrinfo, sockaddr_in, sockaddr_in6};
 
@@ -36,10 +37,10 @@ pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
 
       if info.ai_family == AF_INET && !info.ai_addr.is_null() {
         let sockaddr = ptr::read_unaligned(info.ai_addr.cast::<sockaddr_in>());
-        addresses.push(ip_v4(sockaddr.sin_addr.s_addr.to_ne_bytes()));
+        addresses.push(IpAddr::V4(Ipv4Addr::from(sockaddr.sin_addr.s_addr.to_ne_bytes())));
       } else if info.ai_family == AF_INET6 && !info.ai_addr.is_null() {
         let sockaddr = ptr::read_unaligned(info.ai_addr.cast::<sockaddr_in6>());
-        addresses.push(ip_v6(sockaddr.sin6_addr.s6_addr));
+        addresses.push(IpAddr::V6(Ipv6Addr::from(sockaddr.sin6_addr.s6_addr)));
       }
 
       current = info.ai_next;

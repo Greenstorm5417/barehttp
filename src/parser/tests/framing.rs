@@ -1,4 +1,4 @@
-use crate::parser::framing::has_complete_headers;
+use crate::parser::has_complete_headers;
 use alloc::format;
 use alloc::vec::Vec;
 

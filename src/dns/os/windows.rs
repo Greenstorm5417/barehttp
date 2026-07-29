@@ -1,7 +1,8 @@
-use crate::dns::os::{host_cstring, ip_v4, ip_v6};
+use crate::dns::os::host_cstring;
 use crate::error::DnsError;
 use crate::util::IpAddr;
 use alloc::vec::Vec;
+use core::net::{Ipv4Addr, Ipv6Addr};
 use core::ptr;
 use windows_sys::Win32::Networking::WinSock::{
   ADDRINFOA, AF_INET, AF_INET6, SOCKADDR_IN, SOCKADDR_IN6, WSAGetLastError, freeaddrinfo, getaddrinfo,
@@ -39,12 +40,12 @@ pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
 
       if info.ai_family == i32::from(AF_INET) && !info.ai_addr.is_null() {
         let sockaddr = ptr::read_unaligned(info.ai_addr.cast::<SOCKADDR_IN>());
-        addresses.push(ip_v4(sockaddr.sin_addr.S_un.S_addr.to_ne_bytes()));
+        addresses.push(IpAddr::V4(Ipv4Addr::from(sockaddr.sin_addr.S_un.S_addr.to_ne_bytes())));
       } else if info.ai_family == i32::from(AF_INET6) && !info.ai_addr.is_null() {
         let sockaddr = ptr::read_unaligned(info.ai_addr.cast::<SOCKADDR_IN6>());
         // IN6_ADDR.u is a union; Byte is the octet view (already in unsafe).
         let octets = sockaddr.sin6_addr.u.Byte;
-        addresses.push(ip_v6(octets));
+        addresses.push(IpAddr::V6(Ipv6Addr::from(octets)));
       }
 
       current = info.ai_next;
