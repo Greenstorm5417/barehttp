@@ -186,15 +186,25 @@ impl Response {
         .join(",")
         .to_lowercase();
 
-      let last = te
+      let codings: Vec<&str> = te
         .split(',')
         .map(str::trim)
-        .rfind(|t| !t.is_empty())
-        .unwrap_or("");
+        .filter(|t| !t.is_empty())
+        .map(|t| t.split(';').next().unwrap_or(t).trim())
+        .filter(|t| !t.is_empty())
+        .collect();
+
+      // RFC 9112 §6.1: MUST NOT apply chunked more than once
+      let chunked_count = codings.iter().filter(|t| **t == "chunked").count();
+      if chunked_count > 1 {
+        return Err(ParseError::ChunkedAppliedMultipleTimes);
+      }
+
+      let last = codings.last().copied().unwrap_or("");
       if last == "chunked" {
         return Ok(BodyReadStrategy::Chunked);
       }
-      if te.split(',').map(str::trim).any(|t| t == "chunked") {
+      if chunked_count > 0 {
         return Err(ParseError::ChunkedNotFinal);
       }
       return Ok(BodyReadStrategy::UntilClose);

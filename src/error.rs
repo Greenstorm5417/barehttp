@@ -51,6 +51,9 @@ pub enum ParseError {
   TransferEncodingRequiresHttp11,
   /// `chunked` listed more than once (RFC 9112 §6.1).
   ChunkedAppliedMultipleTimes,
+  /// Outbound request used `Transfer-Encoding`; this client frames bodies with
+  /// `Content-Length` only (RFC 9112 §6.3).
+  RequestTransferEncodingUnsupported,
   /// gzip / deflate / zstd decompression failed.
   DecompressionFailed,
   /// Decompressed body larger than the configured size limit.
@@ -85,6 +88,7 @@ impl ParseError {
       Self::InvalidHostHeaderValue => "invalid Host header value format",
       Self::TransferEncodingRequiresHttp11 => "Transfer-Encoding requires HTTP/1.1 or higher",
       Self::ChunkedAppliedMultipleTimes => "chunked transfer coding applied multiple times",
+      Self::RequestTransferEncodingUnsupported => "Transfer-Encoding on requests is unsupported; use Content-Length",
       Self::DecompressionFailed => "failed to decompress response body",
       Self::BodyExceedsLimit(_) => "response body exceeds size limit",
     }

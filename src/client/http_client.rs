@@ -537,7 +537,10 @@ where
   S::new().map(|s| (s, false)).map_err(Error::Socket)
 }
 
-fn build_request(
+/// Build wire request bytes (HTTP/1.1 + Host + origin-form target).
+///
+/// Visible for unit tests of request serialization policy.
+pub fn build_request(
   uri: &Uri,
   method: Method,
   host_str: &str,
@@ -561,8 +564,9 @@ fn build_request(
   // Always rebuild Host for the current hop (user Host may be stale after redirects).
   headers.set(Headers::HOST, host_header.as_str());
 
+  // RFC 9112 §9.3: client that will not reuse MUST send Connection: close
   if !pooling_enabled(config) {
-    headers.insert(Headers::CONNECTION, "close");
+    headers.set(Headers::CONNECTION, "close");
   }
 
   if !config.user_agent.is_empty() && !headers.contains(Headers::USER_AGENT) {

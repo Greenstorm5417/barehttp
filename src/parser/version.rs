@@ -11,6 +11,12 @@ impl Version {
   /// HTTP/1.1
   pub const HTTP_11: Self = Self { major: 1, minor: 1 };
 
+  /// RFC 9112 §9.3: HTTP/1.1 (or later) defaults to persistent connections.
+  #[must_use]
+  pub const fn defaults_to_persistent(self) -> bool {
+    self.major > 1 || (self.major == 1 && self.minor >= 1)
+  }
+
   /// Parse `HTTP/x.y` from bytes.
   ///
   /// # Errors

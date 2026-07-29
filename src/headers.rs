@@ -124,28 +124,28 @@ impl Headers {
   }
 
   // Wire names used by this crate (string literals elsewhere are fine too).
-  /// `accept`
-  pub const ACCEPT: &'static str = "accept";
-  /// `accept-encoding`
-  pub const ACCEPT_ENCODING: &'static str = "accept-encoding";
-  /// `connection`
-  pub const CONNECTION: &'static str = "connection";
-  /// `content-length`
-  pub const CONTENT_LENGTH: &'static str = "content-length";
-  /// `content-type`
-  pub const CONTENT_TYPE: &'static str = "content-type";
-  /// `cookie`
-  pub const COOKIE: &'static str = "cookie";
-  /// `host`
-  pub const HOST: &'static str = "host";
-  /// `set-cookie`
-  pub const SET_COOKIE: &'static str = "set-cookie";
-  /// `te`
-  pub const TE: &'static str = "te";
-  /// `transfer-encoding`
-  pub const TRANSFER_ENCODING: &'static str = "transfer-encoding";
-  /// `user-agent`
-  pub const USER_AGENT: &'static str = "user-agent";
+  /// `Accept`
+  pub const ACCEPT: &'static str = "Accept";
+  /// `Accept-Encoding`
+  pub const ACCEPT_ENCODING: &'static str = "Accept-Encoding";
+  /// `Connection`
+  pub const CONNECTION: &'static str = "Connection";
+  /// `Content-Length`
+  pub const CONTENT_LENGTH: &'static str = "Content-Length";
+  /// `Content-Type`
+  pub const CONTENT_TYPE: &'static str = "Content-Type";
+  /// `Cookie`
+  pub const COOKIE: &'static str = "Cookie";
+  /// `Host`
+  pub const HOST: &'static str = "Host";
+  /// `Set-Cookie`
+  pub const SET_COOKIE: &'static str = "Set-Cookie";
+  /// `TE`
+  pub const TE: &'static str = "TE";
+  /// `Transfer-Encoding`
+  pub const TRANSFER_ENCODING: &'static str = "Transfer-Encoding";
+  /// `User-Agent`
+  pub const USER_AGENT: &'static str = "User-Agent";
 }
 
 impl From<Vec<(String, String)>> for Headers {

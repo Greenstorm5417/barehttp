@@ -162,6 +162,17 @@ fn request_te_and_cl_conflict_rejected() {
 }
 
 #[test]
+fn request_transfer_encoding_rejected() {
+  let mut headers = Headers::new();
+  headers.insert("Host", "example.com");
+  headers.insert("Transfer-Encoding", "chunked");
+  assert_eq!(
+    serialize_with_headers("POST", "/", &headers, Some(b"test")).unwrap_err(),
+    ParseError::RequestTransferEncodingUnsupported
+  );
+}
+
+#[test]
 fn request_rejects_content_length_mismatch() {
   let mut headers = Headers::new();
   headers.insert("Host", "example.com");
@@ -188,5 +199,68 @@ fn request_rejects_ctl_injection_in_headers() {
   assert_eq!(
     serialize_with_headers("GET", "/", &bad_fold, None).unwrap_err(),
     ParseError::InvalidHeaderValue
+  );
+}
+
+#[test]
+fn host_is_first_header_on_wire() {
+  let mut headers = Headers::new();
+  headers.insert("X-Custom", "1");
+  headers.insert("Host", "example.com");
+  let request = serialize_with_headers("GET", "/path", &headers, None).unwrap();
+  let text = String::from_utf8_lossy(&request);
+  assert!(text.starts_with("GET /path HTTP/1.1\r\nHost: example.com\r\n"));
+}
+
+#[test]
+fn absolute_form_request_target_rejected() {
+  let mut headers = Headers::new();
+  headers.insert("Host", "example.com");
+  assert_eq!(
+    serialize_with_headers("GET", "http://example.com/path", &headers, None).unwrap_err(),
+    ParseError::InvalidUri
+  );
+}
+
+#[test]
+fn invalid_host_value_rejected() {
+  let mut headers = Headers::new();
+  headers.insert("Host", "bad host.com");
+  assert_eq!(
+    serialize_with_headers("GET", "/", &headers, None).unwrap_err(),
+    ParseError::InvalidHostHeaderValue
+  );
+}
+
+#[test]
+fn te_chunked_token_rejected() {
+  let mut headers = Headers::new();
+  headers.insert("Host", "example.com");
+  headers.insert("TE", "chunked");
+  headers.insert("Connection", "TE");
+  assert_eq!(
+    serialize_with_headers("GET", "/", &headers, None).unwrap_err(),
+    ParseError::ChunkedInTeHeader
+  );
+}
+
+#[test]
+fn te_requires_connection_te() {
+  let mut headers = Headers::new();
+  headers.insert("Host", "example.com");
+  headers.insert("TE", "trailers");
+  assert_eq!(
+    serialize_with_headers("GET", "/", &headers, None).unwrap_err(),
+    ParseError::TeHeaderMissingConnection
+  );
+}
+
+#[test]
+fn duplicate_chunked_te_rejected() {
+  let mut headers = Headers::new();
+  headers.insert("Transfer-Encoding", "chunked, chunked");
+  assert_eq!(
+    Response::body_read_strategy(&headers, 200, Version::HTTP_11).unwrap_err(),
+    ParseError::ChunkedAppliedMultipleTimes
   );
 }

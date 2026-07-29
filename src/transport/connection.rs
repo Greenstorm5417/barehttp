@@ -135,24 +135,14 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         Vec::new()
       };
 
-      // RFC 9112 Section 9.3 / 9.6: HTTP/1.0 defaults to close unless keep-alive
-      if version == Version::HTTP_10 {
-        let keep_alive = headers.get(Headers::CONNECTION).is_some_and(|v| {
-          v.split(',')
-            .any(|t| t.trim().eq_ignore_ascii_case("keep-alive"))
-        });
-        if !keep_alive {
+      // RFC 9112 §9.3 / §9.6: persistence from version + all Connection field lines
+      if connection_option_present(&headers, "close") {
+        self.reusable = false;
+      } else if !version.defaults_to_persistent() {
+        // HTTP/1.0 (and earlier): close unless keep-alive is present
+        if !connection_option_present(&headers, "keep-alive") {
           self.reusable = false;
         }
-      }
-
-      // RFC 9112 Section 9.6: Connection header is a comma-separated token list
-      if let Some(conn_value) = headers.get(Headers::CONNECTION)
-        && conn_value
-          .split(',')
-          .any(|t| t.trim().eq_ignore_ascii_case("close"))
-      {
-        self.reusable = false;
       }
 
       return Ok(RawResponse {
@@ -401,6 +391,17 @@ fn headers_section_len(data: &[u8]) -> Option<usize> {
     .position(|w| w == b"\r\n\r\n")
     .map(|i| i + 4)
     .or_else(|| data.windows(2).position(|w| w == b"\n\n").map(|i| i + 2))
+}
+
+/// True if any `Connection` field line lists the given option (RFC 9110 list rules).
+fn connection_option_present(
+  headers: &Headers,
+  option: &str,
+) -> bool {
+  headers
+    .get_all(Headers::CONNECTION)
+    .iter()
+    .any(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case(option)))
 }
 
 /// True if a request's `Connection` header list contains the `close` token.

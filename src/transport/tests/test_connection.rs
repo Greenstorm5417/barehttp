@@ -261,6 +261,57 @@ fn no_body_connection_close_still_marks_non_reusable() {
 }
 
 #[test]
+fn http11_without_connection_header_stays_reusable() {
+  // RFC 9112 §9.3: HTTP/1.1 defaults to persistent; must not require keep-alive
+  let response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+  let mut socket = MockSocket::with_response(response);
+  let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
+
+  assert!(conn.read_raw_response(true).is_ok());
+  assert!(conn.is_reusable());
+}
+
+#[test]
+fn http10_without_keep_alive_not_reusable() {
+  let response = "HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n";
+  let mut socket = MockSocket::with_response(response);
+  let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
+
+  assert!(conn.read_raw_response(true).is_ok());
+  assert!(!conn.is_reusable());
+}
+
+#[test]
+fn http10_with_keep_alive_reusable() {
+  let response = "HTTP/1.0 200 OK\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
+  let mut socket = MockSocket::with_response(response);
+  let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
+
+  assert!(conn.read_raw_response(true).is_ok());
+  assert!(conn.is_reusable());
+}
+
+#[test]
+fn connection_close_on_second_field_line_marks_non_reusable() {
+  // RFC 9110 list combining: close on any Connection field line ends persistence
+  let response = "HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+  let mut socket = MockSocket::with_response(response);
+  let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
+
+  assert!(conn.read_raw_response(true).is_ok());
+  assert!(!conn.is_reusable());
+}
+
+#[test]
+fn request_connection_close_marks_non_reusable() {
+  let mut socket = MockSocket::with_response("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+  let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
+  let request = b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
+  assert!(conn.send_request(request).is_ok());
+  assert!(!conn.is_reusable());
+}
+
+#[test]
 fn header_limit_ignores_body_bytes_past_complete_headers() {
   // Headers fit under 64; body would push total past the limit if counted.
   let response = "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n".to_string() + &"B".repeat(100);

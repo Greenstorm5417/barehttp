@@ -1,4 +1,4 @@
-use crate::client::http_client::{follow_redirect, sanitize_redirect_headers, validate_protocol};
+use crate::client::http_client::{build_request, follow_redirect, sanitize_redirect_headers, validate_protocol};
 use crate::config::Config;
 use crate::error::Error;
 use crate::headers::Headers;
@@ -536,4 +536,58 @@ fn chunked_trailers_reach_response() {
   let resp = raw_to_response_for_test(raw, Method::Get);
   assert_eq!(resp.body.as_slice(), b"hello");
   assert_eq!(resp.trailers, vec![(String::from("X-Trailer"), String::from("value"))]);
+}
+
+#[test]
+fn build_request_is_http11_with_host_and_origin_form() {
+  let uri = Uri::parse("http://example.com:8080/a/b?q=1").unwrap();
+  let bytes = build_request(
+    &uri,
+    Method::Get,
+    "example.com",
+    8080,
+    &Headers::new(),
+    None,
+    &Config::default(),
+  )
+  .unwrap();
+  let text = String::from_utf8_lossy(&bytes);
+  assert!(text.starts_with("GET /a/b?q=1 HTTP/1.1\r\n"));
+  assert!(text.contains("Host: example.com:8080\r\n"));
+  assert!(!text.contains("http://example.com"));
+  // Pooling on by default → no Connection: close; 1.1 persistence is implicit
+  assert!(!text.to_ascii_lowercase().contains("connection:"));
+}
+
+#[test]
+fn build_request_sends_connection_close_when_pooling_disabled() {
+  let uri = Uri::parse("http://example.com/").unwrap();
+  let config = Config {
+    max_idle_per_host: 0,
+    ..Default::default()
+  };
+  let mut custom = Headers::new();
+  custom.insert("Connection", "keep-alive");
+  let bytes = build_request(&uri, Method::Get, "example.com", 80, &custom, None, &config).unwrap();
+  let text = String::from_utf8_lossy(&bytes);
+  assert!(text.contains("Connection: close\r\n"));
+  assert!(!text.contains("keep-alive"));
+}
+
+#[test]
+fn build_request_default_port_omits_port_in_host() {
+  let uri = Uri::parse("http://example.com/path").unwrap();
+  let bytes = build_request(
+    &uri,
+    Method::Get,
+    "example.com",
+    80,
+    &Headers::new(),
+    None,
+    &Config::default(),
+  )
+  .unwrap();
+  let text = String::from_utf8_lossy(&bytes);
+  assert!(text.contains("Host: example.com\r\n"));
+  assert!(!text.contains("Host: example.com:80"));
 }
