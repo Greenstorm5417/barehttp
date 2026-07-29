@@ -3,11 +3,11 @@
 #[path = "support/mod.rs"]
 mod support;
 
-use barehttp::HttpClient;
-use barehttp::config::Config;
 use barehttp::Error;
+use barehttp::HttpClient;
 #[cfg(feature = "gzip")]
 use barehttp::ParseError;
+use barehttp::config::Config;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

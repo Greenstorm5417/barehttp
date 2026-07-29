@@ -42,12 +42,13 @@ if [[ "$BRANCH" == "1" || "$BRANCH" == "true" ]]; then
 fi
 
 echo "==> llvm-cov nextest (collect; all-features)"
-cargo llvm-cov nextest \
+# Use NEXTEST_PROFILE: cargo-llvm-cov steals `--profile` (Cargo profile), and
+# args after `--` are test-binary args, not nextest options.
+NEXTEST_PROFILE="${NEXTEST_PROFILE:-ci}" cargo llvm-cov nextest \
   --locked \
   --all-features \
   --no-report \
-  "${BRANCH_ARGS[@]}" \
-  -- --profile ci
+  "${BRANCH_ARGS[@]}"
 
 echo "==> report LCOV"
 cargo llvm-cov report \
