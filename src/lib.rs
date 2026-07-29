@@ -70,14 +70,12 @@ pub use request_builder::ClientRequestBuilder;
 
 /// [`HttpClient`] with OS adapters (`HttpClient<OsBlockingSocket, OsDnsResolver>`).
 ///
-/// Documented ureq-like synonym. Prefer [`HttpClient`] in new code; this alias is
-/// stable and **not** deprecated.
+/// ureq-style synonym. Stable (not deprecated); prefer [`HttpClient`] in new code.
 pub type Agent = HttpClient<OsBlockingSocket, OsDnsResolver>;
 
 /// [`ClientRequestBuilder`] with OS adapters.
 ///
-/// Documented ureq-like synonym. Prefer [`ClientRequestBuilder`] in new code; this
-/// alias is stable and **not** deprecated.
+/// ureq-style synonym. Stable (not deprecated); prefer [`ClientRequestBuilder`] in new code.
 pub type RequestBuilder = ClientRequestBuilder<OsBlockingSocket, OsDnsResolver>;
 
 /// Default-OS [`HttpClient`] (type alias [`Agent`]).
@@ -181,8 +179,7 @@ pub fn patch(url: impl AsRef<str>) -> RequestBuilder {
 
 /// Client configuration ([`config::Config`], [`config::ConfigBuilder`]).
 ///
-/// Kept as a module (not flattened to the crate root) on purpose — see README
-/// “Module layout”.
+/// Kept as a module (not flattened to the crate root); see README “Module layout”.
 pub mod config;
 /// Request builder ([`ClientRequestBuilder`]).
 ///

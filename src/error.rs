@@ -2,20 +2,19 @@
 //!
 //! # Body size limits
 //!
-//! Wire / decompress paths may produce [`ParseError::BodyExceedsLimit`] while reading a
-//! buffered response. At the client boundary that variant is **lifted** to
-//! [`Error::BodyExceedsLimit`] (see [`From<ParseError> for Error`]) so callers match one
-//! top-level recovery path — never `Error::Parse(ParseError::BodyExceedsLimit(_))`, which
-//! would be Display-identical and easy to miss. Prefer matching `Error::BodyExceedsLimit`.
+//! Wire and decompress code may emit [`ParseError::BodyExceedsLimit`] while buffering a
+//! response. [`From<ParseError> for Error`] maps that variant to
+//! [`Error::BodyExceedsLimit`], so `Error::Parse` never carries it. Match
+//! [`Error::BodyExceedsLimit`] at the client boundary (a nested `Parse` form would have
+//! the same `Display` text).
 
 extern crate alloc;
 
-/// Errors from gzip / deflate / zstd-style content decoding.
+/// Errors from gzip/deflate content-coding decompression.
 ///
-/// Always available at the crate root: response parse can surface
-/// [`ParseError::Decompression`] even when the `gzip` feature (and
-/// [`crate::gzip`] helpers) is disabled — e.g. other codings or future paths.
-/// The [`crate::gzip`] module re-exports this same type when that feature is on.
+/// Always at the crate root: [`ParseError::Decompression`] can appear even when the
+/// `gzip` feature (and [`crate::gzip`] helpers) is off. With `gzip` enabled,
+/// [`crate::gzip`] re-exports this same type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DecompressError {
@@ -278,8 +277,8 @@ impl core::error::Error for InvalidRequest {}
 
 /// [`crate::Response::into_string`] failed; the full response is preserved for recovery.
 ///
-/// Implements [`From`] into [`Error`] as [`Error::Utf8Error`] (the UTF-8 cause only —
-/// use [`Self::into_response`] / [`Self::response`] when you still need status/headers).
+/// Implements [`From`] into [`Error`] as [`Error::Utf8Error`] (UTF-8 cause only).
+/// Use [`Self::into_response`] / [`Self::response`] when you still need status/headers.
 ///
 /// # Examples
 ///
@@ -370,7 +369,7 @@ impl core::error::Error for IntoStringError {
 /// # Ok::<(), Error>(())
 /// ```
 ///
-/// Body size limit (lifted out of [`ParseError`] — never nested under [`Error::Parse`]):
+/// Body size limit maps to [`Error::BodyExceedsLimit`], not [`Error::Parse`]:
 ///
 /// ```
 /// use barehttp::{Error, ParseError};
@@ -386,8 +385,8 @@ impl core::error::Error for IntoStringError {
 pub enum Error {
   /// Wire / framing parse failure.
   ///
-  /// Never carries [`ParseError::BodyExceedsLimit`]; that is lifted to
-  /// [`Error::BodyExceedsLimit`] via [`From`].
+  /// Does not carry [`ParseError::BodyExceedsLimit`]; [`From`] maps it to
+  /// [`Error::BodyExceedsLimit`].
   Parse(ParseError),
   /// DNS lookup failure.
   Dns(DnsError),

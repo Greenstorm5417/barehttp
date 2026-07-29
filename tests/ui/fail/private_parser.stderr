@@ -1,0 +1,13 @@
+error[E0603]: module `parser` is private
+ --> tests/ui/fail/private_parser.rs:3:21
+  |
+3 |   let _ = barehttp::parser::has_complete_headers(b"");
+  |                     ^^^^^^  -------------------- function `has_complete_headers` is not publicly re-exported
+  |                     |
+  |                     private module
+  |
+note: the module `parser` is defined here
+ --> src/lib.rs
+  |
+  | pub(crate) mod parser;
+  | ^^^^^^^^^^^^^^^^^^^^^

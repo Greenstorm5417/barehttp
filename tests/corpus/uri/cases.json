@@ -1,0 +1,10 @@
+[
+  {"file": "accept.txt", "line": 1, "expect": "accept", "origin": "hand", "intentional_diff": ""},
+  {"file": "accept.txt", "line": 2, "expect": "accept", "origin": "hand", "intentional_diff": ""},
+  {"file": "accept.txt", "line": 3, "expect": "accept", "origin": "hand", "intentional_diff": ""},
+  {"file": "accept.txt", "line": 4, "expect": "accept", "origin": "hand", "intentional_diff": ""},
+  {"file": "reject.txt", "line": 1, "expect": "reject", "error": "InvalidUri", "origin": "hand", "intentional_diff": ""},
+  {"file": "reject.txt", "line": 2, "expect": "reject", "error": "InvalidUri", "origin": "hand", "intentional_diff": "userinfo rejected"},
+  {"file": "reject.txt", "line": 3, "expect": "reject", "error": "InvalidUri", "origin": "hand", "intentional_diff": "spaces rejected"},
+  {"file": "reject.txt", "line": 4, "expect": "reject", "error": "InvalidUri", "origin": "hand", "intentional_diff": ""}
+]

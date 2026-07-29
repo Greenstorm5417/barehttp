@@ -1,7 +1,7 @@
 //! Header-section scanner (RFC 9112 §5). Obs-fold is rejected.
 //!
-//! Zero-copy: field names/values are `&[u8]` views into the input until
-//! [`materialize_headers`] (or [`parse_header_fields`]) builds owned [`Headers`].
+//! Field names and values are `&[u8]` views into the input until
+//! [`materialize_headers`] or [`parse_header_fields`] builds owned [`Headers`].
 
 use crate::error::ParseError;
 use crate::headers::Headers;
@@ -46,8 +46,7 @@ pub fn materialize_headers(refs: &[HeaderRef<'_>]) -> Headers {
 
 /// One-pass scan + materialize (buffered `Response::parse` / trailers).
 ///
-/// Avoids an intermediate [`HeaderRef`] `Vec` when owned [`Headers`] are required
-/// immediately.
+/// Builds owned [`Headers`] without an intermediate [`HeaderRef`] `Vec`.
 ///
 /// # Errors
 /// Malformed fields, obs-fold, or whitespace before the first field.

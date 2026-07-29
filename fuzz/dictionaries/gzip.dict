@@ -1,0 +1,10 @@
+# Gzip / zlib markers
+"\x1f\x8b"
+"\x08"
+"\x00"
+"\x78\x9c"
+"\x78\xda"
+"\x01"
+"\xff"
+"hello"
+"world"

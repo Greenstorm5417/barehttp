@@ -8,6 +8,26 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+fn read_ref(response: &str) -> (u16, Vec<u8>) {
+  let mut socket = MockSocket::with_response(response);
+  let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
+  let raw = conn.read_raw_response(true).expect("unfragmented");
+  (raw.status_code, raw.body_bytes.to_vec())
+}
+
+fn assert_matches_ref(
+  response: &str,
+  mut socket: MockSocket,
+) {
+  let (want_status, want_body) = read_ref(response);
+  let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
+  let raw = conn
+    .read_raw_response(true)
+    .unwrap_or_else(|e| panic!("fragmented read failed for split of {response:?}: {e:?}"));
+  assert_eq!(raw.status_code, want_status);
+  assert_eq!(raw.body_bytes.as_ref(), want_body.as_slice());
+}
+
 #[test]
 fn content_length_body_one_byte_reads() {
   let response = "HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nHello World";
@@ -91,4 +111,48 @@ fn large_chunked_stream_byte_at_a_time() {
     .expect("fragmented chunked read");
   assert!(raw.body_bytes.starts_with(b"8\r\nchunk-00\r\n"));
   assert!(raw.body_bytes.ends_with(b"0\r\n\r\n"));
+}
+
+/// Two-fragment splits at every byte boundary for tiny fixtures (< 80 bytes).
+#[test]
+fn exhaustive_two_fragment_splits_match_reference() {
+  let fixtures: &[&str] = &[
+    "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nping",
+    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nping\r\n0\r\n\r\n",
+    "HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok",
+  ];
+  for response in fixtures {
+    assert!(
+      response.len() < 80,
+      "fixture too large for exhaustive split: {}",
+      response.len()
+    );
+    for i in 1..response.len() {
+      let socket = MockSocket::with_read_sizes(response.as_bytes(), &[i]);
+      assert_matches_ref(response, socket);
+    }
+  }
+}
+
+/// Small three-fragment splits (i < j) for the smallest CL fixture.
+#[test]
+fn exhaustive_three_fragment_splits_match_reference() {
+  let response = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nxyz";
+  assert!(response.len() < 80);
+  for i in 1..response.len() {
+    for j in (i + 1)..response.len() {
+      let socket = MockSocket::with_read_sizes(response.as_bytes(), &[i, j - i]);
+      assert_matches_ref(response, socket);
+    }
+  }
+}
+
+#[test]
+fn max_read_one_matches_unfragmented_for_cl_and_chunked() {
+  for response in [
+    "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello",
+    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n",
+  ] {
+    assert_matches_ref(response, MockSocket::with_max_read(response, 1));
+  }
 }

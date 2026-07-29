@@ -1,0 +1,8 @@
+# cargo-fuzz / libFuzzer outputs (repo-root .gitignore also covers these)
+/target/
+/artifacts/
+/coverage/
+# Runtime corpus discoveries; keep seed_* under corpus/<target>/
+/corpus/**/*
+!/corpus/**/
+!/corpus/*/seed_*

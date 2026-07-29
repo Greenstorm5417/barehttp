@@ -471,7 +471,7 @@ impl Headers {
 
   /// Append to `Cookie` (`; `-joined), or insert if absent. No-op when `value` is empty.
   ///
-  /// Builder / client plumbing — not part of the general header-map API.
+  /// Internal builder/client helper; not a public header-map API.
   pub(crate) fn merge_cookie(
     &mut self,
     value: &str,

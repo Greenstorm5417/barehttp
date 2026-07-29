@@ -9,11 +9,19 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
 barehttp = { path = "..", features = ["gzip"] }
 
 [[bin]]
 name = "parse_response"
 path = "fuzz_targets/parse_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_response_structured"
+path = "fuzz_targets/parse_response_structured.rs"
 test = false
 doc = false
 bench = false

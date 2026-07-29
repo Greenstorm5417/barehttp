@@ -18,6 +18,11 @@ env:
   # Pinned so install-action cache keys stay stable across runs.
   NEXTEST_VERSION: "0.9.140"
   CARGO_FUZZ_VERSION: "0.13.2"
+  LLVM_COV_VERSION: "0.8.7"
+  CARGO_DENY_VERSION: "0.20.2"
+  FUZZ_MAX_TOTAL_TIME: "60"
+  # Coverage fail-under (% lines). Functions/regions: coverage_baseline.toml / CONTRIBUTING.md.
+  COVERAGE_FAIL_UNDER: "70"
 
 jobs:
   features:
@@ -141,17 +146,111 @@ jobs:
         with:
           workspaces: fuzz -> target
 
-      # install-action ships a musl-built cargo-fuzz binary; its default --target is
-      # therefore x86_64-unknown-linux-musl (CURRENT_PLATFORM of the binary). That
-      # conflicts with -Zsanitizer=address (static CRT) and needs a musl std that
-      # isn't installed. Pin the GNU host triple instead.
-      # Bounded runs: compile + exercise each harness; longer campaigns stay local.
+      - name: Cache fuzz corpora
+        uses: actions/cache@v5
+        with:
+          path: |
+            fuzz/corpus
+            fuzz/artifacts
+          key: fuzz-corpus-${{ runner.os }}-${{ hashFiles('fuzz/fuzz_targets/**', 'fuzz/Cargo.toml') }}
+          restore-keys: |
+            fuzz-corpus-${{ runner.os }}-
+
+      # install-action cargo-fuzz is musl-built; default --target is
+      # x86_64-unknown-linux-musl, which breaks -Zsanitizer=address. Pin GNU host.
+      # Bounded runs only; longer campaigns stay in release.
       - name: Fuzz targets
         run: |
-          for target in parse_response parse_uri inflate_gzip; do
-            cargo +nightly fuzz run --target x86_64-unknown-linux-gnu "$target" -- \
-              -max_total_time=60
-          done
+          mkdir -p fuzz/corpus fuzz/artifacts
+          T="${{ env.FUZZ_MAX_TOTAL_TIME }}"
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu parse_response -- \
+            -max_total_time="$T" -dict=fuzz/dictionaries/http.dict
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu parse_response_structured -- \
+            -max_total_time="$T" -dict=fuzz/dictionaries/http.dict
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu parse_uri -- \
+            -max_total_time="$T" -dict=fuzz/dictionaries/uri.dict
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu inflate_gzip -- \
+            -max_total_time="$T" -dict=fuzz/dictionaries/gzip.dict
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
+
+      - name: cargo deny check
+        run: cargo deny check advisories licenses bans
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@${{ env.LLVM_COV_VERSION }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+
+      - name: Coverage (LCOV + Cobertura + HTML)
+        run: bash scripts/coverage.sh
+
+      - name: Upload coverage artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: |
+            target/llvm-cov/lcov.info
+            target/llvm-cov/cobertura.xml
+            target/llvm-cov/html
+          if-no-files-found: error
+
+  ui:
+    name: API compile tests (trybuild)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ui
+
+      - name: trybuild / UI tests
+        run: cargo test --locked --test ui
 
   stable:
     name: Stable checks

@@ -1,0 +1,46 @@
+:80 {
+  encode gzip
+
+  handle /plain {
+    header Content-Type text/plain
+    respond "hello" 200
+  }
+
+  handle /chunked {
+    header Content-Type text/plain
+    # Caddy may length-frame short responses; body stays deterministic.
+    respond "hello" 200
+  }
+
+  handle /gzip {
+    header Content-Type text/plain
+    respond "hello-gzip" 200
+  }
+
+  handle /headers {
+    header Content-Type text/plain
+    header X-Interop-Server caddy
+    respond "ok" 200
+  }
+
+  handle /status/404 {
+    header Content-Type text/plain
+    respond "missing" 404
+  }
+
+  handle /close {
+    header Content-Type text/plain
+    header Connection close
+    respond "bye" 200
+  }
+
+  handle /http10 {
+    header Content-Type text/plain
+    respond "http10-ish" 200
+  }
+
+  handle {
+    root * /srv
+    file_server
+  }
+}

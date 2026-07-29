@@ -185,8 +185,8 @@ impl CookieStore {
   /// Cookie header value for `uri` (RFC 6265 path-length / creation-time sort).
   ///
   /// Empty when nothing matches, or when `uri` is not a usable absolute HTTP(S)
-  /// URI (unlike [`Self::store_response_cookies`], invalid URIs are not an error
-  /// here — callers typically already validated the request URL).
+  /// URI. Unlike [`Self::store_response_cookies`], invalid URIs return an empty
+  /// string (no [`ParseError::InvalidUri`]).
   /// Skips `Secure` cookies unless `uri` uses the `https` scheme (same rule as
   /// store-time rejection of `Secure` over cleartext).
   pub fn request_cookie_header(
@@ -329,7 +329,7 @@ impl Default for CookieStore {
 
 /// Alias for [`CookieStore`] (matches the `cookie-jar` feature / module name).
 ///
-/// Prefer [`CookieStore`] in new code; this alias is stable and **not** deprecated.
+/// Stable (not deprecated); prefer [`CookieStore`] in new code.
 pub type CookieJar = CookieStore;
 
 fn host_path_secure(uri: &str) -> Result<(String, String, bool), ParseError> {

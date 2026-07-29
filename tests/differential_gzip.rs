@@ -91,13 +91,12 @@ fn bomb_via_response_body_limit() {
   .into_bytes();
   msg.extend_from_slice(&gz);
 
-  // Response::parse uses a large default max; exercise parse_body path via full message
-  // by checking Content-Encoding path with a small limit through HttpClient is covered
-  // elsewhere — here assert parse succeeds with enough room then bomb with direct API.
+  // Default body max is large enough that parse succeeds; LimitExceeded via
+  // decompress_gzip below (HttpClient small-limit path covered elsewhere).
   let ok = Response::parse(&msg).unwrap();
   assert_eq!(ok.body().len(), plain.len());
 
-  // Body size limit is enforced on decompressed output (same path as Content-Encoding).
+  // Decompressed-output limit (same path as Content-Encoding).
   assert_eq!(decompress_gzip(&gz, 512), Err(DecompressError::LimitExceeded));
 }
 

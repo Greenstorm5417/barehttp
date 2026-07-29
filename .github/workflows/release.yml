@@ -1,0 +1,609 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: "Fuzz max_total_time seconds per target"
+        required: false
+        default: "300"
+  push:
+    tags: ["v*"]
+  pull_request:
+    branches: [release, "release/**"]
+
+# Never cancel tag/release runs (stale PR concurrency must not interrupt a cut).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  NEXTEST_VERSION: "0.9.140"
+  CARGO_FUZZ_VERSION: "0.13.2"
+  LLVM_COV_VERSION: "0.8.7"
+  CARGO_DENY_VERSION: "0.20.2"
+  CARGO_SEMVER_CHECKS_VERSION: "0.49.0"
+  FUZZ_MAX_TOTAL_TIME: ${{ github.event.inputs.fuzz_seconds || '300' }}
+  COVERAGE_FAIL_UNDER: "70"
+  BAREHTTP_INTEROP: "1"
+
+jobs:
+  features:
+    name: Features (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: none
+            args: --no-default-features
+          - name: cookie-jar
+            args: --no-default-features --features cookie-jar
+          - name: gzip
+            args: --no-default-features --features gzip
+          - name: zstd
+            args: --no-default-features --features zstd
+          - name: cookie-gzip
+            args: --no-default-features --features cookie-jar,gzip
+          - name: gzip-zstd
+            args: --no-default-features --features gzip,zstd
+          - name: all
+            args: --all-features
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-features-${{ matrix.name }}
+
+      - name: Check
+        run: cargo check --locked ${{ matrix.args }}
+
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked --all-targets ${{ matrix.args }} -- -D warnings
+
+      - name: Test
+        if: ${{ !cancelled() }}
+        run: cargo nextest run --profile ci --locked ${{ matrix.args }}
+
+  embedded:
+    name: Embedded
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabi
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: |
+          cargo check --locked --target thumbv7em-none-eabi --no-default-features
+          cargo check --locked --target thumbv7em-none-eabi --features gzip
+
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install nightly + miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Miri (sync + focused)
+        env:
+          MIRIFLAGS: -Zmiri-strict-provenance
+        run: |
+          cargo miri setup
+          cargo miri test --lib sync::
+          cargo miri test --lib --features gzip gzip::
+          cargo miri test --lib --features cookie-jar cookie_jar::
+
+  fuzz:
+    name: Fuzz (long)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz@${{ env.CARGO_FUZZ_VERSION }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+
+      - name: Cache fuzz corpora
+        uses: actions/cache@v5
+        with:
+          path: |
+            fuzz/corpus
+            fuzz/artifacts
+          key: fuzz-corpus-release-${{ runner.os }}-${{ hashFiles('fuzz/fuzz_targets/**', 'fuzz/Cargo.toml') }}
+          restore-keys: |
+            fuzz-corpus-release-${{ runner.os }}-
+            fuzz-corpus-${{ runner.os }}-
+
+      - name: Fuzz targets
+        run: |
+          mkdir -p fuzz/corpus fuzz/artifacts
+          T="${{ env.FUZZ_MAX_TOTAL_TIME }}"
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu parse_response -- \
+            -max_total_time="$T" -dict=fuzz/dictionaries/http.dict
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu parse_response_structured -- \
+            -max_total_time="$T" -dict=fuzz/dictionaries/http.dict
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu parse_uri -- \
+            -max_total_time="$T" -dict=fuzz/dictionaries/uri.dict
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu inflate_gzip -- \
+            -max_total_time="$T" -dict=fuzz/dictionaries/gzip.dict
+
+      - name: Upload fuzz crashes (if any)
+        if: ${{ failure() || hashFiles('fuzz/artifacts/**/*') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ github.sha }}
+          path: fuzz/artifacts
+          if-no-files-found: ignore
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
+
+      - name: cargo deny check
+        run: cargo deny check advisories licenses bans
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@${{ env.LLVM_COV_VERSION }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-coverage
+
+      - name: Coverage (LCOV + Cobertura + HTML)
+        run: bash scripts/coverage.sh
+
+      - name: Upload coverage artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-coverage-${{ github.sha }}
+          path: |
+            target/llvm-cov/lcov.info
+            target/llvm-cov/cobertura.xml
+            target/llvm-cov/html
+          if-no-files-found: error
+
+  ui:
+    name: API compile tests (trybuild)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-ui
+
+      - name: trybuild / UI tests
+        run: cargo test --locked --test ui
+
+  stable:
+    name: Stable checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Docs
+        if: ${{ !cancelled() }}
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --no-deps --all-features
+
+      - name: Examples
+        if: ${{ !cancelled() }}
+        run: cargo build --locked --examples --all-features
+
+      - name: Lockfile
+        if: ${{ !cancelled() }}
+        run: cargo metadata --format-version 1 --locked >/dev/null
+
+      - name: Available dependency updates
+        if: ${{ !cancelled() }}
+        run: cargo update --dry-run
+
+      - name: Dependency tree
+        if: ${{ !cancelled() }}
+        run: cargo tree -e features --all-features
+
+  package:
+    name: Package + packaged tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-package
+
+      - name: cargo package --locked
+        run: cargo package --locked --no-verify
+
+      - name: Test from packaged crate
+        run: |
+          set -euo pipefail
+          CRATE="$(find target/package -maxdepth 1 -type f -name 'barehttp-*.crate' | head -n1)"
+          test -n "$CRATE"
+          # `--no-verify` may not leave an extracted tree; unpack the .crate explicitly.
+          find target/package -maxdepth 1 -type d -name 'barehttp-*' -exec rm -rf {} +
+          tar -xzf "$CRATE" -C target/package
+          PKG="$(find target/package -maxdepth 1 -type d -name 'barehttp-*' | head -n1)"
+          test -n "$PKG"
+          # Packaged tree has its own lockfile generation; exercise lib + integration.
+          (
+            cd "$PKG"
+            cargo test --all-features --lib
+            cargo nextest run --profile ci --all-features --tests
+          )
+
+  semver-checks:
+    name: cargo-semver-checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks@${{ env.CARGO_SEMVER_CHECKS_VERSION }}
+
+      - name: Semver checks
+        run: |
+          set -euo pipefail
+          # First crates.io release (0.1.0): no published baseline. Prefer previous
+          # git tag; if none, document and skip rather than fail the cut.
+          if cargo semver-checks check-release 2>/tmp/semver-err.txt; then
+            echo "semver-checks vs crates.io baseline: ok"
+            exit 0
+          fi
+          if grep -qiE 'not found on crates.io|no.*baseline|does not exist|failed to get.*crate' /tmp/semver-err.txt; then
+            PREV_TAG="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
+            if [[ -n "${PREV_TAG}" ]]; then
+              echo "No crates.io baseline; using --baseline-rev ${PREV_TAG}"
+              cargo semver-checks check-release --baseline-rev "${PREV_TAG}"
+            else
+              echo "::notice::First release / no prior tag or crates.io version; skipping cargo-semver-checks"
+              cat /tmp/semver-err.txt || true
+            fi
+          else
+            cat /tmp/semver-err.txt
+            exit 1
+          fi
+
+  benches:
+    name: Benches (full)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Install gungraun-runner
+        uses: taiki-e/install-action@v2
+        with:
+          tool: gungraun-runner@0.19.4
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache Gungraun baselines
+        uses: actions/cache@v5
+        with:
+          path: |
+            target/gungraun
+            .gungraun
+          key: gungraun-release-${{ runner.os }}-${{ hashFiles('benches/**', 'src/**', 'Cargo.lock') }}
+          restore-keys: |
+            gungraun-release-${{ runner.os }}-
+            gungraun-${{ runner.os }}-
+
+      - name: Compile all benches
+        run: cargo bench --locked --no-run --all-features
+
+      - name: Callgrind
+        run: cargo bench --locked --bench gungraun_callgrind --all-features
+
+      - name: Cachegrind
+        run: cargo bench --locked --bench gungraun_cachegrind --all-features
+
+      - name: Criterion (longer)
+        run: |
+          cargo bench --locked --bench criterion_hot_paths --all-features -- \
+            --warm-up-time 1 --measurement-time 3 --sample-size 50
+          cargo bench --locked --bench criterion_e2e --all-features -- \
+            --warm-up-time 1 --measurement-time 3 --sample-size 50
+
+      - name: Adversarial / complexity benches
+        run: |
+          if cargo bench --locked --no-run --all-features --bench criterion_adversarial 2>/dev/null; then
+            cargo bench --locked --bench criterion_adversarial --all-features -- \
+              --warm-up-time 1 --measurement-time 3 --sample-size 50
+          else
+            echo "No criterion_adversarial bench target; skipping"
+          fi
+
+      - name: dhat allocation
+        env:
+          BAREHTTP_DHAT_ITERS: "50"
+        run: |
+          cargo bench --locked --bench dhat_parser --all-features
+          cargo bench --locked --bench dhat_gzip --features gzip
+          cargo bench --locked --bench dhat_e2e --all-features
+
+      - name: Upload bench reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-benches-${{ github.sha }}
+          path: |
+            target/criterion
+            target/gungraun
+            dhat-heap.json
+            dhat-ad-hoc.json
+          if-no-files-found: ignore
+
+  msrv:
+    name: MSRV (1.97)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.97
+        uses: dtolnay/rust-toolchain@1.97
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check (all features)
+        run: cargo check --locked --all-features
+
+      - name: Nextest (all features)
+        run: cargo nextest run --profile ci --locked --all-features
+
+  os-matrix:
+    name: OS (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Nextest (default / none)
+        run: cargo nextest run --profile ci --locked --no-default-features
+
+      - name: Nextest (all features)
+        run: cargo nextest run --profile ci --locked --all-features
+
+  sanitizers:
+    name: Sanitizers (${{ matrix.san }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - san: address
+            flags: -Zsanitizer=address
+          - san: leak
+            flags: -Zsanitizer=leak
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install nightly + rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: sanitizer-${{ matrix.san }}
+
+      # ASan / LSan on lib tests. MSan needs a sanitized libc + careful FFI and is
+      # not practical for OS socket/DNS bindings here (see CONTRIBUTING.md).
+      - name: Test under sanitizer
+        env:
+          RUSTFLAGS: "${{ matrix.flags }} -C force-frame-pointers=yes"
+          RUSTDOCFLAGS: "${{ matrix.flags }}"
+        run: |
+          cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
+            --lib --all-features
+
+  kani:
+    name: Kani
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Kani
+        uses: model-checking/kani-github-action@v1
+
+      - name: Kani proofs
+        run: cargo kani --all-features
+
+  interop:
+    name: Docker interop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-interop
+
+      - name: Run interop suite
+        run: bash scripts/run-interop.sh
+
+      - name: Upload interop logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: interop-logs-${{ github.sha }}
+          path: |
+            target/interop-logs
+            /tmp/barehttp-interop-*.log
+          if-no-files-found: ignore

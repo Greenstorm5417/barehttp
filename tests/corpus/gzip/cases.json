@@ -1,0 +1,6 @@
+[
+  {"file": "../../../src/gzip/fixtures/gzip_hello.bin", "plain": "../../../src/gzip/fixtures/plain_hello.bin", "expect": "accept", "origin": "gzip-fixtures"},
+  {"file": "../../../src/gzip/fixtures/gzip_empty.bin", "plain": "../../../src/gzip/fixtures/plain_empty.bin", "expect": "accept", "origin": "gzip-fixtures"},
+  {"file": "../../../src/gzip/fixtures/gzip_hi.bin", "plain": "../../../src/gzip/fixtures/plain_hi.bin", "expect": "accept", "origin": "gzip-fixtures"},
+  {"file": "reject_invalid.bin", "expect": "reject", "error": "InvalidInput", "origin": "hand"}
+]

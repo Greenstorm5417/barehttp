@@ -477,3 +477,44 @@ impl<'a> core::convert::TryFrom<&'a str> for Uri<'a> {
     Self::parse(s)
   }
 }
+
+#[cfg(kani)]
+mod kani_uri_proofs {
+  use super::{Host, Uri};
+
+  /// Reg-name host bytes are preserved as-is (pooling lowercases separately).
+  #[kani::proof]
+  fn reg_name_preserves_case() {
+    let uri = Uri::parse("http://Example.COM/path").unwrap();
+    match uri.authority().unwrap().host() {
+      Host::RegName(name) => assert_eq!(*name, "Example.COM"),
+      Host::IpAddr(_) => panic!("expected RegName"),
+    }
+  }
+
+  /// Scheme case does not change default ports (eq_ignore_ascii_case).
+  #[kani::proof]
+  fn https_default_port_case_insensitive() {
+    assert_eq!(
+      Uri::parse("HTTPS://example.com/")
+        .unwrap()
+        .port_or_default(),
+      443
+    );
+    assert_eq!(Uri::parse("Http://example.com/").unwrap().port_or_default(), 80);
+  }
+
+  /// ASCII lowercase idempotence for a bounded host label (pool key invariant).
+  #[kani::proof]
+  fn ascii_lowercase_idempotent_label() {
+    let mut raw = [0u8; 4];
+    for b in &mut raw {
+      *b = kani::any();
+      kani::assume(b.is_ascii_alphanumeric());
+    }
+    let s = core::str::from_utf8(&raw).unwrap();
+    let once = s.to_ascii_lowercase();
+    let twice = once.to_ascii_lowercase();
+    assert_eq!(once, twice);
+  }
+}

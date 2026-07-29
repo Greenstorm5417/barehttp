@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Integration test `tests/api_shape.rs` locking post-audit public API contracts (trait impls, cookie-jar signatures, error lifting, response UTF-8 helpers, primary naming).
+- Differential HTTP vs httparse (`tests/differential_http.rs`), panic-freedom / alloc-failure audit tests, trybuild UI (`tests/ui`), structured fuzz target + dictionaries/corpora, Kani harnesses (`src/parser/kani_proofs.rs` + `cfg(kani)` modules), adversarial Criterion bench, semver checks (`scripts/semver-checks.sh`).
 - `Headers` owning [`IntoIterator`] (`HeaderIntoIter` → `(String, String)`), matching `&Headers` / `iter`.
 - Dependencies (`no_std` / `alloc`): `bytes` (`default-features = false`), `phf` (`default-features = false`, `macros`) for well-known header name → id maps, `compact_str` (SSO header name/value storage), `hashbrown` (header side-index + pool). Gzip trailers stay `from_le_bytes` / `from_be_bytes` (no `zerocopy`).
 - `WellKnownHeader` + `well_known_header` / `well_known_header_bytes` (ASCII-lower + PHF). `Headers::CONTENT_ENCODING`.
@@ -21,23 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Breaking:** `HttpClient::cookie_store` returns `&CookieStore` (not `&Arc<CookieStore>`). Call sites that only called methods on the store need no change (`Deref` already worked); callers that needed an `Arc` should clone the client or wrap the store themselves.
+- `HttpClient::cookie_store` returns `&CookieStore` (not `&Arc<CookieStore>`). Call sites that only called methods on the store need no change (`Deref` already worked); callers that needed an `Arc` should clone the client or wrap the store themselves.
 - `Response` derives `Hash` (body + headers + trailers; matches `PartialEq`).
 - Connection pool uses `hashbrown::HashMap` (foldhash) instead of `BTreeMap`. Idle entries carry reusable receive `BytesMut` + read scratch; connections reuse those buffers across reads and pooled hops (public `Response` lifetime unchanged).
-- **Breaking:** `Response::into_bytes()` returns `Vec<u8>` (not `bytes::Bytes`). Primary body accessor is `body()`; `as_bytes()` remains as a **deprecated** alias. `bytes` stays an internal dependency only — no public re-export.
-- **Breaking:** `CookieStore::store_response_cookies` returns `Result<(), ParseError>` (`InvalidUri` on unusable URI). Malformed individual `Set-Cookie` values still skipped. `request_cookie_header` still returns `""` for invalid URIs (documented).
-- API naming polish (compat kept):
+- `Response::into_bytes()` returns `Vec<u8>` (not `bytes::Bytes`). Primary body accessor is `body()`; `as_bytes()` remains as a **deprecated** alias. `bytes` stays an internal dependency with no public re-export.
+- `CookieStore::store_response_cookies` returns `Result<(), ParseError>` (`InvalidUri` on unusable URI). Malformed individual `Set-Cookie` values still skipped. `request_cookie_header` still returns `""` for invalid URIs (documented).
+- API naming (compatibility aliases kept):
   - Primaries: `HttpClient`, `ClientRequestBuilder`, `CookieStore`, `status_code`, `body`.
-  - Type aliases `Agent` / `RequestBuilder` / `CookieJar` stay **undeprecated** ureq-like synonyms.
-  - Method aliases `Response::status` / `Response::as_bytes`: `#[deprecated]` (no longer merely `doc(hidden)`).
+  - Type aliases `Agent` / `RequestBuilder` / `CookieJar` stay undeprecated ureq-like synonyms.
+  - Method aliases `Response::status` / `Response::as_bytes`: `#[deprecated]` (previously `doc(hidden)` only).
   - `Uri::query` public accessor: removed inappropriate `#[allow(dead_code)]`.
   - `#[must_use]` on `ClientRequestBuilder` chain methods (config builder already had them).
-- Module half-nesting (`config` / `request_builder` / feature modules vs root re-exports) documented as intentional (WAIVE), not flattened.
-- **Breaking:** `Response::trailers()` returns `&Headers` (not `&[(String, String)]`). Chunked trailers use the same map type as response headers.
-- **Breaking:** `Method` adds `Options` / `Connect` / `Trace` / `Extension` (RFC 9110 tokens via opaque `ExtensionMethod`). No longer `Copy` (extension storage). `Method::new(impl AsRef<str>)`; `ParseMethodError::Unknown` → `InvalidToken` (invalid `tchar` only; unknown tokens become `Extension`).
+- Module half-nesting (`config` / `request_builder` / feature modules vs root re-exports) documented as intentional (WAIVE).
+- `Response::trailers()` returns `&Headers` (not `&[(String, String)]`). Chunked trailers use the same map type as response headers.
+- `Method` adds `Options` / `Connect` / `Trace` / `Extension` (RFC 9110 tokens via opaque `ExtensionMethod`). No longer `Copy` (extension storage). `Method::new(impl AsRef<str>)`; `ParseMethodError::Unknown` → `InvalidToken` (invalid `tchar` only; unknown tokens become `Extension`).
 - UTF-8 body helpers: `to_text` → `Utf8Error`, `into_string` → `IntoStringError` (response recoverable); both `From` into `Error::Utf8Error`. `IntoStringError` derives `Clone`/`PartialEq`/`Eq`. `DecompressError` docs: always at crate root; `gzip` module is feature-gated.
-- **Breaking:** `Headers::from_vec` / `FromIterator` / `Extend` accept `AsRef<str>` pairs (not only `(String, String)`). `into_vec` still returns `Vec<(String, String)>` as the owned export.
-- **Breaking:** `Headers::merge_cookie` is `pub(crate)` (builder/client plumbing).
+- `Headers::from_vec` / `FromIterator` / `Extend` accept `AsRef<str>` pairs (previously `(String, String)` only). `into_vec` still returns `Vec<(String, String)>` as the owned export.
+- `Headers::merge_cookie` is `pub(crate)` (builder/client plumbing).
 - `Headers` implements `Hash` (fields only; side-index is a cache, matching `PartialEq`/`Eq`).
 - `well_known_header_bytes` re-exported at the crate root alongside `well_known_header`.
 - Public `Headers` docs speak `&str` / `String` only (internal SSO storage not part of the narrative).
@@ -57,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
-- Optional public-API drift check: `cargo public-api` / `cargo-semver-checks` are **not** required in CI; install locally if useful (see CONTRIBUTING).
+- Optional public-API drift check: `cargo public-api` / `cargo-semver-checks` are not required in CI; install locally if useful (see CONTRIBUTING).
 
 ## [0.1.0] - 2026-07-29
 

@@ -1,0 +1,5 @@
+error[E0616]: field `token` of struct `ExtensionMethod` is private
+ --> tests/ui/fail/private_extension_field.rs:7:16
+  |
+7 |     let _ = em.token;
+  |                ^^^^^ private field

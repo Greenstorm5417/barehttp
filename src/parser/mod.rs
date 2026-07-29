@@ -15,6 +15,9 @@ mod wire_request;
 #[cfg(test)]
 pub mod tests;
 
+#[cfg(kani)]
+mod kani_proofs;
+
 /// Buffer already contains a complete header section (`\r\n\r\n` or LF-only `\n\n`).
 #[inline]
 pub fn has_complete_headers(data: &[u8]) -> bool {

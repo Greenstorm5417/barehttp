@@ -34,7 +34,7 @@ pub struct Connection<'a, S> {
   reusable: bool,
   /// Response assemble buffer. Reused across reads on this connection when still
   /// uniquely owned (e.g. HEAD / empty body). After `freeze` into a body `Bytes`,
-  /// the remnant may be shared — the next extend then reallocates (safe).
+  /// the remnant may be shared; the next extend then reallocates (safe).
   buf: BytesMut,
   /// Socket `read` scratch; never frozen into `Bytes`, always reusable.
   scratch: Vec<u8>,
@@ -117,6 +117,8 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
     self.ensure_scratch(scratch_cap);
     // Start of a message: drop any leftover (should be empty on a reusable conn).
     self.buf.clear();
+    // Header growth is capped by `max_header_size` (see loop below). Prefetch a
+    // modest scratch capacity only. Never reserve the full max header budget up front.
     if self.buf.capacity() < scratch_cap {
       self
         .buf
@@ -130,13 +132,15 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         }
         let n = self.read_socket_scratch()?;
         if n == 0 {
-          break;
+          // Peer closed before a complete header section: Socket NotConnected / EOF.
+          // A partial status line surfaces as InvalidHttpVersion.
+          return Err(Error::Socket(SocketError::NotConnected));
         }
         if let Some(slice) = self.scratch.get(..n) {
           self.buf.extend_from_slice(slice);
         }
-        // Check after append even when this read completed headers (header section only —
-        // body bytes past `\r\n\r\n` do not count toward the limit).
+        // Check after append even when this read completed headers. Only the header
+        // section counts toward the limit; body bytes past `\r\n\r\n` do not.
         if headers_section_len(&self.buf).is_some_and(|hdr_len| hdr_len > max_header_size)
           || (!has_complete_headers(&self.buf) && self.buf.len() > max_header_size)
         {
@@ -263,12 +267,16 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         Ok(Bytes::new())
       },
       BodyReadStrategy::ContentLength(len) => {
+        // Fail fast before reserve: a huge advertised CL must not try to allocate
+        // `len` bytes. Cap is `max_body_size` (network-influenced). `Vec::reserve`
+        // may still abort on OOM for allowed sizes; we do not expose try_reserve
+        // errors in the public API (would need a new Error variant).
         if len > max_body {
           self.reusable = false;
           return Err(Error::BodyExceedsLimit(max_body));
         }
         if self.buf.len() > len {
-          // Extra bytes past CL are a framing desync — do not reuse the connection.
+          // Extra bytes past CL are a framing desync; mark non-reusable.
           self.reusable = false;
         }
         let bytes_needed = len.saturating_sub(self.buf.len().min(len));
@@ -277,6 +285,8 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         }
 
         if bytes_needed > 0 {
+          // Bounded by `max_body` check above (header buffer similarly capped by
+          // `max_header_size` in `read_raw_response`).
           self.buf.reserve(bytes_needed);
           self.ensure_scratch(bytes_needed.min(8192));
           let mut bytes_read = 0usize;
@@ -300,7 +310,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
       },
       BodyReadStrategy::Chunked => {
         // Stateful feed + cursor: each wire byte is framed once (O(n)), no full-buffer
-        // re-parse. Framing-only (`output: None`) — payload decode happens in the parser.
+        // re-parse. Framing-only (`output: None`); payload decode happens in the parser.
         if self.buf.len() > max_body {
           self.reusable = false;
           return Err(Error::BodyExceedsLimit(max_body));
@@ -476,7 +486,7 @@ fn apply_io_timeouts<S: BlockingSocket>(
 }
 
 fn duration_ms_u32(d: Option<Duration>) -> Option<u32> {
-  // Overflow must not become “no timeout” (None → 0 blocking): saturate to u32::MAX.
+  // Overflow must not become "no timeout" (None → 0 blocking): saturate to u32::MAX.
   Some(u32::try_from(d?.as_millis()).unwrap_or(u32::MAX))
 }
 

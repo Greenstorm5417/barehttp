@@ -1,0 +1,10 @@
+[package]
+name = "barehttp-interop-axum"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

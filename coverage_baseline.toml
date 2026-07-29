@@ -1,0 +1,12 @@
+# Coverage fail-under thresholds for scripts/coverage.sh and CI.
+# Raise deliberately as the suite grows; intentional gaps are noted in CONTRIBUTING.md.
+#
+# LLVM source-based coverage reports lines, functions, and regions.
+# Branch coverage is optional/unstable (`cargo llvm-cov --branch`); enabled when
+# COVERAGE_BRANCH=1. Branch fail-under is advisory until CI calibrates a floor.
+
+fail_under_lines = 70
+fail_under_functions = 60
+fail_under_regions = 55
+# Only applied when COVERAGE_BRANCH=1 (and llvm-cov supports it).
+fail_under_branches = 40

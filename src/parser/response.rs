@@ -57,7 +57,7 @@ impl Response {
 
   /// Status code (e.g. 200).
   ///
-  /// Primary name; [`Self::status`] is a deprecated compatibility alias.
+  /// [`Self::status`] is a deprecated alias.
   #[must_use]
   pub const fn status_code(&self) -> u16 {
     self.status_code
@@ -77,7 +77,7 @@ impl Response {
 
   /// Response body bytes.
   ///
-  /// Primary name; [`Self::as_bytes`] is a deprecated compatibility alias.
+  /// [`Self::as_bytes`] is a deprecated alias.
   #[must_use]
   pub fn body(&self) -> &[u8] {
     &self.body
@@ -85,7 +85,7 @@ impl Response {
 
   /// Trailer fields from chunked responses (RFC 9112 §7.1.2).
   ///
-  /// Same type as [`Self::headers`] — case-insensitive lookup, ordered iteration.
+  /// Same type as [`Self::headers`]: case-insensitive lookup, ordered iteration.
   #[must_use]
   pub const fn trailers(&self) -> &Headers {
     &self.trailers
@@ -216,7 +216,7 @@ impl Response {
     Ok((status, reason_to_string(reason_bytes), headers, version, remaining))
   }
 
-  /// Zero-copy status line + header scan (no name/value `String`s yet).
+  /// Status line + header scan as borrowed views (no name/value `String`s yet).
   ///
   /// # Errors
   /// [`ParseError`] when the status line or header section is illegal.
@@ -356,7 +356,9 @@ impl Response {
   }
 
   /// Owned-buffer variant of [`Self::parse_body_from_bytes`].
-  /// Skips a copy for `Content-Length` / until-close bodies the transport already holds.
+  ///
+  /// For `Content-Length` and until-close bodies already held by the transport,
+  /// returns that buffer with no copy.
   ///
   /// # Errors
   /// [`ParseError`] when framing is illegal or the body cannot be decoded / decompressed.
@@ -413,11 +415,9 @@ impl Response {
 
   /// Body as UTF-8 text (borrowed).
   ///
-  /// Prefer this over [`Self::into_string`] when you still need status/headers after
-  /// a UTF-8 check — failure does not consume `self`.
-  ///
-  /// Returns [`core::str::Utf8Error`] (not [`crate::Error`]); that type converts with
-  /// [`From`] / `?` into [`crate::Error::Utf8Error`] when desired.
+  /// Leaves `self` intact on failure, so status and headers stay available.
+  /// Error type is [`core::str::Utf8Error`]; it converts via [`From`] / `?` into
+  /// [`crate::Error::Utf8Error`].
   ///
   /// # Errors
   /// [`core::str::Utf8Error`] if the body is not valid UTF-8.
@@ -427,12 +427,12 @@ impl Response {
 
   /// Consume the response; return the body as a UTF-8 [`String`].
   ///
-  /// On failure, [`IntoStringError`] preserves the full [`Response`] (status, headers,
-  /// body) so callers can recover without losing the message. That type also
-  /// implements [`From`] into [`crate::Error`] (UTF-8 cause only — recover first if needed).
+  /// Non-UTF-8 body: [`IntoStringError`] holds the original [`Response`]
+  /// (status, headers, body). Converting that error to [`crate::Error`] via
+  /// [`From`] drops the response; recover with [`IntoStringError::into_response`]
+  /// or [`IntoStringError::response`] first.
   ///
-  /// On success, converts the body to a [`String`] without copying when the
-  /// underlying buffer is uniquely owned.
+  /// Unique body buffer: success builds the [`String`] with no copy.
   ///
   /// # Errors
   /// [`IntoStringError`] if the body is not valid UTF-8.
@@ -463,8 +463,8 @@ impl Response {
 
   /// Consume the response; return body bytes as a [`Vec<u8>`].
   ///
-  /// Prefer [`Self::body`] when a borrowed slice is enough. Reclaims the
-  /// allocation without a copy when the internal buffer is uniquely owned.
+  /// For a borrowed view, use [`Self::body`]. Reclaims the allocation without a
+  /// copy when the internal buffer is uniquely owned.
   #[must_use]
   pub fn into_bytes(self) -> Vec<u8> {
     Vec::from(self.body)
@@ -890,5 +890,28 @@ mod response_helpers_tests {
     assert_eq!(resp.body(), b"hi");
     assert!(resp.header("content-encoding").is_none());
     assert!(resp.header("content-length").is_none());
+  }
+}
+
+#[cfg(kani)]
+mod kani_length_proofs {
+  use super::parse_decimal_usize;
+
+  #[kani::proof]
+  fn empty_digits_none() {
+    assert!(parse_decimal_usize(b"").is_none());
+  }
+
+  #[kani::proof]
+  fn small_decimal_ok() {
+    assert_eq!(parse_decimal_usize(b"42"), Some(42));
+  }
+
+  /// Overflowing digit strings return `None` (checked_mul/add); does not panic.
+  #[kani::proof]
+  fn overflow_digits_none() {
+    // More digits than fit in u64/usize on common targets.
+    let digits = b"99999999999999999999999999999999";
+    assert!(parse_decimal_usize(digits).is_none());
   }
 }

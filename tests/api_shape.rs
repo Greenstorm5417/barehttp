@@ -1,7 +1,7 @@
-//! Durable public-API shape locks for post-audit contracts.
+//! Public API shape locks (compile-time + light runtime).
 //!
 //! Compile-time checks use `assert_*` helpers (no `static_assertions` dep).
-//! Behavioral checks exercise the same signatures callers rely on.
+//! Runtime checks call the same signatures.
 //!
 //! Run with: `cargo test --workspace --all-features --test api_shape`
 
@@ -121,7 +121,7 @@ fn headers_owned_into_iter_yields_strings() {
 
 /// Signature lock: `request` / `request_with_config` accept `Option<&[u8]>` / `None::<&[u8]>`.
 ///
-/// Never executed — only referenced so rustc type-checks the body.
+/// Never executed; referenced so rustc type-checks the body.
 #[allow(dead_code)]
 fn api_request_accepts_option_slice(client: &HttpClient<OsBlockingSocket, OsDnsResolver>) {
   let headers = Headers::new();
@@ -191,7 +191,7 @@ fn response_to_text_and_into_string_error_shapes() {
 
   let bad = Response::parse(b"HTTP/1.1 201 Created\r\nContent-Length: 1\r\n\r\n\xff").expect("parse");
   let utf8_err = bad.to_text().expect_err("invalid utf8");
-  let _ = utf8_err; // `Result<&str, Utf8Error>` — not `Error` / `IntoStringError`
+  let _ = utf8_err; // Type is `Result<&str, Utf8Error>`.
 
   let bad = Response::parse(b"HTTP/1.1 201 Created\r\nContent-Length: 1\r\n\r\n\xff").expect("parse");
   let into_err: IntoStringError = bad.into_string().expect_err("into_string");

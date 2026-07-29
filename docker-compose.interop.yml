@@ -1,0 +1,104 @@
+# Docker interop servers for barehttp (release / nightly only).
+# Start: scripts/run-interop.sh
+# Images are pinned by tag; bump deliberately.
+
+name: barehttp-interop
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "18080:80"
+    volumes:
+      - ./tests/interop/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./tests/interop/static:/usr/share/nginx/html:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/plain"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  httpd:
+    image: httpd:2.4-alpine
+    ports:
+      - "18081:80"
+    volumes:
+      - ./tests/interop/apache/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
+      - ./tests/interop/static:/usr/local/apache2/htdocs:ro
+      - ./tests/interop/apache/cgi-bin:/usr/local/apache2/cgi-bin:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/plain"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  caddy:
+    image: caddy:2.8-alpine
+    ports:
+      - "18082:80"
+    volumes:
+      - ./tests/interop/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./tests/interop/static:/srv:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/plain"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  python:
+    image: python:3.12-alpine
+    ports:
+      - "18083:8080"
+    volumes:
+      - ./tests/interop/python/server.py:/app/server.py:ro
+    working_dir: /app
+    command: ["python", "/app/server.py"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/plain')"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  node:
+    image: node:22-alpine
+    ports:
+      - "18084:8080"
+    volumes:
+      - ./tests/interop/node/server.js:/app/server.js:ro
+    working_dir: /app
+    command: ["node", "/app/server.js"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/plain"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  axum:
+    build:
+      context: ./tests/interop/servers/axum
+      dockerfile: Dockerfile
+    image: barehttp-interop-axum:local
+    ports:
+      - "18085:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/plain"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
+
+  haproxy:
+    image: haproxy:2.9-alpine
+    ports:
+      - "18086:80"
+    volumes:
+      - ./tests/interop/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      nginx:
+        condition: service_healthy
+    # Image has no wget/curl; host readiness loop in scripts/run-interop.sh covers this.
+    healthcheck:
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      interval: 5s
+      timeout: 2s
+      retries: 12

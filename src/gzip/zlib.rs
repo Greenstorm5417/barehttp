@@ -10,7 +10,7 @@ const FDICT: u8 = 0x20;
 /// Adler-32 (RFC 1950) of `data`.
 ///
 /// Defers `% 65521` across chunks of at most `NMAX` bytes so the inner loop is
-/// just two adds (zlib / RFC 1950 sample algorithm).
+/// only two adds (zlib / RFC 1950 sample algorithm).
 #[allow(clippy::integer_division)] // Adler-32 uses mod 65521
 fn adler32(data: &[u8]) -> u32 {
   const MOD: u32 = 65_521;

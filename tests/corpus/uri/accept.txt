@@ -1,0 +1,4 @@
+http://example.com/
+https://example.com:8443/path?q=1
+http://127.0.0.1/
+http://[::1]/

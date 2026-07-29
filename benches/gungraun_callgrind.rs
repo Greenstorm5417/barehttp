@@ -1,10 +1,10 @@
 //! Gungraun Callgrind: instruction / branch / call-count regression (deterministic).
 //!
 //! Requires `valgrind` and `gungraun-runner` matching the `gungraun` crate version.
-//! Does not enable Gungraun DHAT — allocation metrics use the `dhat_*` benches.
+//! Allocation metrics: `dhat_*` benches.
 //!
-//! Soft limits (+5% Ir, +10% EstimatedCycles vs previous/baseline) fail the run on
-//! regression — used by CI (`benches` workflow job).
+//! Soft limits (+5% Ir, +10% EstimatedCycles vs previous/baseline) fail CI
+//! (`benches` workflow job) on regression.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::must_use_candidate)]
 
 use barehttp::{Headers, Response, Uri};

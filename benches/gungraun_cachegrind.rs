@@ -2,7 +2,7 @@
 //!
 //! Uses Cachegrind client requests so only the measured region is instrumented.
 //! Requires `valgrind` and `gungraun-runner` matching the `gungraun` crate version.
-//! Allocation metrics: use `dhat_*` benches (not Gungraun DHAT).
+//! Allocation metrics: `dhat_*` benches.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::must_use_candidate)]
 
 use barehttp::Response;

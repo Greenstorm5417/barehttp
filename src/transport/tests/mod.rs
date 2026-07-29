@@ -6,8 +6,11 @@
 #![allow(clippy::shadow_reuse)]
 #![allow(clippy::shadow_same)]
 mod mock_socket;
+mod scripted_socket;
 mod test_connection;
 mod test_connector;
+mod test_fault_injection;
 mod test_fragmentation;
 mod test_limits;
+mod test_partial_writes;
 mod test_pool;

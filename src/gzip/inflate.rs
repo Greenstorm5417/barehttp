@@ -84,7 +84,7 @@ fn inflate_stored(
   bits.copy_aligned_bytes(out, usize::from(len), max_out)
 }
 
-/// Fixed Huffman block — static tables, no enum dispatch on every symbol.
+/// Fixed Huffman block: static tables, no enum dispatch on every symbol.
 fn inflate_fixed(
   bits: &mut BitReader<'_>,
   out: &mut Vec<u8>,

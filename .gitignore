@@ -13,5 +13,31 @@ update_readme.exe
 dhat-heap.json
 dhat-ad-hoc.json
 
+# Coverage (scripts/coverage.sh / cargo-llvm-cov)
+/target/llvm-cov/
+/lcov.info
+/cobertura.xml
+/coverage/
+*.profraw
+*.profdata
+**/default.profraw
+/default_*.profraw
+
+# Docker interop logs
+/target/interop-logs/
+/tmp/barehttp-interop-*.log
+
+# Fuzz (cargo-fuzz / libFuzzer / AFL) — keep intentional seed_* corpora tracked
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/coverage/
+/fuzz/corpus/**/*
+!/fuzz/corpus/**/
+!/fuzz/corpus/*/seed_*
+crash-*
+leak-*
+timeout-*
+oom-*
+
 # Reference clone only — do not commit
 ureq/

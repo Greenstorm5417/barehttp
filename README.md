@@ -28,7 +28,7 @@ Primary names:
 | Cookie store (`cookie-jar`) | [`cookie_jar::CookieStore`] | [`cookie_jar::CookieJar`] |
 | Status / body | [`Response::status_code`], [`Response::body`] | deprecated [`Response::status`] / [`Response::as_bytes`] |
 
-[`Agent`] / [`RequestBuilder`] / [`cookie_jar::CookieJar`] are documented ureq-like synonyms and are **not** deprecated. Prefer the primary names in new code. README and examples use primaries only.
+[`Agent`] / [`RequestBuilder`] / [`cookie_jar::CookieJar`] are documented ureq-like synonyms and are not deprecated. Prefer the primary names in new code. README and examples use primaries only.
 
 [`agent`] builds a default-OS [`HttpClient`]. Free functions ([`get`], [`post`], …) return a builder; finish with [`ClientRequestBuilder::call`] or [`ClientRequestBuilder::send`]:
 
@@ -45,8 +45,7 @@ let response = barehttp::post("http://example.com/api").send(b"{}")?;
 
 Hot types live at the crate root (`HttpClient`, `Response`, `Error`, `Headers`, …).
 Optional / larger surfaces stay in modules: [`config`], [`request_builder`], and
-(feature-gated) [`cookie_jar`] / [`gzip`]. That half-nesting is intentional — not a
-half-finished re-export pass.
+(feature-gated) [`cookie_jar`] / [`gzip`]. The half-nesting is intentional.
 
 ## Intentional limits
 
@@ -60,7 +59,7 @@ half-finished re-export pass.
 - Connection pooling (`Config::max_idle_per_host` default 3; `0` disables; `max_idle_age` default 15s)
 - Response body size limit (`Config::max_response_body_size`, default ~10 MiB)
 - Optional Cargo features: `gzip` exposes `barehttp::gzip` (hand-rolled RFC 1951/1952); `zstd` is Accept-Encoding + decode only; `cookie-jar` gates the cookie module
-- Runtime deps (always, **not** in the public API): `bytes` (internal body / wire buffers), `phf` (well-known header name map), `compact_str` (SSO header strings), `hashbrown` (header side-index / pool). Platform: `libc` / `windows-sys`.
+- Runtime deps (always on, kept out of the public API): `bytes` (internal body / wire buffers), `phf` (well-known header name map), `compact_str` (SSO header strings), `hashbrown` (header side-index / pool). Platform: `libc` / `windows-sys`.
 - Request builder: `.form` / `.body` then `.call()`, or `.send(bytes)`; per-request `.timeout_read` / `.timeout_write` / `.timeout_connect`
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.

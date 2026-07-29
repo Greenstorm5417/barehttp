@@ -13,6 +13,8 @@ pub struct MockSocket {
   pub max_write: usize,
   /// Cap bytes returned per `read` call (simulates fragmented TCP).
   pub max_read: usize,
+  /// Optional per-read size queue (front = next read). Empty → use `max_read`.
+  pub read_sizes: Vec<usize>,
   pub connected_addr: Option<String>,
   /// Hostname passed to [`BlockingSocket::connect`] (SNI).
   pub connected_host: Option<String>,
@@ -32,6 +34,7 @@ impl MockSocket {
       written: Vec::new(),
       max_write: usize::MAX,
       max_read: usize::MAX,
+      read_sizes: Vec::new(),
       connected_addr: None,
       connected_host: None,
       read_timeout: None,
@@ -39,6 +42,19 @@ impl MockSocket {
       connect_timeout: None,
       should_fail_connect: false,
       fail_connects_remaining: 0,
+    }
+  }
+
+  /// Deliver `data` in successive reads of the given sizes (remainder in one final read).
+  #[allow(dead_code)]
+  pub fn with_read_sizes(
+    data: &[u8],
+    sizes: &[usize],
+  ) -> Self {
+    Self {
+      read_data: data.to_vec(),
+      read_sizes: sizes.to_vec(),
+      ..Self::empty()
     }
   }
 
@@ -115,10 +131,23 @@ impl BlockingSocket for MockSocket {
     if self.read_pos >= self.read_data.len() {
       return Ok(0);
     }
+    let plan_limit = if self.read_sizes.is_empty() {
+      self.max_read
+    } else {
+      self.read_sizes[0]
+    };
     let remaining = &self.read_data[self.read_pos..];
-    let to_read = remaining.len().min(buf.len()).min(self.max_read);
+    let to_read = remaining.len().min(buf.len()).min(plan_limit);
     buf[..to_read].copy_from_slice(&remaining[..to_read]);
     self.read_pos += to_read;
+    if !self.read_sizes.is_empty() {
+      let left = self.read_sizes[0].saturating_sub(to_read);
+      if left == 0 {
+        let _ = self.read_sizes.remove(0);
+      } else {
+        self.read_sizes[0] = left;
+      }
+    }
     Ok(to_read)
   }
 

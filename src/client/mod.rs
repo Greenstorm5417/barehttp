@@ -170,8 +170,8 @@ where
 
   /// Shared cookie store (`cookie-jar` feature).
   ///
-  /// Returns a borrow of the store (not [`Arc`]) so callers do not depend on the
-  /// internal shared-ownership shape. Clone the client (or call again) to share.
+  /// Borrow of the store (not [`Arc`]); clone the client (or call again) to share
+  /// without depending on the internal shared-ownership shape.
   #[cfg(feature = "cookie-jar")]
   #[must_use]
   pub fn cookie_store(&self) -> &CookieStore {
@@ -266,7 +266,7 @@ where
       #[cfg(not(feature = "cookie-jar"))]
       let headers_to_use = &current_headers;
 
-      let raw = execute(
+      let (raw, to_pool) = execute(
         &self.pool,
         self.dns.as_ref(),
         config,
@@ -286,7 +286,11 @@ where
         }
       }
 
+      // Only idle-pool after body decode succeeds (gzip/limits/etc.).
       let response = raw_to_response(raw, &current_method, config.max_response_body_size())?;
+      if let Some((key, socket, bufs)) = to_pool {
+        self.pool.return_connection(key, socket, bufs);
+      }
 
       if config.http_status_as_error() && (400..600).contains(&response.status_code()) {
         return Err(Error::HttpStatus(
@@ -465,7 +469,8 @@ fn redirect_method_and_body(
   }
 }
 
-/// HTTP hop: pool/connect, send, read, maybe return socket to pool.
+/// HTTP hop: pool/connect, send, read. Returns raw response plus an optional idle socket
+/// to return after the caller successfully finishes body decode / policy checks.
 ///
 /// On I/O failure with a reused pooled socket, drops it and retries once with a fresh connect.
 fn execute<S, D>(
@@ -476,7 +481,7 @@ fn execute<S, D>(
   method: &Method,
   custom_headers: &Headers,
   body: Option<&[u8]>,
-) -> Result<RawResponse, Error>
+) -> Result<(RawResponse, Option<(PoolKey, S, PooledBuffers)>), Error>
 where
   S: BlockingSocket + BlockingSocketFactory,
   D: DnsResolver,
@@ -500,10 +505,12 @@ where
     pooled_bufs,
   ) {
     Ok((raw, reusable, returned_bufs)) => {
-      if pooling_enabled(config) && reusable {
-        pool.return_connection(pool_key, socket, returned_bufs);
-      }
-      Ok(raw)
+      let to_pool = if pooling_enabled(config) && reusable {
+        Some((pool_key, socket, returned_bufs))
+      } else {
+        None
+      };
+      Ok((raw, to_pool))
     },
     Err(e) if reused && matches!(e, Error::Socket(_)) => {
       drop(socket);
@@ -521,10 +528,12 @@ where
         false,
         PooledBuffers::default(),
       )?;
-      if pooling_enabled(config) && reusable {
-        pool.return_connection(pool_key, fresh, returned_bufs);
-      }
-      Ok(raw)
+      let to_pool = if pooling_enabled(config) && reusable {
+        Some((pool_key, fresh, returned_bufs))
+      } else {
+        None
+      };
+      Ok((raw, to_pool))
     },
     Err(e) => Err(e),
   }

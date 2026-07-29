@@ -1,0 +1,12 @@
+[
+  {"file": "ok_cl.http", "expect": "accept", "rfc": "9112-6.3", "origin": "hand", "intentional_diff": ""},
+  {"file": "ok_chunked.http", "expect": "accept", "rfc": "9112-7.1", "origin": "hand", "intentional_diff": ""},
+  {"file": "ok_until_close.http", "expect": "accept", "rfc": "9112-6.3", "origin": "hand", "intentional_diff": "EOF-delimited body"},
+  {"file": "reject_conflict_cl.http", "expect": "reject", "error": "InvalidContentLength", "rfc": "9112-6.3", "origin": "security", "intentional_diff": ""},
+  {"file": "reject_obs_fold.http", "expect": "reject", "error": "ObsoleteFoldInHeader", "rfc": "9112-5.2", "origin": "rfc9112", "intentional_diff": ""},
+  {"file": "reject_ws_before_header.http", "expect": "reject", "error": "WhitespaceBeforeHeaders", "rfc": "9112-2.2", "origin": "security", "intentional_diff": ""},
+  {"file": "reject_te_and_cl.http", "expect": "reject", "error": "ConflictingFraming", "rfc": "9112-6.3", "origin": "rfc9112", "intentional_diff": ""},
+  {"file": "reject_te_http10.http", "expect": "reject", "error": "TransferEncodingRequiresHttp11", "rfc": "9112-6.1", "origin": "rfc9112", "intentional_diff": ""},
+  {"file": "reject_extra_after_cl.http", "expect": "reject", "error": "ExtraDataAfterResponse", "rfc": "9112-6.3", "origin": "hand", "intentional_diff": ""},
+  {"file": "reject_version_case.http", "expect": "reject", "error": "InvalidHttpVersion", "rfc": "9112-2.3", "origin": "rfc9112", "intentional_diff": ""}
+]

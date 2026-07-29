@@ -43,7 +43,7 @@ impl ChunkedDecoder {
     &self.trailers
   }
 
-  /// Take trailer fields out of the decoder (avoids cloning after a successful decode).
+  /// Move trailer fields out of the decoder after a successful decode.
   #[must_use]
   pub fn take_trailers(&mut self) -> Headers {
     core::mem::take(&mut self.trailers)
@@ -190,7 +190,8 @@ impl ChunkedDecoder {
     }
   }
 
-  fn parse_chunk_size(input: &[u8]) -> Result<(usize, &[u8]), ParseError> {
+  /// Parse a chunk-size hex line (pub(crate) for Kani / internal tests).
+  pub(crate) fn parse_chunk_size(input: &[u8]) -> Result<(usize, &[u8]), ParseError> {
     let mut i = 0;
     let mut size = 0usize;
 
@@ -372,5 +373,48 @@ mod tests {
       ChunkedDecoder::message_len_if_complete(wire.get(..wire.len() - 1).unwrap()).unwrap(),
       None
     );
+  }
+}
+
+#[cfg(kani)]
+mod kani_chunk_proofs {
+  use super::ChunkedDecoder;
+  use crate::error::ParseError;
+
+  #[kani::proof]
+  fn empty_chunk_size_line_errs() {
+    assert!(matches!(
+      ChunkedDecoder::parse_chunk_size(b""),
+      Err(ParseError::InvalidChunkSize | ParseError::UnexpectedEndOfInput)
+    ));
+  }
+
+  #[kani::proof]
+  fn single_hex_digit_parses() {
+    let (size, rest) = ChunkedDecoder::parse_chunk_size(b"a\r\n").unwrap();
+    assert_eq!(size, 10);
+    assert!(rest.is_empty());
+  }
+
+  /// Bounded hex length: overflow via checked_mul returns InvalidChunkSize (no panic).
+  #[kani::proof]
+  fn long_hex_does_not_panic() {
+    // 32 hex digits — may overflow usize on 64-bit; must Err, not panic.
+    let input = b"ffffffffffffffffffffffffffffffff\r\n";
+    let _ = ChunkedDecoder::parse_chunk_size(input);
+  }
+
+  #[kani::proof]
+  fn symbolic_short_hex() {
+    let mut digits = [0u8; 4];
+    for d in &mut digits {
+      *d = kani::any();
+      kani::assume(d.is_ascii_hexdigit());
+    }
+    let mut line = [0u8; 6];
+    line[..4].copy_from_slice(&digits);
+    line[4] = b'\r';
+    line[5] = b'\n';
+    let _ = ChunkedDecoder::parse_chunk_size(&line);
   }
 }

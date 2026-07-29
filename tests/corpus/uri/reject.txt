@@ -1,0 +1,4 @@
+ftp://example.com/
+http://user:pass@example.com/
+http://example.com/has space
+mailto:a@b.c

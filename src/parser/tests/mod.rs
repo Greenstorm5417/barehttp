@@ -11,6 +11,7 @@ mod chunked_encoding;
 mod cookie;
 mod framing;
 mod message_body;
+mod properties;
 mod rfc9112;
 mod security;
 mod status_line;

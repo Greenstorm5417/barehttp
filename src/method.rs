@@ -4,8 +4,8 @@ use core::str::FromStr;
 
 /// Owned RFC 9110 extension-method token (opaque; not a public `CompactString`).
 ///
-/// Construct via [`Method::new`] / [`str::parse`] — this type is only useful when
-/// matching [`Method::Extension`].
+/// Construct via [`Method::new`] / [`str::parse`]. Useful when matching
+/// [`Method::Extension`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExtensionMethod {
   token: CompactString,

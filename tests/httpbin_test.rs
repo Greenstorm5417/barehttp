@@ -1,4 +1,4 @@
-//! Live httpbin checks. Ignored by default — needs network (or local httpbin).
+//! Live httpbin checks. Ignored by default; needs network (or local httpbin).
 //!
 //! Run manually: `HTTPBIN_URL=http://127.0.0.1 cargo test --test httpbin_test -- --ignored`
 
