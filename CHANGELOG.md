@@ -18,11 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Performance suite under `benches/`: Criterion, Gungraun Callgrind/Cachegrind, dhat-rs.
 - CI Benches job: compile all benches; Callgrind soft limits (+5% Ir / +10% EstimatedCycles); Criterion smoke; dhat smoke.
 - Rustdoc recovery examples on `Error` (`HttpStatus`, `BodyExceedsLimit`) and `IntoStringError`.
-- README: MSRV (`rust-version` **1.89**; `const fn` + optional `ruzstd`), primary naming table, intentional limits (buffered / blocking), module-layout note.
+- README: MSRV (`rust-version` **1.90**; `const fn`, `ruzstd`, `bincode-next` via gungraun benches), primary naming table, intentional limits (buffered / blocking), module-layout note.
 
 ### Changed
 
-- MSRV: `rust-version` **1.97** → **1.89** (`const fn` uses like `eq_ignore_ascii_case` / `Vec::len`; also covers `ruzstd` 0.9). Still ≤ Kani 0.67's rustc 1.93.
+- MSRV: `rust-version` **1.97** → **1.90** (`const fn` APIs, `ruzstd` 0.9, and `bincode-next` 3.1 from `gungraun`). Still ≤ Kani 0.67's rustc 1.93.
 - `HttpClient::cookie_store` returns `&CookieStore` (not `&Arc<CookieStore>`). Call sites that only called methods on the store need no change (`Deref` already worked); callers that needed an `Arc` should clone the client or wrap the store themselves.
 - `Response` derives `Hash` (body + headers + trailers; matches `PartialEq`).
 - Connection pool uses `hashbrown::HashMap` (foldhash) instead of `BTreeMap`. Idle entries carry reusable receive `BytesMut` + read scratch; connections reuse those buffers across reads and pooled hops (public `Response` lifetime unchanged).

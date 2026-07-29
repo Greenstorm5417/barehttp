@@ -64,6 +64,7 @@ jobs:
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
+        shell: bash
         run: mkdir -p target/tests/target
 
       - name: Check
@@ -96,6 +97,7 @@ jobs:
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
+        shell: bash
         run: mkdir -p target/tests/target
 
       - name: Check
@@ -121,6 +123,7 @@ jobs:
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
+        shell: bash
         run: mkdir -p target/tests/target
 
       - name: Miri (sync + focused)
@@ -160,6 +163,7 @@ jobs:
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
+        shell: bash
         run: mkdir -p target/tests/target
 
       - name: Cache fuzz corpora
@@ -237,6 +241,7 @@ jobs:
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
+        shell: bash
         run: mkdir -p target/tests/target
 
       - name: Coverage (LCOV + Cobertura + HTML)
@@ -271,6 +276,7 @@ jobs:
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
+        shell: bash
         run: mkdir -p target/tests/target
 
       - name: trybuild / UI tests
@@ -294,6 +300,7 @@ jobs:
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
+        shell: bash
         run: mkdir -p target/tests/target
 
       - name: Format
@@ -347,6 +354,7 @@ jobs:
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
+        shell: bash
         run: mkdir -p target/tests/target
 
       - name: Cache Gungraun baselines
@@ -381,15 +389,15 @@ jobs:
           cargo bench --locked --bench dhat_e2e --all-features
 
   msrv:
-    name: MSRV (1.89)
+    name: MSRV (1.90)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
-      - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@1.89
+      - name: Install Rust 1.90
+        uses: dtolnay/rust-toolchain@1.90
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -401,6 +409,7 @@ jobs:
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
+        shell: bash
         run: mkdir -p target/tests/target
 
       - name: Check (all features)
@@ -434,6 +443,7 @@ jobs:
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
+        shell: bash
         run: mkdir -p target/tests/target
 
       - name: Nextest (default / none)

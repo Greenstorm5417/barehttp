@@ -3,7 +3,7 @@
 Blocking HTTP/1.1 client for `no_std` + `alloc`. Cleartext HTTP; no async.
 Design notes: [philosophy.md](philosophy.md).
 
-**MSRV:** Rust **1.89** (`rust-version` in `Cargo.toml`; `const` APIs + optional `ruzstd`).
+**MSRV:** Rust **1.90** (`rust-version` in `Cargo.toml`; `const` APIs, `ruzstd`, and `gungraun`/`bincode-next` when building benches).
 
 `https://` needs [`config::Config::assume_tls_socket`] and a [`BlockingSocket`] that terminates TLS.
 [`OsBlockingSocket`] is TCP only. Pairing it with `assume_tls_socket` returns
