@@ -113,10 +113,9 @@ fn connector_sets_read_timeout() {
   let mut socket = MockSocket::empty();
   let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
-  let config = Config {
-    timeout_read: Some(Duration::from_secs(5)),
-    ..Default::default()
-  };
+  let config = Config::builder()
+    .timeout_read(Some(Duration::from_secs(5)))
+    .build();
 
   let uri = Uri::parse("http://example.com").unwrap();
   let _result = connection::connect(&mut socket, &dns, &uri, &config, false);
@@ -129,10 +128,9 @@ fn connector_sets_write_timeout_on_connect() {
   let mut socket = MockSocket::empty();
   let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
-  let config = Config {
-    timeout_connect: Some(Duration::from_secs(3)),
-    ..Default::default()
-  };
+  let config = Config::builder()
+    .timeout_connect(Some(Duration::from_secs(3)))
+    .build();
 
   let uri = Uri::parse("http://example.com").unwrap();
   let _result = connection::connect(&mut socket, &dns, &uri, &config, false);
@@ -146,11 +144,10 @@ fn connector_sets_read_and_write_timeouts() {
   let mut socket = MockSocket::empty();
   let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
-  let config = Config {
-    timeout_read: Some(Duration::from_secs(10)),
-    timeout_write: Some(Duration::from_secs(10)),
-    ..Default::default()
-  };
+  let config = Config::builder()
+    .timeout_read(Some(Duration::from_secs(10)))
+    .timeout_write(Some(Duration::from_secs(10)))
+    .build();
 
   let uri = Uri::parse("http://example.com").unwrap();
   let _result = connection::connect(&mut socket, &dns, &uri, &config, false);
@@ -227,10 +224,9 @@ fn connector_creates_connection_with_config() {
   let mut socket = MockSocket::empty();
   let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
-  let config = Config {
-    max_response_header_size: 16384,
-    ..Default::default()
-  };
+  let config = Config::builder()
+    .max_response_header_size(16384)
+    .build();
 
   let uri = Uri::parse("http://example.com").unwrap();
   let result = connection::connect(&mut socket, &dns, &uri, &config, false);
@@ -254,11 +250,10 @@ fn connector_timeout_conversion_handles_large_values() {
   let mut socket = MockSocket::empty();
   let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
-  let config = Config {
-    timeout_read: Some(Duration::from_secs(100)),
-    timeout_write: Some(Duration::from_secs(100)),
-    ..Default::default()
-  };
+  let config = Config::builder()
+    .timeout_read(Some(Duration::from_secs(100)))
+    .timeout_write(Some(Duration::from_secs(100)))
+    .build();
 
   let uri = Uri::parse("http://example.com").unwrap();
   let result = connection::connect(&mut socket, &dns, &uri, &config, false);

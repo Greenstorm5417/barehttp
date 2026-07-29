@@ -48,9 +48,9 @@ jobs:
           - name: cookie-jar
             args: --no-default-features --features cookie-jar
           - name: gzip
-            args: --no-default-features --features gzip-decompression
+            args: --no-default-features --features gzip
           - name: zstd
-            args: --no-default-features --features zstd-decompression
+            args: --no-default-features --features zstd
           - name: all
             args: --all-features
     steps:
@@ -83,9 +83,9 @@ jobs:
           - name: cookie-jar
             args: --no-default-features --features cookie-jar
           - name: gzip
-            args: --no-default-features --features gzip-decompression
+            args: --no-default-features --features gzip
           - name: zstd
-            args: --no-default-features --features zstd-decompression
+            args: --no-default-features --features zstd
           - name: all
             args: --all-features
     steps:
@@ -133,14 +133,14 @@ jobs:
         run: |
           cargo check --locked --no-default-features
           cargo check --locked --no-default-features --features cookie-jar
-          cargo check --locked --no-default-features --features gzip-decompression
-          cargo check --locked --no-default-features --features zstd-decompression
+          cargo check --locked --no-default-features --features gzip
+          cargo check --locked --no-default-features --features zstd
           cargo check --locked --all-features
 
       - name: Embedded target (thumbv7em-none-eabi)
         run: |
           cargo check --locked --target thumbv7em-none-eabi --no-default-features
-          cargo check --locked --target thumbv7em-none-eabi --features gzip-decompression
+          cargo check --locked --target thumbv7em-none-eabi --features gzip
 
   miri:
     name: Miri
@@ -166,7 +166,7 @@ jobs:
         run: |
           cargo miri setup
           cargo miri test --lib sync::
-          cargo miri test --lib --features gzip-decompression gzip::
+          cargo miri test --lib --features gzip gzip::
 
   fuzz-build:
     name: Fuzz build

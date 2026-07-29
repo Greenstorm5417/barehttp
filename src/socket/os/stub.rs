@@ -1,17 +1,29 @@
 //! Stub OS socket for targets that are neither unix nor windows.
 
 use crate::error::SocketError;
-use crate::socket::{BlockingSocket, SocketAddr};
+use crate::socket::{BlockingSocket, BlockingSocketFactory, SocketAddr};
 
 /// Cleartext OS TCP is unavailable on this target.
 #[derive(Debug, Default)]
 pub struct OsSocket;
 
-impl BlockingSocket for OsSocket {
-  fn new() -> Result<Self, SocketError> {
+impl OsSocket {
+  /// No TCP on this target.
+  ///
+  /// # Errors
+  /// [`SocketError::Unsupported`].
+  pub fn new() -> Result<Self, SocketError> {
     Err(SocketError::Unsupported)
   }
+}
 
+impl BlockingSocketFactory for OsSocket {
+  fn new() -> Result<Self, SocketError> {
+    Self::new()
+  }
+}
+
+impl BlockingSocket for OsSocket {
   fn connect(
     &mut self,
     _addr: &SocketAddr,

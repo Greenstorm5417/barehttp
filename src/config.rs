@@ -3,48 +3,46 @@ use core::time::Duration;
 /// Default max response body size (~10 MiB), matching ureq.
 pub const DEFAULT_MAX_RESPONSE_BODY_SIZE: usize = 10 * 1024 * 1024;
 
-/// Client settings for [`crate::HttpClient`]: timeouts, redirects, default headers,
-/// pooling, and HTTPS policy.
+/// Timeouts, redirects, default headers, pooling, and HTTPS policy for
+/// [`crate::HttpClient`].
 ///
 /// Pooling is on when [`Self::max_idle_per_host`] is greater than zero.
-/// Build with [`Config::builder`] or struct update on [`Config::default`].
+/// Build with [`Config::builder`] only; fields are private.
 ///
 /// # `assume_tls_socket`
 ///
-/// Your [`crate::BlockingSocket`] already terminates TLS. Combining this with
+/// The [`crate::BlockingSocket`] already terminates TLS. Combining this with
 /// cleartext [`crate::OsBlockingSocket`] returns `Error::TlsNotConfigured`.
-#[derive(Debug, Clone)]
+///
+/// # Examples
+///
+/// ```
+/// use barehttp::config::Config;
+/// use core::time::Duration;
+///
+/// let config = Config::builder()
+///     .timeout_read(Some(Duration::from_secs(30)))
+///     .max_redirects(5)
+///     .user_agent("my-app/1.0")
+///     .build();
+/// assert_eq!(config.max_redirects(), 5);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Config {
-  /// `User-Agent` value; empty omits the default header.
-  pub user_agent: alloc::string::String,
-  /// Redirect hops to follow (`0` = return the redirect response).
-  pub max_redirects: u32,
-  /// Map 4xx/5xx to [`crate::error::Error::HttpStatus`].
-  pub http_status_as_error: bool,
-  /// Max response header-section size in bytes.
-  pub max_response_header_size: usize,
-  /// Max response body size in bytes (default ~10 MiB).
-  pub max_response_body_size: usize,
-  /// Connect deadline.
-  pub timeout_connect: Option<Duration>,
-  /// Read deadline.
-  pub timeout_read: Option<Duration>,
-  /// Write deadline.
-  pub timeout_write: Option<Duration>,
-  /// `Accept` value; empty omits the default header.
-  pub accept: alloc::string::String,
-  /// Reject non-`https` schemes.
-  pub https_only: bool,
-  /// Allow `https://` when your [`crate::BlockingSocket`] already does TLS (default `false`).
-  ///
-  /// The OS socket is cleartext; without this flag, `https://` is rejected.
-  /// Setting this with [`crate::OsBlockingSocket`] yields `TlsNotConfigured`.
-  pub assume_tls_socket: bool,
-  /// Idle sockets kept per host (`0` disables pooling).
-  pub max_idle_per_host: usize,
-  /// Drop pooled sockets older than this (default 15s).
-  pub max_idle_age: Duration,
+  user_agent: alloc::string::String,
+  max_redirects: u32,
+  http_status_as_error: bool,
+  max_response_header_size: usize,
+  max_response_body_size: usize,
+  timeout_connect: Option<Duration>,
+  timeout_read: Option<Duration>,
+  timeout_write: Option<Duration>,
+  accept: alloc::string::String,
+  https_only: bool,
+  assume_tls_socket: bool,
+  max_idle_per_host: usize,
+  max_idle_age: Duration,
 }
 
 impl Default for Config {
@@ -72,6 +70,112 @@ impl Config {
   #[must_use]
   pub fn builder() -> ConfigBuilder {
     ConfigBuilder { config: Self::default() }
+  }
+
+  /// `User-Agent` value; empty omits the default header.
+  #[must_use]
+  pub fn user_agent(&self) -> &str {
+    &self.user_agent
+  }
+
+  /// Redirect hops to follow (`0` = return the redirect response).
+  #[must_use]
+  pub const fn max_redirects(&self) -> u32 {
+    self.max_redirects
+  }
+
+  /// Map 4xx/5xx to [`crate::error::Error::HttpStatus`].
+  #[must_use]
+  pub const fn http_status_as_error(&self) -> bool {
+    self.http_status_as_error
+  }
+
+  /// Max response header-section size in bytes.
+  #[must_use]
+  pub const fn max_response_header_size(&self) -> usize {
+    self.max_response_header_size
+  }
+
+  /// Max response body size in bytes (default ~10 MiB).
+  #[must_use]
+  pub const fn max_response_body_size(&self) -> usize {
+    self.max_response_body_size
+  }
+
+  /// Connect deadline.
+  #[must_use]
+  pub const fn timeout_connect(&self) -> Option<Duration> {
+    self.timeout_connect
+  }
+
+  /// Read deadline.
+  #[must_use]
+  pub const fn timeout_read(&self) -> Option<Duration> {
+    self.timeout_read
+  }
+
+  /// Write deadline.
+  #[must_use]
+  pub const fn timeout_write(&self) -> Option<Duration> {
+    self.timeout_write
+  }
+
+  /// `Accept` value; empty omits the default header.
+  #[must_use]
+  pub fn accept(&self) -> &str {
+    &self.accept
+  }
+
+  /// Reject non-`https` schemes.
+  #[must_use]
+  pub const fn https_only(&self) -> bool {
+    self.https_only
+  }
+
+  /// Allow `https://` when the [`crate::BlockingSocket`] already does TLS.
+  #[must_use]
+  pub const fn assume_tls_socket(&self) -> bool {
+    self.assume_tls_socket
+  }
+
+  /// Idle sockets kept per host (`0` disables pooling).
+  #[must_use]
+  pub const fn max_idle_per_host(&self) -> usize {
+    self.max_idle_per_host
+  }
+
+  /// Drop pooled sockets older than this (default 15s).
+  #[must_use]
+  pub const fn max_idle_age(&self) -> Duration {
+    self.max_idle_age
+  }
+
+  pub(crate) const fn set_timeout_connect(
+    &mut self,
+    v: Option<Duration>,
+  ) {
+    self.timeout_connect = v;
+  }
+
+  pub(crate) const fn set_timeout_read(
+    &mut self,
+    v: Option<Duration>,
+  ) {
+    self.timeout_read = v;
+  }
+
+  pub(crate) const fn set_timeout_write(
+    &mut self,
+    v: Option<Duration>,
+  ) {
+    self.timeout_write = v;
+  }
+
+  pub(crate) const fn set_max_response_body_size(
+    &mut self,
+    v: usize,
+  ) {
+    self.max_response_body_size = v;
   }
 }
 

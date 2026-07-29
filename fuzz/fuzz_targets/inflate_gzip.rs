@@ -1,6 +1,6 @@
 #![no_main]
 
-use barehttp::gzip::{decompress_gzip, decompress_http_deflate, inflate_raw};
+use barehttp::gzip::{decompress_gzip, decompress_http_deflate, decompress_raw_deflate};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -8,5 +8,5 @@ fuzz_target!(|data: &[u8]| {
   const MAX: usize = 64 * 1024;
   let _ = decompress_gzip(data, MAX);
   let _ = decompress_http_deflate(data, MAX);
-  let _ = inflate_raw(data, MAX);
+  let _ = decompress_raw_deflate(data, MAX);
 });

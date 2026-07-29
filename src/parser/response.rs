@@ -9,25 +9,81 @@ use crate::parser::version::{Version, parse_status_line};
 use alloc::string::String;
 use alloc::vec::Vec;
 
-#[cfg(feature = "zstd-decompression")]
+#[cfg(feature = "zstd")]
 use ruzstd::decoding::StreamingDecoder;
 
 /// Parsed HTTP response.
+///
+/// # Examples
+///
+/// ```
+/// use barehttp::Response;
+///
+/// let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+/// let response = Response::parse(raw)?;
+/// assert_eq!(response.status(), 200);
+/// assert_eq!(response.header("content-length"), Some("2"));
+/// assert_eq!(response.to_text()?, "ok");
+/// # Ok::<(), barehttp::Error>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
-  /// Status code (e.g. 200).
-  pub status_code: u16,
-  /// Reason phrase from the status line.
-  pub reason: String,
-  /// Response headers.
-  pub headers: Headers,
-  /// Response body.
-  pub body: Vec<u8>,
-  /// Trailer fields from chunked responses (RFC 9112 §7.1.2).
-  pub trailers: Vec<(String, String)>,
+  status_code: u16,
+  reason: String,
+  headers: Headers,
+  body: Vec<u8>,
+  trailers: Vec<(String, String)>,
 }
 
 impl Response {
+  /// Build a response from parts (crate-internal / tests).
+  #[must_use]
+  pub(crate) const fn from_parts(
+    status_code: u16,
+    reason: String,
+    headers: Headers,
+    body: Vec<u8>,
+    trailers: Vec<(String, String)>,
+  ) -> Self {
+    Self {
+      status_code,
+      reason,
+      headers,
+      body,
+      trailers,
+    }
+  }
+
+  /// Status code (e.g. 200).
+  #[must_use]
+  pub const fn status_code(&self) -> u16 {
+    self.status_code
+  }
+
+  /// Reason phrase from the status line.
+  #[must_use]
+  pub fn reason(&self) -> &str {
+    &self.reason
+  }
+
+  /// Response headers.
+  #[must_use]
+  pub const fn headers(&self) -> &Headers {
+    &self.headers
+  }
+
+  /// Response body bytes.
+  #[must_use]
+  pub fn body(&self) -> &[u8] {
+    &self.body
+  }
+
+  /// Trailer fields from chunked responses (RFC 9112 §7.1.2).
+  #[must_use]
+  pub fn trailers(&self) -> &[(String, String)] {
+    &self.trailers
+  }
+
   /// Parse a complete buffered HTTP/1.1 response.
   ///
   /// # Errors
@@ -62,7 +118,7 @@ impl Response {
 
     // RFC 9110: comma-separated codings, applied in listed order → decompress reverse.
     let mut tokens = Vec::new();
-    for (name, value) in headers.iter() {
+    for (name, value) in &*headers {
       if !name.eq_ignore_ascii_case("content-encoding") {
         continue;
       }
@@ -98,7 +154,7 @@ impl Response {
 
   /// Look up a header by name (case-insensitive).
   #[must_use]
-  pub fn get_header(
+  pub fn header(
     &self,
     name: &str,
   ) -> Option<&str> {
@@ -111,7 +167,7 @@ impl Response {
   ///
   /// # Errors
   /// [`ParseError`] when the status line or header section is illegal.
-  pub fn parse_headers_only(input: &[u8]) -> Result<(u16, String, Headers, Version, &[u8]), ParseError> {
+  pub(crate) fn parse_headers_only(input: &[u8]) -> Result<(u16, String, Headers, Version, &[u8]), ParseError> {
     // Skip leading CRLF (RFC 9112 Section 2.2 robustness)
     let mut data = input;
     loop {
@@ -150,7 +206,7 @@ impl Response {
   ///
   /// # Errors
   /// Framing [`ParseError`]s when headers conflict or are illegal for the status/version.
-  pub fn body_read_strategy(
+  pub(crate) fn body_read_strategy(
     headers: &Headers,
     status_code: u16,
     version: Version,
@@ -183,7 +239,7 @@ impl Response {
 
       let mut chunked_count = 0usize;
       let mut last_is_chunked = false;
-      for (name, value) in headers.iter() {
+      for (name, value) in headers {
         if !name.eq_ignore_ascii_case(Headers::TRANSFER_ENCODING) {
           continue;
         }
@@ -228,7 +284,7 @@ impl Response {
   ///
   /// # Errors
   /// [`ParseError`] when framing is illegal or the body cannot be decoded / decompressed.
-  pub fn parse_body_from_bytes(
+  pub(crate) fn parse_body_from_bytes(
     body_bytes: &[u8],
     headers: &mut Headers,
     status_code: u16,
@@ -237,19 +293,24 @@ impl Response {
   ) -> Result<(Vec<u8>, Vec<(String, String)>), ParseError> {
     let strategy = Self::body_read_strategy(headers, status_code, version)?;
     let (body_vec, trailer_bytes) = decode_body_bytes(body_bytes, strategy)?;
+    finish_body(headers, body_vec, trailer_bytes, max_body)
+  }
 
-    let trailers = trailer_bytes
-      .into_iter()
-      .map(|(name, value)| {
-        (
-          String::from_utf8_lossy(&name).into_owned(),
-          String::from_utf8_lossy(&value).into_owned(),
-        )
-      })
-      .collect();
-
-    let decompressed_body = Self::decompress_body_if_needed(headers, body_vec, max_body)?;
-    Ok((decompressed_body, trailers))
+  /// Owned-buffer variant of [`Self::parse_body_from_bytes`].
+  /// Skips a copy for `Content-Length` / until-close bodies the transport already holds.
+  ///
+  /// # Errors
+  /// [`ParseError`] when framing is illegal or the body cannot be decoded / decompressed.
+  pub(crate) fn parse_body_from_owned(
+    body_bytes: Vec<u8>,
+    headers: &mut Headers,
+    status_code: u16,
+    version: Version,
+    max_body: usize,
+  ) -> Result<(Vec<u8>, Vec<(String, String)>), ParseError> {
+    let strategy = Self::body_read_strategy(headers, status_code, version)?;
+    let (body_vec, trailer_bytes) = decode_body_owned(body_bytes, strategy)?;
+    finish_body(headers, body_vec, trailer_bytes, max_body)
   }
 
   /// Status code (alias of [`Self::status_code`]).
@@ -292,7 +353,7 @@ impl Response {
   ///
   /// # Errors
   /// [`crate::Error::Utf8Error`] if the body is not valid UTF-8.
-  pub fn text(&self) -> Result<String, crate::Error> {
+  pub fn to_text(&self) -> Result<String, crate::Error> {
     String::from_utf8(self.body.clone()).map_err(Into::into)
   }
 
@@ -311,8 +372,15 @@ impl Response {
   }
 }
 
+impl AsRef<[u8]> for Response {
+  fn as_ref(&self) -> &[u8] {
+    self.body()
+  }
+}
+
 /// How the client should read the response entity body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BodyReadStrategy {
   /// No entity body (1xx, 204, 304, …).
   NoBody,
@@ -325,11 +393,11 @@ pub enum BodyReadStrategy {
 }
 
 const fn coding_is_supported(coding: &str) -> bool {
-  #[cfg(feature = "gzip-decompression")]
+  #[cfg(feature = "gzip")]
   if coding.eq_ignore_ascii_case("gzip") || coding.eq_ignore_ascii_case("deflate") {
     return true;
   }
-  #[cfg(feature = "zstd-decompression")]
+  #[cfg(feature = "zstd")]
   if coding.eq_ignore_ascii_case("zstd") {
     return true;
   }
@@ -342,7 +410,7 @@ fn decompress_coding(
   body_bytes: Vec<u8>,
   max_body: usize,
 ) -> Result<Vec<u8>, ParseError> {
-  #[cfg(feature = "gzip-decompression")]
+  #[cfg(feature = "gzip")]
   if coding.eq_ignore_ascii_case("gzip") {
     return match crate::gzip::decompress_gzip(&body_bytes, max_body) {
       Ok(v) => Ok(v),
@@ -351,7 +419,7 @@ fn decompress_coding(
     };
   }
 
-  #[cfg(feature = "gzip-decompression")]
+  #[cfg(feature = "gzip")]
   if coding.eq_ignore_ascii_case("deflate") {
     return match crate::gzip::decompress_http_deflate(&body_bytes, max_body) {
       Ok(v) => Ok(v),
@@ -360,7 +428,7 @@ fn decompress_coding(
     };
   }
 
-  #[cfg(feature = "zstd-decompression")]
+  #[cfg(feature = "zstd")]
   if coding.eq_ignore_ascii_case("zstd") {
     use ruzstd::io_nostd::Read;
     let mut decoder = StreamingDecoder::new(&body_bytes[..]).map_err(|_| ParseError::DecompressionFailed)?;
@@ -417,7 +485,7 @@ fn parse_content_length_str(value: &str) -> Option<usize> {
 fn resolve_content_length(headers: &Headers) -> Result<Option<usize>, ParseError> {
   let mut resolved: Option<usize> = None;
   let mut seen = false;
-  for (name, value) in headers.iter() {
+  for (name, value) in headers {
     if !name.eq_ignore_ascii_case(Headers::CONTENT_LENGTH) {
       continue;
     }
@@ -436,6 +504,26 @@ fn resolve_content_length(headers: &Headers) -> Result<Option<usize>, ParseError
   }
 }
 
+fn finish_body(
+  headers: &mut Headers,
+  body_vec: Vec<u8>,
+  trailer_bytes: Vec<(Vec<u8>, Vec<u8>)>,
+  max_body: usize,
+) -> Result<(Vec<u8>, Vec<(String, String)>), ParseError> {
+  let trailers = trailer_bytes
+    .into_iter()
+    .map(|(name, value)| {
+      (
+        String::from_utf8_lossy(&name).into_owned(),
+        String::from_utf8_lossy(&value).into_owned(),
+      )
+    })
+    .collect();
+
+  let decompressed_body = Response::decompress_body_if_needed(headers, body_vec, max_body)?;
+  Ok((decompressed_body, trailers))
+}
+
 fn decode_body_bytes(
   input: &[u8],
   strategy: BodyReadStrategy,
@@ -452,17 +540,43 @@ fn decode_body_bytes(
       }
       Ok((body_data.to_vec(), Vec::new()))
     },
-    BodyReadStrategy::Chunked => {
-      let mut decoder = ChunkedDecoder::new();
-      let mut output = Vec::new();
-      let remaining = decoder.decode_chunk(input, &mut output)?;
-      if !remaining.is_empty() {
-        return Err(ParseError::ExtraDataAfterResponse);
-      }
-      Ok((output, decoder.trailers().to_vec()))
-    },
+    BodyReadStrategy::Chunked => decode_chunked(input),
     BodyReadStrategy::UntilClose => Ok((input.to_vec(), Vec::new())),
   }
+}
+
+fn decode_body_owned(
+  input: Vec<u8>,
+  strategy: BodyReadStrategy,
+) -> Result<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>), ParseError> {
+  match strategy {
+    BodyReadStrategy::NoBody => Ok((Vec::new(), Vec::new())),
+    BodyReadStrategy::ContentLength(len) => {
+      if input.len() < len {
+        return Err(ParseError::UnexpectedEndOfInput);
+      }
+      if input.len() > len {
+        return Err(ParseError::ExtraDataAfterResponse);
+      }
+      // Transport already owns exact CL bytes — no second allocation.
+      Ok((input, Vec::new()))
+    },
+    BodyReadStrategy::Chunked => decode_chunked(&input),
+    BodyReadStrategy::UntilClose => {
+      // Already the full body buffer from the transport.
+      Ok((input, Vec::new()))
+    },
+  }
+}
+
+fn decode_chunked(input: &[u8]) -> Result<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>), ParseError> {
+  let mut decoder = ChunkedDecoder::new();
+  let mut output = Vec::new();
+  let remaining = decoder.decode_chunk(input, &mut output)?;
+  if !remaining.is_empty() {
+    return Err(ParseError::ExtraDataAfterResponse);
+  }
+  Ok((output, decoder.take_trailers()))
 }
 
 #[cfg(test)]
@@ -472,13 +586,7 @@ mod response_helpers_tests {
 
   #[test]
   fn status_class_helpers() {
-    let mk = |code| Response {
-      status_code: code,
-      reason: String::new(),
-      headers: Headers::new(),
-      body: Vec::new(),
-      trailers: Vec::new(),
-    };
+    let mk = |code| Response::from_parts(code, String::new(), Headers::new(), Vec::new(), Vec::new());
     assert!(mk(200).is_success());
     assert!(mk(301).is_redirect());
     assert!(mk(404).is_client_error());
@@ -488,23 +596,11 @@ mod response_helpers_tests {
 
   #[test]
   fn text_and_into_bytes() {
-    let r = Response {
-      status_code: 200,
-      reason: String::new(),
-      headers: Headers::new(),
-      body: b"hi".to_vec(),
-      trailers: Vec::new(),
-    };
+    let r = Response::from_parts(200, String::new(), Headers::new(), b"hi".to_vec(), Vec::new());
     assert_eq!(r.status(), 200);
     assert_eq!(r.as_bytes(), b"hi");
-    assert_eq!(r.text().unwrap(), "hi");
-    let r2 = Response {
-      status_code: 200,
-      reason: String::new(),
-      headers: Headers::new(),
-      body: b"data".to_vec(),
-      trailers: Vec::new(),
-    };
+    assert_eq!(r.to_text().unwrap(), "hi");
+    let r2 = Response::from_parts(200, String::new(), Headers::new(), b"data".to_vec(), Vec::new());
     assert_eq!(r2.into_string().unwrap(), "data");
   }
 
@@ -563,15 +659,15 @@ mod response_helpers_tests {
   fn unsupported_content_encoding_left_as_is() {
     let input = b"HTTP/1.1 200 OK\r\nContent-Encoding: br\r\nContent-Length: 4\r\n\r\ndata";
     let resp = Response::parse(input).unwrap();
-    assert_eq!(resp.body.as_slice(), b"data");
-    assert_eq!(resp.get_header("content-encoding"), Some("br"));
-    assert_eq!(resp.get_header("content-length"), Some("4"));
+    assert_eq!(resp.body(), b"data");
+    assert_eq!(resp.header("content-encoding"), Some("br"));
+    assert_eq!(resp.header("content-length"), Some("4"));
 
     let identity = b"HTTP/1.1 200 OK\r\nContent-Encoding: identity\r\nContent-Length: 4\r\n\r\ndata";
-    assert_eq!(Response::parse(identity).unwrap().body.as_slice(), b"data");
+    assert_eq!(Response::parse(identity).unwrap().body(), b"data");
   }
 
-  #[cfg(feature = "gzip-decompression")]
+  #[cfg(feature = "gzip")]
   #[test]
   fn gzip_decompress_strips_content_encoding_and_length() {
     use alloc::string::ToString;
@@ -586,12 +682,12 @@ mod response_helpers_tests {
     msg.extend_from_slice(gzipped);
 
     let resp = Response::parse(&msg).unwrap();
-    assert_eq!(resp.body.as_slice(), b"hi");
-    assert!(resp.get_header("content-encoding").is_none());
-    assert!(resp.get_header("content-length").is_none());
+    assert_eq!(resp.body(), b"hi");
+    assert!(resp.header("content-encoding").is_none());
+    assert!(resp.header("content-length").is_none());
   }
 
-  #[cfg(feature = "gzip-decompression")]
+  #[cfg(feature = "gzip")]
   #[test]
   fn gzip_decompress_exceeds_limit() {
     use alloc::string::ToString;
@@ -606,7 +702,7 @@ mod response_helpers_tests {
     assert_eq!(err, ParseError::BodyExceedsLimit(1));
   }
 
-  #[cfg(feature = "gzip-decompression")]
+  #[cfg(feature = "gzip")]
   #[test]
   fn raw_deflate_accepted_after_zlib_fails() {
     use alloc::string::ToString;
@@ -618,7 +714,7 @@ mod response_helpers_tests {
     msg.extend_from_slice(deflated);
 
     let resp = Response::parse(&msg).unwrap();
-    assert_eq!(resp.body.as_slice(), b"hi");
-    assert!(resp.get_header("content-encoding").is_none());
+    assert_eq!(resp.body(), b"hi");
+    assert!(resp.header("content-encoding").is_none());
   }
 }

@@ -46,7 +46,7 @@ fn client_query_and_headers() {
     .call()
     .unwrap();
   assert!(response.is_success());
-  let body = response.text().unwrap();
+  let body = response.to_text().unwrap();
   assert!(body.contains("foo"));
   assert!(body.contains("bar"));
 }
@@ -54,10 +54,7 @@ fn client_query_and_headers() {
 #[test]
 #[ignore = "needs network / httpbin"]
 fn status_as_response() {
-  let config = Config {
-    http_status_as_error: false,
-    ..Default::default()
-  };
+  let config = Config::builder().http_status_as_error(false).build();
   let client = HttpClient::with_config(config);
   let response = client
     .get(format!("{}/status/404", httpbin_url()))
@@ -70,10 +67,7 @@ fn status_as_response() {
 #[test]
 #[ignore = "needs network / httpbin"]
 fn redirect_no_follow() {
-  let config = Config {
-    max_redirects: 0,
-    ..Default::default()
-  };
+  let config = Config::builder().max_redirects(0).build();
   let client = HttpClient::with_config(config);
   let response = client
     .get(format!("{}/redirect/1", httpbin_url()))

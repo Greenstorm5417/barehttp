@@ -15,16 +15,22 @@ const fn map_errno(err: c_int) -> SocketError {
 }
 
 fn get_last_error() -> SocketError {
-  unsafe {
+  // SAFETY: `__errno_location` / `__error` return a valid thread-local errno pointer.
+  let err = unsafe {
     #[cfg(target_os = "macos")]
-    let err = *libc::__error();
+    {
+      *libc::__error()
+    }
     #[cfg(not(target_os = "macos"))]
-    let err = *libc::__errno_location();
-    map_errno(err)
-  }
+    {
+      *libc::__errno_location()
+    }
+  };
+  map_errno(err)
 }
 
-/// OS blocking TCP socket (`WinSock` / BSD sockets).
+/// OS blocking TCP socket (BSD sockets).
+#[derive(Debug)]
 pub struct OsSocket {
   fd: c_int,
   connected: bool,
@@ -32,8 +38,12 @@ pub struct OsSocket {
   write_timeout_ms: Option<u32>,
 }
 
-impl crate::socket::BlockingSocket for OsSocket {
-  fn new() -> Result<Self, SocketError> {
+impl OsSocket {
+  /// Create an unbound socket handle (fd allocated on connect).
+  ///
+  /// # Errors
+  /// Infallible on unix (Windows `new` may fail).
+  pub const fn new() -> Result<Self, SocketError> {
     Ok(Self {
       fd: -1,
       connected: false,
@@ -41,7 +51,15 @@ impl crate::socket::BlockingSocket for OsSocket {
       write_timeout_ms: None,
     })
   }
+}
 
+impl crate::socket::BlockingSocketFactory for OsSocket {
+  fn new() -> Result<Self, SocketError> {
+    Self::new()
+  }
+}
+
+impl crate::socket::BlockingSocket for OsSocket {
   fn connect(
     &mut self,
     addr: &SocketAddr,
@@ -71,26 +89,23 @@ impl crate::socket::BlockingSocket for OsSocket {
     }
 
     loop {
-      unsafe {
-        let result = libc::read(self.fd, buf.as_mut_ptr() as *mut c_void, buf.len());
+      // SAFETY: `self.fd` is an open socket fd while connected; `buf` is a valid writable
+      // region of `buf.len()` bytes for the duration of the call.
+      let result = unsafe { libc::read(self.fd, buf.as_mut_ptr().cast::<c_void>(), buf.len()) };
 
-        if result < 0 {
-          let err = get_last_error();
-          if matches!(err, SocketError::Interrupted) {
-            continue;
-          }
-          return Err(err);
+      if result < 0 {
+        let err = get_last_error();
+        if matches!(err, SocketError::Interrupted) {
+          continue;
         }
-
-        if result == 0 {
-          self.connected = false;
-        }
-
-        #[allow(clippy::cast_sign_loss)]
-        {
-          return Ok(result as usize);
-        }
+        return Err(err);
       }
+
+      if result == 0 {
+        self.connected = false;
+      }
+
+      return usize::try_from(result).map_err(|_| SocketError::Unsupported);
     }
   }
 
@@ -103,22 +118,19 @@ impl crate::socket::BlockingSocket for OsSocket {
     }
 
     loop {
-      unsafe {
-        let result = libc::write(self.fd, buf.as_ptr() as *const c_void, buf.len());
+      // SAFETY: `self.fd` is an open socket fd while connected; `buf` is a valid readable
+      // region of `buf.len()` bytes for the duration of the call.
+      let result = unsafe { libc::write(self.fd, buf.as_ptr().cast::<c_void>(), buf.len()) };
 
-        if result < 0 {
-          let err = get_last_error();
-          if matches!(err, SocketError::Interrupted) {
-            continue;
-          }
-          return Err(err);
+      if result < 0 {
+        let err = get_last_error();
+        if matches!(err, SocketError::Interrupted) {
+          continue;
         }
-
-        #[allow(clippy::cast_sign_loss)]
-        {
-          return Ok(result as usize);
-        }
+        return Err(err);
       }
+
+      return usize::try_from(result).map_err(|_| SocketError::Unsupported);
     }
   }
 
@@ -127,13 +139,12 @@ impl crate::socket::BlockingSocket for OsSocket {
       return Ok(());
     }
 
-    unsafe {
-      let result = libc::shutdown(self.fd, libc::SHUT_RDWR);
-      if result < 0 {
-        let err = get_last_error();
-        if !matches!(err, SocketError::NotConnected) {
-          return Err(err);
-        }
+    // SAFETY: `self.fd` is an open socket; `SHUT_RDWR` is a valid how value.
+    let result = unsafe { libc::shutdown(self.fd, libc::SHUT_RDWR) };
+    if result < 0 {
+      let err = get_last_error();
+      if !matches!(err, SocketError::NotConnected) {
+        return Err(err);
       }
     }
 
@@ -170,17 +181,19 @@ impl OsSocket {
     &mut self,
     family: c_int,
   ) -> Result<(), SocketError> {
-    unsafe {
-      if self.fd >= 0 {
+    if self.fd >= 0 {
+      // SAFETY: `self.fd` was returned by `socket()` / prior recreate and is still open.
+      unsafe {
         libc::close(self.fd);
-        self.fd = -1;
       }
-      let fd = libc::socket(family, libc::SOCK_STREAM, libc::IPPROTO_TCP);
-      if fd < 0 {
-        return Err(get_last_error());
-      }
-      self.fd = fd;
+      self.fd = -1;
     }
+    // SAFETY: `family` is `AF_INET` or `AF_INET6`; type/protocol are valid TCP stream args.
+    let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, libc::IPPROTO_TCP) };
+    if fd < 0 {
+      return Err(get_last_error());
+    }
+    self.fd = fd;
     if let Some(ms) = self.read_timeout_ms {
       self.apply_read_timeout(ms)?;
     }
@@ -190,34 +203,39 @@ impl OsSocket {
     Ok(())
   }
 
+  const fn timeval_from_ms(timeout_ms: u32) -> timeval {
+    #[allow(
+      clippy::cast_lossless,
+      clippy::integer_division,
+      clippy::cast_possible_wrap,
+      clippy::cast_possible_truncation
+    )]
+    timeval {
+      tv_sec: (timeout_ms.wrapping_div(1000)) as _,
+      tv_usec: ((timeout_ms % 1000).wrapping_mul(1000)) as _,
+    }
+  }
+
   fn apply_read_timeout(
     &mut self,
     timeout_ms: u32,
   ) -> Result<(), SocketError> {
-    unsafe {
-      #[allow(
-        clippy::cast_lossless,
-        clippy::integer_division,
-        clippy::cast_possible_wrap,
-        clippy::cast_possible_truncation
-      )]
-      let timeout = timeval {
-        tv_sec: (timeout_ms.wrapping_div(1000)) as _,
-        tv_usec: ((timeout_ms % 1000).wrapping_mul(1000)) as _,
-      };
+    let timeout = Self::timeval_from_ms(timeout_ms);
+    let optlen = socklen_t::try_from(core::mem::size_of::<timeval>()).map_err(|_| SocketError::Unsupported)?;
 
-      #[allow(clippy::cast_possible_truncation)]
-      let result = libc::setsockopt(
+    // SAFETY: `self.fd` open; `timeout` is a valid `timeval` for `SO_RCVTIMEO`; pointer live.
+    let result = unsafe {
+      libc::setsockopt(
         self.fd,
         libc::SOL_SOCKET,
         libc::SO_RCVTIMEO,
         &raw const timeout as *const c_void,
-        core::mem::size_of::<timeval>() as socklen_t,
-      );
+        optlen,
+      )
+    };
 
-      if result < 0 {
-        return Err(get_last_error());
-      }
+    if result < 0 {
+      return Err(get_last_error());
     }
     Ok(())
   }
@@ -226,30 +244,22 @@ impl OsSocket {
     &mut self,
     timeout_ms: u32,
   ) -> Result<(), SocketError> {
-    unsafe {
-      #[allow(
-        clippy::cast_lossless,
-        clippy::integer_division,
-        clippy::cast_possible_wrap,
-        clippy::cast_possible_truncation
-      )]
-      let timeout = timeval {
-        tv_sec: (timeout_ms.wrapping_div(1000)) as _,
-        tv_usec: ((timeout_ms % 1000).wrapping_mul(1000)) as _,
-      };
+    let timeout = Self::timeval_from_ms(timeout_ms);
+    let optlen = socklen_t::try_from(core::mem::size_of::<timeval>()).map_err(|_| SocketError::Unsupported)?;
 
-      #[allow(clippy::cast_possible_truncation)]
-      let result = libc::setsockopt(
+    // SAFETY: `self.fd` open; `timeout` is a valid `timeval` for `SO_SNDTIMEO`; pointer live.
+    let result = unsafe {
+      libc::setsockopt(
         self.fd,
         libc::SOL_SOCKET,
         libc::SO_SNDTIMEO,
         &raw const timeout as *const c_void,
-        core::mem::size_of::<timeval>() as socklen_t,
-      );
+        optlen,
+      )
+    };
 
-      if result < 0 {
-        return Err(get_last_error());
-      }
+    if result < 0 {
+      return Err(get_last_error());
     }
     Ok(())
   }
@@ -260,7 +270,10 @@ impl OsSocket {
   ) -> Result<(), SocketError> {
     self.recreate(libc::AF_INET)?;
 
-    unsafe {
+    let addrlen = socklen_t::try_from(core::mem::size_of::<sockaddr_in>()).map_err(|_| SocketError::Unsupported)?;
+
+    // SAFETY: sockaddr fully initialized POD; pointer valid for `addrlen`; fd open.
+    let result = unsafe {
       let mut sockaddr: sockaddr_in = core::mem::zeroed();
       #[allow(clippy::cast_possible_truncation)]
       {
@@ -269,16 +282,11 @@ impl OsSocket {
       sockaddr.sin_port = addr.port().to_be();
       sockaddr.sin_addr.s_addr = u32::from_ne_bytes(addr.ip().octets());
 
-      #[allow(clippy::cast_possible_truncation)]
-      let result = libc::connect(
-        self.fd,
-        &raw const sockaddr as *const sockaddr,
-        core::mem::size_of::<sockaddr_in>() as socklen_t,
-      );
+      libc::connect(self.fd, &raw const sockaddr as *const sockaddr, addrlen)
+    };
 
-      if result < 0 {
-        return Err(get_last_error());
-      }
+    if result < 0 {
+      return Err(get_last_error());
     }
 
     self.connected = true;
@@ -291,7 +299,10 @@ impl OsSocket {
   ) -> Result<(), SocketError> {
     self.recreate(libc::AF_INET6)?;
 
-    unsafe {
+    let addrlen = socklen_t::try_from(core::mem::size_of::<sockaddr_in6>()).map_err(|_| SocketError::Unsupported)?;
+
+    // SAFETY: sockaddr fully initialized POD; pointer valid for `addrlen`; fd open.
+    let result = unsafe {
       let mut sockaddr: sockaddr_in6 = core::mem::zeroed();
       #[allow(clippy::cast_possible_truncation)]
       {
@@ -300,16 +311,11 @@ impl OsSocket {
       sockaddr.sin6_port = addr.port().to_be();
       sockaddr.sin6_addr.s6_addr = addr.ip().octets();
 
-      #[allow(clippy::cast_possible_truncation)]
-      let result = libc::connect(
-        self.fd,
-        &raw const sockaddr as *const sockaddr,
-        core::mem::size_of::<sockaddr_in6>() as socklen_t,
-      );
+      libc::connect(self.fd, &raw const sockaddr as *const sockaddr, addrlen)
+    };
 
-      if result < 0 {
-        return Err(get_last_error());
-      }
+    if result < 0 {
+      return Err(get_last_error());
     }
 
     self.connected = true;
@@ -320,6 +326,7 @@ impl OsSocket {
 impl Drop for OsSocket {
   fn drop(&mut self) {
     if self.fd >= 0 {
+      // SAFETY: fd was created by `socket()` and not yet closed.
       unsafe {
         libc::close(self.fd);
       }

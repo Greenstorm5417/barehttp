@@ -33,7 +33,7 @@ impl<'a> Uri<'a> {
   /// Parse an absolute URI (`http://…` / `https://…`).
   ///
   /// # Errors
-  /// [`ParseError::InvalidUri`] when the input is not a usable absolute URI.
+  /// [`ParseError::InvalidUri`] on a malformed absolute URI.
   pub fn parse(input: &'a str) -> Result<Self, ParseError> {
     Parser::new(input).parse_uri()
   }
@@ -80,7 +80,7 @@ impl<'a> Uri<'a> {
 
   /// `path` + optional `?query` for the request-target.
   #[must_use]
-  pub fn path_and_query(&self) -> alloc::string::String {
+  pub fn to_path_and_query(&self) -> alloc::string::String {
     let path = if self.path().is_empty() {
       "/"
     } else {
@@ -425,4 +425,37 @@ const fn is_pchar(ch: u8) -> bool {
 
 const fn is_reg_name_char(ch: u8) -> bool {
   is_unreserved(ch) || is_sub_delim(ch) || ch == b'%'
+}
+
+impl core::fmt::Display for Uri<'_> {
+  fn fmt(
+    &self,
+    f: &mut core::fmt::Formatter<'_>,
+  ) -> core::fmt::Result {
+    f.write_str(self.scheme)?;
+    f.write_str("://")?;
+    if let Some(auth) = &self.authority {
+      match &auth.host {
+        Host::RegName(name) => f.write_str(name)?,
+        Host::IpAddr(IpAddr::V4(v4)) => write!(f, "{v4}")?,
+        Host::IpAddr(IpAddr::V6(v6)) => write!(f, "[{v6}]")?,
+      }
+      if let Some(port) = auth.port {
+        write!(f, ":{port}")?;
+      }
+    }
+    f.write_str(self.path)?;
+    if let Some(query) = self.query {
+      write!(f, "?{query}")?;
+    }
+    Ok(())
+  }
+}
+
+impl<'a> core::convert::TryFrom<&'a str> for Uri<'a> {
+  type Error = ParseError;
+
+  fn try_from(s: &'a str) -> Result<Self, Self::Error> {
+    Self::parse(s)
+  }
 }

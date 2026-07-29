@@ -73,11 +73,9 @@ fn get_200_plain() {
     );
   });
 
-  let client = HttpClient::with_config(Config {
-    max_redirects: 0,
-    max_idle_per_host: 0,
-    ..Default::default()
-  });
+  let client = HttpClient::with_config(
+    Config::builder().max_redirects(0).max_idle_per_host(0).build(),
+  );
   let url = format!("http://{addr}/");
   let resp = client.get(&url).call().expect("call");
   assert_eq!(resp.status(), 200);
@@ -94,10 +92,7 @@ fn chunked_body() {
     );
   });
 
-  let client = HttpClient::with_config(Config {
-    max_idle_per_host: 0,
-    ..Default::default()
-  });
+  let client = HttpClient::with_config(Config::builder().max_idle_per_host(0).build());
   let resp = client.get(format!("http://{addr}/")).call().unwrap();
   assert_eq!(resp.as_bytes(), b"hello");
 }
@@ -119,17 +114,15 @@ fn redirect_follow() {
     }
   });
 
-  let client = HttpClient::with_config(Config {
-    max_redirects: 5,
-    max_idle_per_host: 0,
-    ..Default::default()
-  });
+  let client = HttpClient::with_config(
+    Config::builder().max_redirects(5).max_idle_per_host(0).build(),
+  );
   let resp = client.get(format!("http://{addr}/start")).call().unwrap();
   assert_eq!(resp.status(), 200);
   assert_eq!(resp.as_bytes(), b"done");
 }
 
-#[cfg(feature = "gzip-decompression")]
+#[cfg(feature = "gzip")]
 #[test]
 fn gzip_content_encoding() {
   use flate2::Compression;
@@ -152,10 +145,7 @@ fn gzip_content_encoding() {
     write_all(&mut stream, &msg);
   });
 
-  let client = HttpClient::with_config(Config {
-    max_idle_per_host: 0,
-    ..Default::default()
-  });
+  let client = HttpClient::with_config(Config::builder().max_idle_per_host(0).build());
   let resp = client.get(format!("http://{addr}/")).call().unwrap();
   assert_eq!(resp.as_bytes(), plain);
 }
@@ -170,11 +160,9 @@ fn body_limit_returns_error() {
     );
   });
 
-  let client = HttpClient::with_config(Config {
-    max_response_body_size: 16,
-    max_idle_per_host: 0,
-    ..Default::default()
-  });
+  let client = HttpClient::with_config(
+    Config::builder().max_response_body_size(16).max_idle_per_host(0).build(),
+  );
   let err = client.get(format!("http://{addr}/")).call().unwrap_err();
   assert!(matches!(err, barehttp::Error::BodyExceedsLimit(16)), "got {err:?}");
 }

@@ -42,13 +42,7 @@ fn raw_to_response_for_test(
   } else {
     crate::parser::Response::parse_body_from_bytes(&body_bytes, &mut headers, status_code, version, usize::MAX).unwrap()
   };
-  crate::parser::Response {
-    status_code,
-    reason,
-    headers,
-    body,
-    trailers,
-  }
+  crate::parser::Response::from_parts(status_code, reason, headers, body, trailers)
 }
 
 fn process(
@@ -60,9 +54,9 @@ fn process(
   method: Method,
   body: Option<Vec<u8>>,
 ) -> Result<Option<(String, Method, Option<Vec<u8>>)>, Error> {
-  if config.http_status_as_error && (400..600).contains(&raw.status_code) {
+  if config.http_status_as_error() && (400..600).contains(&raw.status_code) {
     let response = raw_to_response_for_test(raw, method);
-    return Err(Error::HttpStatus(response.status_code, response));
+    return Err(Error::HttpStatus(response.status_code(), response));
   }
   let uri = Uri::parse(current_url).unwrap();
   let response = raw_to_response_for_test(raw, method);
@@ -80,22 +74,20 @@ fn process(
 
 #[test]
 fn https_only_policy_rejects_http() {
-  let config = Config {
-    https_only: true,
-    assume_tls_socket: true,
-    ..Default::default()
-  };
+  let config = Config::builder()
+    .https_only(true)
+    .assume_tls_socket(true)
+    .build();
   let uri = Uri::parse("http://example.com").unwrap();
   assert!(matches!(validate_protocol(&config, &uri), Err(Error::HttpsOnly)));
 }
 
 #[test]
 fn https_only_policy_allows_https_with_tls_socket() {
-  let config = Config {
-    https_only: true,
-    assume_tls_socket: true,
-    ..Default::default()
-  };
+  let config = Config::builder()
+    .https_only(true)
+    .assume_tls_socket(true)
+    .build();
   let uri = Uri::parse("https://example.com").unwrap();
   assert!(validate_protocol(&config, &uri).is_ok());
 }
@@ -111,10 +103,9 @@ fn default_rejects_https_without_tls_socket() {
 
 #[test]
 fn assume_tls_socket_allows_https() {
-  let config = Config {
-    assume_tls_socket: true,
-    ..Default::default()
-  };
+  let config = Config::builder()
+    .assume_tls_socket(true)
+    .build();
   let uri = Uri::parse("https://example.com").unwrap();
   assert!(validate_protocol(&config, &uri).is_ok());
 }
@@ -137,8 +128,8 @@ fn policy_drops_body_for_head_requests() {
     body_bytes: b"1234567890".to_vec(),
   };
   let resp = raw_to_response_for_test(raw, Method::Head);
-  assert_eq!(resp.status_code, 200);
-  assert!(resp.body.as_slice().is_empty(), "HEAD response body should be empty");
+  assert_eq!(resp.status_code(), 200);
+  assert!(resp.body().is_empty(), "HEAD response body should be empty");
 }
 
 #[test]
@@ -310,10 +301,9 @@ fn status_error_when_configured() {
   for status in [404_u16, 500] {
     let mut visited = Vec::new();
     let mut count = 0;
-    let config = Config {
-      http_status_as_error: true,
-      ..Default::default()
-    };
+    let config = Config::builder()
+    .http_status_as_error(true)
+    .build();
     let mut headers = Headers::new();
     headers.insert("X-Err", "yes");
     let raw = RawResponse {
@@ -336,9 +326,9 @@ fn status_error_when_configured() {
     match err {
       Error::HttpStatus(code, resp) => {
         assert_eq!(code, status);
-        assert_eq!(resp.status_code, status);
-        assert_eq!(resp.body.as_slice(), b"fail");
-        assert_eq!(resp.get_header("X-Err"), Some("yes"));
+        assert_eq!(resp.status_code(), status);
+        assert_eq!(resp.body(), b"fail");
+        assert_eq!(resp.header("X-Err"), Some("yes"));
       },
       other => panic!("expected HttpStatus, got {other:?}"),
     }
@@ -349,10 +339,9 @@ fn status_error_when_configured() {
 fn status_4xx_is_ok_when_configured_as_response() {
   let mut visited = Vec::new();
   let mut count = 0;
-  let config = Config {
-    http_status_as_error: false,
-    ..Default::default()
-  };
+  let config = Config::builder()
+    .http_status_as_error(false)
+    .build();
   let raw = RawResponse {
     status_code: 404,
     reason: String::from("Not Found"),
@@ -379,10 +368,9 @@ fn status_4xx_is_ok_when_configured_as_response() {
 fn too_many_redirects_is_error() {
   let mut visited = Vec::new();
   let mut count = 0;
-  let config = Config {
-    max_redirects: 2,
-    ..Default::default()
-  };
+  let config = Config::builder()
+    .max_redirects(2)
+    .build();
   let raw = make_redirect_response(301, "/next");
 
   process(
@@ -503,10 +491,9 @@ fn sanitize_strips_credentials_on_every_hop() {
 fn max_redirects_zero_does_not_follow() {
   let mut visited = Vec::new();
   let mut count = 0;
-  let config = Config {
-    max_redirects: 0,
-    ..Default::default()
-  };
+  let config = Config::builder()
+    .max_redirects(0)
+    .build();
   assert!(
     process(
       &config,
@@ -534,8 +521,8 @@ fn chunked_trailers_reach_response() {
     body_bytes: b"5\r\nhello\r\n0\r\nX-Trailer: value\r\n\r\n".to_vec(),
   };
   let resp = raw_to_response_for_test(raw, Method::Get);
-  assert_eq!(resp.body.as_slice(), b"hello");
-  assert_eq!(resp.trailers, vec![(String::from("X-Trailer"), String::from("value"))]);
+  assert_eq!(resp.body(), b"hello");
+  assert_eq!(resp.trailers(), &[(String::from("X-Trailer"), String::from("value"))]);
 }
 
 #[test]
@@ -562,10 +549,9 @@ fn build_request_is_http11_with_host_and_origin_form() {
 #[test]
 fn build_request_sends_connection_close_when_pooling_disabled() {
   let uri = Uri::parse("http://example.com/").unwrap();
-  let config = Config {
-    max_idle_per_host: 0,
-    ..Default::default()
-  };
+  let config = Config::builder()
+    .max_idle_per_host(0)
+    .build();
   let mut custom = Headers::new();
   custom.insert("Connection", "keep-alive");
   let bytes = build_request(&uri, Method::Get, "example.com", 80, &custom, None, &config).unwrap();

@@ -5,13 +5,15 @@ use crate::error::Error;
 use crate::headers::Headers;
 use crate::method::Method;
 use crate::parser::Response;
-use crate::socket::BlockingSocket;
+use crate::socket::{BlockingSocket, BlockingSocketFactory};
 use crate::util::{form_url_encode, percent_encode};
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::fmt;
 use core::time::Duration;
 
 /// Request builder for [`HttpClient`].
+#[must_use = "builders do nothing unless you call `.call()` or `.send()`"]
 pub struct ClientRequestBuilder<S, D> {
   client: HttpClient<S, D>,
   method: Method,
@@ -25,9 +27,23 @@ pub struct ClientRequestBuilder<S, D> {
   config_override: Option<Config>,
 }
 
+impl<S, D> fmt::Debug for ClientRequestBuilder<S, D> {
+  fn fmt(
+    &self,
+    f: &mut fmt::Formatter<'_>,
+  ) -> fmt::Result {
+    f.debug_struct("ClientRequestBuilder")
+      .field("method", &self.method)
+      .field("url", &self.url)
+      .field("headers", &self.headers)
+      .field("has_body", &self.body.is_some())
+      .finish_non_exhaustive()
+  }
+}
+
 impl<S, D> ClientRequestBuilder<S, D>
 where
-  S: BlockingSocket,
+  S: BlockingSocket + BlockingSocketFactory,
   D: DnsResolver,
 {
   pub(crate) fn new(
@@ -55,59 +71,54 @@ where
   }
 
   /// Override [`Config::timeout_connect`] for this request.
-  #[must_use]
   pub fn timeout_connect(
     mut self,
     timeout: Option<Duration>,
   ) -> Self {
     self.ensure_config_override();
     if let Some(ref mut c) = self.config_override {
-      c.timeout_connect = timeout;
+      c.set_timeout_connect(timeout);
     }
     self
   }
 
   /// Override [`Config::timeout_read`] for this request.
-  #[must_use]
   pub fn timeout_read(
     mut self,
     timeout: Option<Duration>,
   ) -> Self {
     self.ensure_config_override();
     if let Some(ref mut c) = self.config_override {
-      c.timeout_read = timeout;
+      c.set_timeout_read(timeout);
     }
     self
   }
 
   /// Override [`Config::timeout_write`] for this request.
-  #[must_use]
   pub fn timeout_write(
     mut self,
     timeout: Option<Duration>,
   ) -> Self {
     self.ensure_config_override();
     if let Some(ref mut c) = self.config_override {
-      c.timeout_write = timeout;
+      c.set_timeout_write(timeout);
     }
     self
   }
 
   /// Override [`Config::max_response_body_size`] for this request.
-  #[must_use]
   pub fn max_response_body_size(
     mut self,
     limit: usize,
   ) -> Self {
     self.ensure_config_override();
     if let Some(ref mut c) = self.config_override {
-      c.max_response_body_size = limit;
+      c.set_max_response_body_size(limit);
     }
     self
   }
 
   /// Append a header (does not replace existing values for the same name).
-  #[must_use]
   pub fn header(
     mut self,
     name: impl Into<String>,
@@ -118,7 +129,6 @@ where
   }
 
   /// Replace all values for a header name.
-  #[must_use]
   pub fn set_header(
     mut self,
     name: impl Into<String>,
@@ -129,7 +139,6 @@ where
   }
 
   /// Set `Content-Type`, replacing any prior value.
-  #[must_use]
   pub fn content_type(
     self,
     value: impl Into<String>,
@@ -138,7 +147,6 @@ where
   }
 
   /// Add a URL-encoded query parameter (space as `%20`).
-  #[must_use]
   pub fn query(
     mut self,
     key: impl Into<String>,
@@ -149,7 +157,6 @@ where
   }
 
   /// Add multiple URL-encoded query parameters (space as `%20`).
-  #[must_use]
   pub fn query_pairs<I, K, V>(
     mut self,
     iter: I,
@@ -165,12 +172,10 @@ where
     self
   }
 
-  /// Add a cookie to the request.
+  /// Append `name=value` to the Cookie header (`; `-joined) when the request is sent.
   ///
-  /// Appends `name=value` to the Cookie header (`; `-joined) when the request is sent.
   /// Invalid names/values (`;` or control characters) make [`Self::call`] / [`Self::send`]
   /// return [`Error::InvalidRequest`].
-  #[must_use]
   pub fn cookie(
     mut self,
     name: impl Into<String>,
@@ -181,7 +186,6 @@ where
   }
 
   /// Add a form data field (`application/x-www-form-urlencoded`).
-  #[must_use]
   pub fn form(
     mut self,
     key: impl Into<String>,
@@ -192,12 +196,11 @@ where
   }
 
   /// Set the request body.
-  #[must_use]
   pub fn body(
     mut self,
-    data: Vec<u8>,
+    data: impl AsRef<[u8]>,
   ) -> Self {
-    self.body = Some(data);
+    self.body = Some(data.as_ref().to_vec());
     self
   }
 
@@ -206,6 +209,16 @@ where
   /// # Errors
   /// [`Error::InvalidRequest`] if form fields and a body are both set, or a cookie is invalid.
   /// Otherwise the same failures as [`HttpClient::request_with_config`].
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// let response = barehttp::get("http://example.com")
+  ///     .header("Accept", "text/plain")
+  ///     .call()?;
+  /// assert!(response.status() > 0);
+  /// # Ok::<(), barehttp::Error>(())
+  /// ```
   pub fn call(self) -> Result<Response, Error> {
     if !self.form_data.is_empty() && self.body.is_some() {
       return Err(Error::InvalidRequest);

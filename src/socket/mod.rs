@@ -7,21 +7,29 @@ pub use os::OsSocket as OsBlockingSocket;
 
 use crate::error::SocketError;
 
-/// Blocking byte-stream socket.
-pub trait BlockingSocket: Sized {
-  /// Create an unbound socket.
-  ///
-  /// # Errors
-  /// [`SocketError::OsError`] if the OS cannot create the socket.
-  fn new() -> Result<Self, SocketError>;
-
+/// Blocking byte-stream socket (object-safe).
+///
+/// I/O methods only; usable as `dyn BlockingSocket`. Create OS sockets with
+/// [`OsBlockingSocket::new`]. Custom adapters for [`crate::HttpClient`] implement
+/// [`BlockingSocketFactory`].
+///
+/// # Examples
+///
+/// ```no_run
+/// use barehttp::{BlockingSocket, OsBlockingSocket};
+///
+/// let mut sock = OsBlockingSocket::new()?;
+/// sock.set_read_timeout(5_000)?;
+/// # Ok::<(), barehttp::SocketError>(())
+/// ```
+pub trait BlockingSocket {
   /// Connect to `addr`.
   ///
   /// `host` is the URI hostname for SNI / TLS identity. Cleartext adapters may ignore it.
   ///
   /// # Errors
   /// [`SocketError::ConnectionRefused`], [`SocketError::TimedOut`],
-  /// [`SocketError::InvalidAddress`], or [`SocketError::OsError`] on failure.
+  /// [`SocketError::InvalidAddress`], or [`SocketError::OsError`].
   fn connect(
     &mut self,
     addr: &SocketAddr,
@@ -77,7 +85,21 @@ pub trait BlockingSocket: Sized {
   /// Default is `false` (TLS wrappers). The client uses this to reject
   /// [`crate::config::Config::assume_tls_socket`] with a cleartext OS socket.
   #[must_use]
-  fn is_os_cleartext() -> bool {
+  fn is_os_cleartext() -> bool
+  where
+    Self: Sized,
+  {
     false
   }
+}
+
+/// Factory for unbound sockets used by [`crate::HttpClient`].
+///
+/// Outside [`BlockingSocket`]: methods returning `Self` break object safety.
+pub trait BlockingSocketFactory: BlockingSocket + Sized {
+  /// Create an unbound socket.
+  ///
+  /// # Errors
+  /// [`SocketError::OsError`] if the OS cannot create the socket.
+  fn new() -> Result<Self, SocketError>;
 }

@@ -1,5 +1,6 @@
 /// HTTP/1.1 message parse failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ParseError {
   /// Status-line version token is not `HTTP/x.y`.
   InvalidHttpVersion,
@@ -111,6 +112,7 @@ impl core::error::Error for ParseError {}
 
 /// DNS lookup failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DnsError {
   /// OS resolver failed; payload is the platform error code.
   ResolutionFailed(i32),
@@ -143,6 +145,7 @@ impl core::error::Error for DnsError {}
 
 /// Socket I/O failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SocketError {
   /// Socket is not connected.
   NotConnected,
@@ -188,8 +191,9 @@ impl core::fmt::Display for SocketError {
 
 impl core::error::Error for SocketError {}
 
-/// Error from [`crate::HttpClient`] and the free `get` / `post` / … functions.
-#[derive(Debug)]
+/// Error from [`crate::HttpClient`] and the free `get` / `post` / ... functions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
   /// Wire / framing parse failure.
   Parse(ParseError),
@@ -220,8 +224,8 @@ pub enum Error {
   /// Body larger than [`crate::config::Config::max_response_body_size`].
   BodyExceedsLimit(usize),
   /// Response body is not valid UTF-8.
-  Utf8Error,
-  /// Bad request construction (illegal cookie octets, form fields plus an explicit body, …).
+  Utf8Error(alloc::string::FromUtf8Error),
+  /// Bad request construction (illegal cookie octets, form fields plus an explicit body, ...).
   InvalidRequest,
 }
 
@@ -243,7 +247,7 @@ impl Error {
       },
       Self::ResponseHeaderTooLarge => "response headers too large",
       Self::BodyExceedsLimit(_) => "response body exceeds size limit",
-      Self::Utf8Error => "invalid UTF-8",
+      Self::Utf8Error(_) => "invalid UTF-8",
       Self::InvalidRequest => "invalid request",
     }
   }
@@ -260,6 +264,7 @@ impl core::fmt::Display for Error {
       Self::Socket(e) => write!(f, "socket error: {e}"),
       Self::HttpStatus(code, _) => write!(f, "HTTP status {code}"),
       Self::BodyExceedsLimit(limit) => write!(f, "response body exceeds limit of {limit} bytes"),
+      Self::Utf8Error(e) => write!(f, "invalid UTF-8: {e}"),
       other => f.write_str(other.as_str()),
     }
   }
@@ -271,13 +276,32 @@ impl core::error::Error for Error {
       Self::Parse(e) => Some(e),
       Self::Dns(e) => Some(e),
       Self::Socket(e) => Some(e),
+      Self::Utf8Error(e) => Some(e),
       _ => None,
     }
   }
 }
 
+impl From<ParseError> for Error {
+  fn from(value: ParseError) -> Self {
+    Self::Parse(value)
+  }
+}
+
+impl From<DnsError> for Error {
+  fn from(value: DnsError) -> Self {
+    Self::Dns(value)
+  }
+}
+
+impl From<SocketError> for Error {
+  fn from(value: SocketError) -> Self {
+    Self::Socket(value)
+  }
+}
+
 impl From<alloc::string::FromUtf8Error> for Error {
-  fn from(_: alloc::string::FromUtf8Error) -> Self {
-    Self::Utf8Error
+  fn from(value: alloc::string::FromUtf8Error) -> Self {
+    Self::Utf8Error(value)
   }
 }

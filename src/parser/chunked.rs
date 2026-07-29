@@ -26,18 +26,35 @@ impl ChunkedDecoder {
 
   /// Trailer fields after the last chunk (RFC 9112 §7.1.2).
   #[must_use]
+  #[allow(dead_code)]
   pub fn trailers(&self) -> &[(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)] {
     &self.trailers
   }
 
+  /// Take trailer fields out of the decoder (avoids cloning after a successful decode).
+  #[must_use]
+  pub fn take_trailers(&mut self) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> {
+    core::mem::take(&mut self.trailers)
+  }
+
   /// `Ok(true)` if `input` contains a complete chunked message; `Ok(false)` if more
   /// bytes are needed; `Err` on malformed framing.
+  #[allow(dead_code)]
   pub fn message_complete(input: &[u8]) -> Result<bool, ParseError> {
+    Ok(Self::message_len_if_complete(input)?.is_some())
+  }
+
+  /// Bytes consumed by a complete chunked message, or `None` if more input is needed.
+  ///
+  /// # Errors
+  /// [`ParseError`] on illegal framing.
+  pub fn message_len_if_complete(input: &[u8]) -> Result<Option<usize>, ParseError> {
     let mut decoder = Self::new();
+    // Discard decoded payload; callers that need the body decode separately.
     let mut output = alloc::vec::Vec::new();
     match decoder.decode_chunk(input, &mut output) {
-      Ok(_) => Ok(true),
-      Err(ParseError::UnexpectedEndOfInput | ParseError::MissingCrlf) => Ok(false),
+      Ok(rest) => Ok(Some(input.len().saturating_sub(rest.len()))),
+      Err(ParseError::UnexpectedEndOfInput | ParseError::MissingCrlf) => Ok(None),
       Err(e) => Err(e),
     }
   }
@@ -46,11 +63,9 @@ impl ChunkedDecoder {
   ///
   /// # Errors
   /// [`ParseError`] when the message is incomplete or the framing is illegal.
+  #[allow(dead_code)]
   pub fn message_len(input: &[u8]) -> Result<usize, ParseError> {
-    let mut decoder = Self::new();
-    let mut output = alloc::vec::Vec::new();
-    let rest = decoder.decode_chunk(input, &mut output)?;
-    Ok(input.len().saturating_sub(rest.len()))
+    Self::message_len_if_complete(input)?.ok_or(ParseError::UnexpectedEndOfInput)
   }
 
   pub fn decode_chunk<'a>(

@@ -2,6 +2,6 @@
 
 fn main() -> Result<(), barehttp::Error> {
   let response = barehttp::get("http://example.com").call()?;
-  println!("{} {}", response.status(), response.text()?);
+  println!("{} {}", response.status(), response.to_text()?);
   Ok(())
 }

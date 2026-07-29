@@ -25,8 +25,12 @@ unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
 // SAFETY: `lock()` serializes access; only `T: Send` values are shared.
 unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
 
-// SAFETY: guard is not `Sync` (holds exclusive borrow); `Send` if `T` is.
+// SAFETY: guard holds exclusive access; sending it is safe when `T: Send`.
 unsafe impl<T: ?Sized + Send> Send for MutexGuard<'_, T> {}
+// SAFETY: same as `std::sync::MutexGuard` — `&MutexGuard` only yields `&T`, so the
+// guard is `Sync` iff `T: Sync`. Without this bound, auto-`Sync` would follow from
+// `Mutex<T>: Sync` (`T: Send`) and allow sharing `&MutexGuard<Cell<_>>` across threads.
+unsafe impl<T: ?Sized + Sync> Sync for MutexGuard<'_, T> {}
 
 impl<T> Mutex<T> {
   /// Create a mutex around `data`.
@@ -76,6 +80,15 @@ impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
   fn deref_mut(&mut self) -> &mut T {
     // SAFETY: we hold the lock; no other guard exists.
     unsafe { &mut *self.lock.data.get() }
+  }
+}
+
+impl<T: ?Sized> fmt::Debug for MutexGuard<'_, T> {
+  fn fmt(
+    &self,
+    f: &mut fmt::Formatter<'_>,
+  ) -> fmt::Result {
+    f.debug_struct("MutexGuard").finish_non_exhaustive()
   }
 }
 

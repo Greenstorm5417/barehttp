@@ -8,7 +8,7 @@ fn test_body_with_content_length() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), b"Hello");
+  assert_eq!(response.body(), b"Hello");
 }
 
 #[test]
@@ -17,7 +17,7 @@ fn test_body_content_length_zero() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert!(response.body.is_empty());
+  assert!(response.body().is_empty());
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn test_body_1xx_status_no_body() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert!(response.body.is_empty());
+  assert!(response.body().is_empty());
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn test_body_204_no_content_ignores_body() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert!(response.body.is_empty());
+  assert!(response.body().is_empty());
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn test_body_304_not_modified_no_body() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert!(response.body.is_empty());
+  assert!(response.body().is_empty());
 }
 
 #[test]
@@ -86,7 +86,7 @@ fn test_body_no_content_length_no_transfer_encoding() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), b"Some body content");
+  assert_eq!(response.body(), b"Some body content");
 }
 
 #[test]
@@ -95,7 +95,7 @@ fn test_body_content_length_whitespace() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), b"Hello");
+  assert_eq!(response.body(), b"Hello");
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn test_body_multiple_content_length_same_value() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), b"Hello");
+  assert_eq!(response.body(), b"Hello");
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn test_body_transfer_encoding_not_chunked() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), b"CompressedData");
+  assert_eq!(response.body(), b"CompressedData");
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn test_body_with_binary_data() {
   let result = Response::parse(&input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), &[0x00, 0xFF, 0xAA, 0x55, 0xCC]);
+  assert_eq!(response.body(), &[0x00, 0xFF, 0xAA, 0x55, 0xCC]);
 }
 
 #[test]

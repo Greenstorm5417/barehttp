@@ -220,6 +220,9 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         Ok(body_bytes)
       },
       BodyReadStrategy::Chunked => {
+        // ponytail: each poll re-scans from scratch (O(n²) on large fragmented bodies).
+        // Incremental stateful decoder would need an input-offset cursor; deferred.
+        // `message_len_if_complete` still avoids a second full decode after the loop.
         let mut raw_bytes = Vec::from(initial_bytes);
         if raw_bytes.len() > max_body {
           self.reusable = false;
@@ -227,10 +230,10 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         }
         let mut chunk_buffer = alloc::vec![0u8; 8192];
 
-        loop {
-          match ChunkedDecoder::message_complete(&raw_bytes) {
-            Ok(true) => break,
-            Ok(false) => {},
+        let consumed = loop {
+          match ChunkedDecoder::message_len_if_complete(&raw_bytes) {
+            Ok(Some(n)) => break n,
+            Ok(None) => {},
             Err(e) => {
               self.reusable = false;
               return Err(Error::Parse(e));
@@ -248,12 +251,8 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
             self.reusable = false;
             return Err(Error::BodyExceedsLimit(max_body));
           }
-        }
+        };
 
-        let consumed = ChunkedDecoder::message_len(&raw_bytes).map_err(|e| {
-          self.reusable = false;
-          Error::Parse(e)
-        })?;
         if consumed < raw_bytes.len() {
           // Bytes past the chunked message cannot be unread; do not pool.
           self.reusable = false;
@@ -331,7 +330,7 @@ where
 
     let mut last_error = None;
     for addr in &addresses {
-      if let Some(ms) = duration_ms_u32(config.timeout_connect) {
+      if let Some(ms) = duration_ms_u32(config.timeout_connect()) {
         socket.set_write_timeout(ms).map_err(Error::Socket)?;
       }
 
@@ -348,7 +347,7 @@ where
     }
 
     // Connect used SO_SNDTIMEO; don't leave it as the post-connect write timeout.
-    if config.timeout_connect.is_some() && config.timeout_write.is_none() {
+    if config.timeout_connect().is_some() && config.timeout_write().is_none() {
       socket.set_write_timeout(0).map_err(Error::Socket)?;
     }
   }
@@ -356,8 +355,8 @@ where
   apply_io_timeouts(socket, config)?;
   Ok(Connection::new(
     socket,
-    config.max_response_header_size,
-    config.max_response_body_size,
+    config.max_response_header_size(),
+    config.max_response_body_size(),
   ))
 }
 
@@ -367,21 +366,16 @@ fn apply_io_timeouts<S: BlockingSocket>(
 ) -> Result<(), Error> {
   // Always apply (including 0 = blocking) so a pooled socket cannot keep a prior
   // request's timeout when this request leaves timeout_* as None.
-  let read_ms = duration_ms_u32(config.timeout_read).unwrap_or(0);
+  let read_ms = duration_ms_u32(config.timeout_read()).unwrap_or(0);
   socket.set_read_timeout(read_ms).map_err(Error::Socket)?;
-  let write_ms = duration_ms_u32(config.timeout_write).unwrap_or(0);
+  let write_ms = duration_ms_u32(config.timeout_write()).unwrap_or(0);
   socket.set_write_timeout(write_ms).map_err(Error::Socket)?;
   Ok(())
 }
 
 fn duration_ms_u32(d: Option<Duration>) -> Option<u32> {
-  let timeout_ms = d?.as_millis();
-  if timeout_ms <= u128::from(u32::MAX) {
-    #[allow(clippy::cast_possible_truncation)]
-    Some(timeout_ms as u32)
-  } else {
-    None
-  }
+  // Overflow must not become “no timeout” (None → 0 blocking): saturate to u32::MAX.
+  Some(u32::try_from(d?.as_millis()).unwrap_or(u32::MAX))
 }
 
 /// Length of the header section including the terminating blank line, if complete.

@@ -1,8 +1,11 @@
-//! Custom `DnsResolver` + `BlockingSocket` wired into `HttpClient`.
-//! Thin logging wrappers around the OS resolver/socket — real network I/O.
+//! Custom `DnsResolver` + `BlockingSocket` on `HttpClient`.
+//! Logging wrappers over the OS resolver and socket.
 
 use barehttp::config::Config;
-use barehttp::{BlockingSocket, DnsResolver, Error, HttpClient, IpAddr, OsBlockingSocket, OsDnsResolver, SocketAddr};
+use barehttp::{
+  BlockingSocket, BlockingSocketFactory, DnsResolver, Error, HttpClient, IpAddr, OsBlockingSocket,
+  OsDnsResolver, SocketAddr,
+};
 use barehttp::{DnsError, SocketError};
 
 /// OS DNS with resolve logging.
@@ -28,12 +31,6 @@ struct LoggingSocket {
 }
 
 impl BlockingSocket for LoggingSocket {
-  fn new() -> Result<Self, SocketError> {
-    Ok(Self {
-      inner: OsBlockingSocket::new()?,
-    })
-  }
-
   fn connect(
     &mut self,
     addr: &SocketAddr,
@@ -81,12 +78,20 @@ impl BlockingSocket for LoggingSocket {
   }
 }
 
+impl BlockingSocketFactory for LoggingSocket {
+  fn new() -> Result<Self, SocketError> {
+    Ok(Self {
+      inner: OsBlockingSocket::new()?,
+    })
+  }
+}
+
 fn main() -> Result<(), Error> {
   let dns = LoggingDns { inner: OsDnsResolver };
   let client: HttpClient<LoggingSocket, LoggingDns> = HttpClient::with_adapters(dns, Config::default());
 
   let response = client.get("http://example.com/").call()?;
-  let preview: String = response.text()?.chars().take(120).collect();
+  let preview: String = response.to_text()?.chars().take(120).collect();
   println!("{} {}", response.status(), preview);
   Ok(())
 }

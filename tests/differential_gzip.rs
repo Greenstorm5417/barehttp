@@ -1,9 +1,9 @@
-//! barehttp gzip/deflate vs flate2 (dev-dep). Needs `--features gzip-decompression`.
+//! barehttp gzip/deflate vs flate2 (dev-dep). Needs `--features gzip`.
 
-#![cfg(feature = "gzip-decompression")]
+#![cfg(feature = "gzip")]
 
 use barehttp::gzip::{DecompressError, decompress_gzip, decompress_http_deflate};
-use barehttp::{ParseError, Response};
+use barehttp::Response;
 use flate2::Compression;
 use flate2::read::{GzDecoder, ZlibDecoder};
 use flate2::write::{GzEncoder, ZlibEncoder};
@@ -97,12 +97,11 @@ fn bomb_via_response_body_limit() {
   let ok = Response::parse(&msg).unwrap();
   assert_eq!(ok.as_bytes().len(), plain.len());
 
-  use barehttp::Headers;
-  use barehttp::Version;
-  let mut headers = Headers::new();
-  headers.insert("Content-Encoding", "gzip");
-  let err = Response::parse_body_from_bytes(&gz, &mut headers, 200, Version::HTTP_11, 512).unwrap_err();
-  assert_eq!(err, ParseError::BodyExceedsLimit(512));
+  // Body size limit is enforced on decompressed output (same path as Content-Encoding).
+  assert_eq!(
+    decompress_gzip(&gz, 512),
+    Err(DecompressError::LimitExceeded)
+  );
 }
 
 #[test]

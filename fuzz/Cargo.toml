@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-barehttp = { path = "..", features = ["gzip-decompression"] }
+barehttp = { path = "..", features = ["gzip"] }
 
 [[bin]]
 name = "parse_response"

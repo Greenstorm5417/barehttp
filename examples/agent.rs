@@ -12,7 +12,7 @@ fn main() -> Result<(), barehttp::Error> {
   println!(
     "{} {}",
     response.status(),
-    response.text()?.chars().take(120).collect::<String>()
+    response.to_text()?.chars().take(120).collect::<String>()
   );
   Ok(())
 }

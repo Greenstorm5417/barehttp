@@ -10,17 +10,18 @@ use crate::parser::Response;
 use crate::parser::serialize_request;
 use crate::parser::uri::{Host, Uri};
 use crate::request_builder::ClientRequestBuilder;
-use crate::socket::BlockingSocket;
+use crate::socket::{BlockingSocket, BlockingSocketFactory};
 use crate::transport::{ConnectionPool, PoolKey, RawResponse};
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::fmt;
 
 #[cfg(feature = "cookie-jar")]
 use crate::cookie_jar::CookieStore;
 
-/// HTTP client. `S` = socket (`BlockingSocket`), `D` = DNS (`DnsResolver`).
+/// HTTP client. `S` = socket ([`BlockingSocketFactory`]), `D` = DNS (`DnsResolver`).
 ///
 /// [`Clone`] shares the connection pool (and cookie store when enabled) via `Arc`.
 ///
@@ -37,6 +38,17 @@ pub struct HttpClient<S, D> {
   config: Arc<Config>,
   #[cfg(feature = "cookie-jar")]
   cookie_store: Arc<CookieStore>,
+}
+
+impl<S, D> fmt::Debug for HttpClient<S, D> {
+  fn fmt(
+    &self,
+    f: &mut fmt::Formatter<'_>,
+  ) -> fmt::Result {
+    f.debug_struct("HttpClient")
+      .field("config", &self.config)
+      .finish_non_exhaustive()
+  }
 }
 
 impl<S, D> Clone for HttpClient<S, D> {
@@ -73,7 +85,7 @@ impl Default for HttpClient<crate::socket::OsBlockingSocket, crate::dns::OsDnsRe
 
 impl<S, D> HttpClient<S, D>
 where
-  S: BlockingSocket,
+  S: BlockingSocketFactory,
   D: DnsResolver,
 {
   /// Custom DNS + config. Socket type `S` comes from `S::new()` at connect time
@@ -84,7 +96,7 @@ where
     config: Config,
   ) -> Self {
     Self {
-      pool: Arc::new(ConnectionPool::new(config.max_idle_per_host, config.max_idle_age)),
+      pool: Arc::new(ConnectionPool::new(config.max_idle_per_host(), config.max_idle_age())),
       dns: Arc::new(dns),
       config: Arc::new(config),
       #[cfg(feature = "cookie-jar")]
@@ -190,7 +202,7 @@ where
     body: Option<Vec<u8>>,
   ) -> Result<Response, Error> {
     // Refuse assume_tls_socket with cleartext OS adapter.
-    if config.assume_tls_socket && S::is_os_cleartext() {
+    if config.assume_tls_socket() && S::is_os_cleartext() {
       return Err(Error::TlsNotConfigured);
     }
 
@@ -212,7 +224,7 @@ where
         let is_secure = uri.scheme().eq_ignore_ascii_case("https");
         let cookie_header = self
           .cookie_store
-          .get_request_cookies(&current_url, is_secure);
+          .request_cookie_header(&current_url, is_secure);
         headers_with_cookies.merge_cookie(&cookie_header);
       }
 
@@ -247,10 +259,10 @@ where
         }
       }
 
-      let response = raw_to_response(raw, current_method, config.max_response_body_size)?;
+      let response = raw_to_response(raw, current_method, config.max_response_body_size())?;
 
-      if config.http_status_as_error && (400..600).contains(&response.status_code) {
-        return Err(Error::HttpStatus(response.status_code, response));
+      if config.http_status_as_error() && (400..600).contains(&response.status_code()) {
+        return Err(Error::HttpStatus(response.status_code(), response));
       }
 
       let Some((next_url, next_method, next_body)) = follow_redirect(
@@ -276,7 +288,7 @@ where
 }
 
 const fn pooling_enabled(config: &Config) -> bool {
-  config.max_idle_per_host > 0
+  config.max_idle_per_host() > 0
 }
 
 fn raw_to_response(
@@ -295,19 +307,19 @@ fn raw_to_response(
   let (response_body, trailers) = if method == Method::Head {
     (Vec::new(), Vec::new())
   } else {
-    Response::parse_body_from_bytes(&body_bytes, &mut headers, status_code, version, max_body).map_err(|e| match e {
+    Response::parse_body_from_owned(body_bytes, &mut headers, status_code, version, max_body).map_err(|e| match e {
       crate::error::ParseError::BodyExceedsLimit(n) => Error::BodyExceedsLimit(n),
       other => Error::Parse(other),
     })?
   };
 
-  Ok(Response {
+  Ok(Response::from_parts(
     status_code,
     reason,
     headers,
-    body: response_body,
+    response_body,
     trailers,
-  })
+  ))
 }
 
 /// Check scheme against `assume_tls_socket` and `https_only`.
@@ -315,10 +327,10 @@ pub const fn validate_protocol(
   config: &Config,
   uri: &Uri,
 ) -> Result<(), Error> {
-  if uri.scheme().eq_ignore_ascii_case("https") && !config.assume_tls_socket {
+  if uri.scheme().eq_ignore_ascii_case("https") && !config.assume_tls_socket() {
     return Err(Error::TlsNotConfigured);
   }
-  if config.https_only && !uri.scheme().eq_ignore_ascii_case("https") {
+  if config.https_only() && !uri.scheme().eq_ignore_ascii_case("https") {
     return Err(Error::HttpsOnly);
   }
   Ok(())
@@ -326,8 +338,7 @@ pub const fn validate_protocol(
 
 /// Strip hop-by-hop headers plus Authorization and Cookie on every redirect hop
 /// (`RedirectAuthHeaders::Never`). Always strip Content-Length and Host (rebuilt
-/// for the next hop); when `drop_body` also strip Content-Type so it cannot
-/// disagree with an empty body.
+/// for the next hop). When `drop_body`, also strip Content-Type (body is empty).
 pub fn sanitize_redirect_headers(
   headers: &mut Headers,
   drop_body: bool,
@@ -362,7 +373,7 @@ const fn is_followable_redirect(status: u16) -> bool {
 ///
 /// Method / body rules match ureq (`ureq_proto` redirect):
 /// - 301/302/303: GET/HEAD keep method; all others become GET with no body.
-/// - 307/308: GET/HEAD keep method; POST/PUT/PATCH/DELETE → [`Error::RedirectFailed`].
+/// - 307/308: GET/HEAD keep method; POST/PUT/PATCH/DELETE -> [`Error::RedirectFailed`].
 pub fn follow_redirect(
   config: &Config,
   visited_urls: &mut Vec<String>,
@@ -374,16 +385,16 @@ pub fn follow_redirect(
   current_body: Option<Vec<u8>>,
 ) -> Result<Option<(String, Method, Option<Vec<u8>>)>, Error> {
   // `max_redirects == 0` means do not follow (return the redirect response).
-  if config.max_redirects == 0 || !is_followable_redirect(response.status_code) {
+  if config.max_redirects() == 0 || !is_followable_redirect(response.status_code()) {
     return Ok(None);
   }
 
-  if *redirect_count >= config.max_redirects {
+  if *redirect_count >= config.max_redirects() {
     return Err(Error::TooManyRedirects);
   }
 
   let location = response
-    .get_header("location")
+    .header("location")
     .ok_or(Error::MissingRedirectLocation)?;
 
   let next_url = current_uri
@@ -396,7 +407,7 @@ pub fn follow_redirect(
 
   visited_urls.push(String::from(current_url));
 
-  let (next_method, next_body) = redirect_method_and_body(response.status_code, current_method, current_body)?;
+  let (next_method, next_body) = redirect_method_and_body(response.status_code(), current_method, current_body)?;
 
   *redirect_count = redirect_count.saturating_add(1);
 
@@ -411,7 +422,7 @@ fn redirect_method_and_body(
   match status {
     307 | 308 => {
       // Retain method only when there is no request body to replay (ureq).
-      if method.need_request_body() || method == Method::Delete {
+      if method.needs_request_body() || method == Method::Delete {
         return Err(Error::RedirectFailed);
       }
       Ok((method, body))
@@ -440,7 +451,7 @@ fn execute<S, D>(
   body: Option<&[u8]>,
 ) -> Result<RawResponse, Error>
 where
-  S: BlockingSocket,
+  S: BlockingSocket + BlockingSocketFactory,
   D: DnsResolver,
 {
   let host_str = host_from_uri(uri);
@@ -503,7 +514,7 @@ fn try_one_hop<S, D>(
   reused: bool,
 ) -> Result<(RawResponse, bool), Error>
 where
-  S: BlockingSocket,
+  S: BlockingSocket + BlockingSocketFactory,
   D: DnsResolver,
 {
   let mut conn = crate::transport::connection::connect(socket, dns, uri, config, reused)?;
@@ -530,7 +541,7 @@ fn get_or_create_socket<S>(
   pool_key: &PoolKey,
 ) -> Result<(S, bool), Error>
 where
-  S: BlockingSocket,
+  S: BlockingSocket + BlockingSocketFactory,
 {
   if pooling_enabled(config)
     && let Some(s) = pool.get(pool_key)
@@ -542,7 +553,7 @@ where
 
 /// Build wire request bytes (HTTP/1.1 + Host + origin-form target).
 ///
-/// `pub` so unit tests can assert serialization.
+/// Exposed for unit tests that assert wire serialization.
 pub fn build_request(
   uri: &Uri,
   method: Method,
@@ -572,26 +583,26 @@ pub fn build_request(
     headers.set(Headers::CONNECTION, "close");
   }
 
-  if !config.user_agent.is_empty() && !headers.contains(Headers::USER_AGENT) {
-    headers.insert(Headers::USER_AGENT, config.user_agent.as_str());
+  if !config.user_agent().is_empty() && !headers.contains(Headers::USER_AGENT) {
+    headers.insert(Headers::USER_AGENT, config.user_agent());
   }
 
-  if !config.accept.is_empty() && !headers.contains(Headers::ACCEPT) {
-    headers.insert(Headers::ACCEPT, config.accept.as_str());
+  if !config.accept().is_empty() && !headers.contains(Headers::ACCEPT) {
+    headers.insert(Headers::ACCEPT, config.accept());
   }
 
-  #[cfg(any(feature = "gzip-decompression", feature = "zstd-decompression"))]
+  #[cfg(any(feature = "gzip", feature = "zstd"))]
   if !headers.contains(Headers::ACCEPT_ENCODING) {
     #[allow(unused_mut)]
     let mut encodings: Vec<&str> = Vec::new();
 
-    #[cfg(feature = "gzip-decompression")]
+    #[cfg(feature = "gzip")]
     {
       encodings.push("gzip");
       encodings.push("deflate");
     }
 
-    #[cfg(feature = "zstd-decompression")]
+    #[cfg(feature = "zstd")]
     encodings.push("zstd");
 
     if !encodings.is_empty() {
@@ -600,5 +611,5 @@ pub fn build_request(
     }
   }
 
-  serialize_request(method.as_str(), &uri.path_and_query(), &headers, body).map_err(Error::Parse)
+  serialize_request(method.as_str(), &uri.to_path_and_query(), &headers, body).map_err(Error::Parse)
 }

@@ -21,5 +21,6 @@ pub fn has_complete_headers(data: &[u8]) -> bool {
   data.windows(4).any(|w| w == b"\r\n\r\n") || data.windows(2).any(|w| w == b"\n\n")
 }
 
-pub use response::{BodyReadStrategy, Response};
+pub use response::Response;
+pub use response::BodyReadStrategy;
 pub use wire_request::serialize_request;

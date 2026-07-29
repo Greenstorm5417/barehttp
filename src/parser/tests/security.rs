@@ -176,7 +176,7 @@ fn test_bare_lf_only_status_still_parses_or_rejects_consistently() {
   let _ = Response::parse(input);
 }
 
-#[cfg(feature = "gzip-decompression")]
+#[cfg(feature = "gzip")]
 #[test]
 fn test_truncated_gzip_body_rejected() {
   let input = b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 4\r\n\r\n\x1f\x8b\x08\x00";
@@ -184,7 +184,7 @@ fn test_truncated_gzip_body_rejected() {
   assert!(matches!(result, Err(ParseError::DecompressionFailed)), "got {result:?}");
 }
 
-#[cfg(feature = "gzip-decompression")]
+#[cfg(feature = "gzip")]
 #[test]
 fn test_corrupt_gzip_body_rejected() {
   let junk = [0xffu8; 32];

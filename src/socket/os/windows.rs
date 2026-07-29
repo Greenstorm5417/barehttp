@@ -14,14 +14,15 @@ fn ensure_wsa_initialized() -> Result<(), SocketError> {
     return Ok(());
   }
 
-  unsafe {
+  // SAFETY: `WSAStartup` writes only into the local `WSADATA`; version `0x0202` is Winsock 2.2.
+  let result = unsafe {
     let mut wsa_data: WSADATA = core::mem::zeroed();
-    let result = WSAStartup(0x0202, &raw mut wsa_data);
-    if result != 0 {
-      return Err(SocketError::OsError(result));
-    }
-    WSA_INITIALIZED.store(true, Ordering::Release);
+    WSAStartup(0x0202, &raw mut wsa_data)
+  };
+  if result != 0 {
+    return Err(SocketError::OsError(result));
   }
+  WSA_INITIALIZED.store(true, Ordering::Release);
 
   Ok(())
 }
@@ -38,10 +39,17 @@ const fn map_wsa_error(code: i32) -> SocketError {
 }
 
 fn get_last_wsa_error() -> SocketError {
+  // SAFETY: `WSAGetLastError` reads thread-local Winsock error state set by the prior call.
   map_wsa_error(unsafe { WSAGetLastError() })
 }
 
+/// Cap a byte length for Winsock `i32` buffer APIs (`recv` / `send`).
+fn winsock_buf_len(len: usize) -> i32 {
+  i32::try_from(len).unwrap_or(i32::MAX)
+}
+
 /// OS blocking TCP socket (`WinSock`).
+#[derive(Debug)]
 pub struct OsSocket {
   socket: SOCKET,
   connected: bool,
@@ -49,8 +57,12 @@ pub struct OsSocket {
   write_timeout_ms: Option<u32>,
 }
 
-impl crate::socket::BlockingSocket for OsSocket {
-  fn new() -> Result<Self, SocketError> {
+impl OsSocket {
+  /// Create an unbound socket (initializes WinSock once).
+  ///
+  /// # Errors
+  /// [`SocketError::OsError`] if `WSAStartup` fails.
+  pub fn new() -> Result<Self, SocketError> {
     ensure_wsa_initialized()?;
     Ok(Self {
       socket: INVALID_SOCKET,
@@ -59,7 +71,15 @@ impl crate::socket::BlockingSocket for OsSocket {
       write_timeout_ms: None,
     })
   }
+}
 
+impl crate::socket::BlockingSocketFactory for OsSocket {
+  fn new() -> Result<Self, SocketError> {
+    Self::new()
+  }
+}
+
+impl crate::socket::BlockingSocket for OsSocket {
   fn connect(
     &mut self,
     addr: &SocketAddr,
@@ -87,23 +107,26 @@ impl crate::socket::BlockingSocket for OsSocket {
       return Err(SocketError::NotConnected);
     }
 
-    unsafe {
-      #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-      let result = recv(self.socket, buf.as_mut_ptr() as *mut _, buf.len() as i32, 0);
+    // Chunk so `len` never truncates / wraps negative via `as i32`.
+    let chunk_len = winsock_buf_len(buf.len());
+    let chunk_usize = usize::try_from(chunk_len).unwrap_or(0);
+    let Some(chunk) = buf.get_mut(..chunk_usize) else {
+      return Ok(0);
+    };
 
-      if result == SOCKET_ERROR {
-        return Err(get_last_wsa_error());
-      }
+    // SAFETY: `self.socket` is a live SOCKET while connected; `chunk` is a valid writable
+    // buffer of `chunk_len` bytes for the duration of the call.
+    let result = unsafe { recv(self.socket, chunk.as_mut_ptr().cast(), chunk_len, 0) };
 
-      if result == 0 {
-        self.connected = false;
-      }
-
-      #[allow(clippy::cast_sign_loss)]
-      {
-        Ok(result as usize)
-      }
+    if result == SOCKET_ERROR {
+      return Err(get_last_wsa_error());
     }
+
+    if result == 0 {
+      self.connected = false;
+    }
+
+    usize::try_from(result).map_err(|_| SocketError::OsError(result))
   }
 
   fn write(
@@ -114,19 +137,22 @@ impl crate::socket::BlockingSocket for OsSocket {
       return Err(SocketError::NotConnected);
     }
 
-    unsafe {
-      #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-      let result = send(self.socket, buf.as_ptr() as *const _, buf.len() as i32, 0);
+    // Chunk so `len` never truncates / wraps negative via `as i32`.
+    let chunk_len = winsock_buf_len(buf.len());
+    let chunk_usize = usize::try_from(chunk_len).unwrap_or(0);
+    let Some(chunk) = buf.get(..chunk_usize) else {
+      return Ok(0);
+    };
 
-      if result == SOCKET_ERROR {
-        return Err(get_last_wsa_error());
-      }
+    // SAFETY: `self.socket` is a live SOCKET while connected; `chunk` is a valid readable
+    // buffer of `chunk_len` bytes for the duration of the call.
+    let result = unsafe { send(self.socket, chunk.as_ptr().cast(), chunk_len, 0) };
 
-      #[allow(clippy::cast_sign_loss)]
-      {
-        Ok(result as usize)
-      }
+    if result == SOCKET_ERROR {
+      return Err(get_last_wsa_error());
     }
+
+    usize::try_from(result).map_err(|_| SocketError::OsError(result))
   }
 
   fn shutdown(&mut self) -> Result<(), SocketError> {
@@ -134,13 +160,12 @@ impl crate::socket::BlockingSocket for OsSocket {
       return Ok(());
     }
 
-    unsafe {
-      let result = shutdown(self.socket, SD_BOTH);
-      if result == SOCKET_ERROR {
-        let err = get_last_wsa_error();
-        if !matches!(err, SocketError::NotConnected) {
-          return Err(err);
-        }
+    // SAFETY: `self.socket` is a live SOCKET; `SD_BOTH` is a valid how value.
+    let result = unsafe { shutdown(self.socket, SD_BOTH) };
+    if result == SOCKET_ERROR {
+      let err = get_last_wsa_error();
+      if !matches!(err, SocketError::NotConnected) {
+        return Err(err);
       }
     }
 
@@ -177,17 +202,19 @@ impl OsSocket {
     &mut self,
     family: u16,
   ) -> Result<(), SocketError> {
-    unsafe {
-      if self.socket != INVALID_SOCKET {
+    if self.socket != INVALID_SOCKET {
+      // SAFETY: `self.socket` was obtained from `socket()` / prior recreate and is not INVALID.
+      unsafe {
         closesocket(self.socket);
-        self.socket = INVALID_SOCKET;
       }
-      let sock = socket(i32::from(family), SOCK_STREAM, IPPROTO_TCP);
-      if sock == INVALID_SOCKET {
-        return Err(get_last_wsa_error());
-      }
-      self.socket = sock;
+      self.socket = INVALID_SOCKET;
     }
+    // SAFETY: `family` is `AF_INET` or `AF_INET6`; type/protocol are valid TCP stream args.
+    let sock = unsafe { socket(i32::from(family), SOCK_STREAM, IPPROTO_TCP) };
+    if sock == INVALID_SOCKET {
+      return Err(get_last_wsa_error());
+    }
+    self.socket = sock;
     if let Some(ms) = self.read_timeout_ms {
       self.apply_read_timeout(ms)?;
     }
@@ -204,23 +231,20 @@ impl OsSocket {
     self.recreate(AF_INET)?;
 
     let ip = u32::from_ne_bytes(addr.ip().octets());
+    let namelen = i32::try_from(core::mem::size_of::<SOCKADDR_IN>()).map_err(|_| SocketError::Unsupported)?;
 
-    unsafe {
+    // SAFETY: sockaddr is fully initialized POD; pointer valid for `namelen` bytes; socket live.
+    let result = unsafe {
       let mut sockaddr: SOCKADDR_IN = core::mem::zeroed();
       sockaddr.sin_family = AF_INET;
       sockaddr.sin_port = addr.port().to_be();
       sockaddr.sin_addr.S_un.S_addr = ip;
 
-      #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-      let result = connect(
-        self.socket,
-        &raw const sockaddr as *const _,
-        core::mem::size_of::<SOCKADDR_IN>() as i32,
-      );
+      connect(self.socket, &raw const sockaddr as *const _, namelen)
+    };
 
-      if result == SOCKET_ERROR {
-        return Err(get_last_wsa_error());
-      }
+    if result == SOCKET_ERROR {
+      return Err(get_last_wsa_error());
     }
 
     self.connected = true;
@@ -233,25 +257,23 @@ impl OsSocket {
   ) -> Result<(), SocketError> {
     self.recreate(AF_INET6)?;
 
-    unsafe {
+    let namelen = i32::try_from(core::mem::size_of::<SOCKADDR_IN6>()).map_err(|_| SocketError::Unsupported)?;
+
+    // SAFETY: sockaddr is fully initialized POD (union Byte / scope_id views written below);
+    // pointer valid for `namelen` bytes; socket live.
+    let result = unsafe {
       let mut sockaddr: SOCKADDR_IN6 = core::mem::zeroed();
       sockaddr.sin6_family = AF_INET6;
       sockaddr.sin6_port = addr.port().to_be();
       sockaddr.sin6_flowinfo = 0;
-      // SAFETY: writing the Byte / scope_id views of the WinSock unions.
       sockaddr.sin6_addr.u.Byte = addr.ip().octets();
       sockaddr.Anonymous.sin6_scope_id = addr.scope_id();
 
-      #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-      let result = connect(
-        self.socket,
-        &raw const sockaddr as *const _,
-        core::mem::size_of::<SOCKADDR_IN6>() as i32,
-      );
+      connect(self.socket, &raw const sockaddr as *const _, namelen)
+    };
 
-      if result == SOCKET_ERROR {
-        return Err(get_last_wsa_error());
-      }
+    if result == SOCKET_ERROR {
+      return Err(get_last_wsa_error());
     }
 
     self.connected = true;
@@ -262,18 +284,19 @@ impl OsSocket {
     &mut self,
     timeout_ms: u32,
   ) -> Result<(), SocketError> {
-    unsafe {
-      #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-      let result = setsockopt(
+    let optlen = i32::try_from(core::mem::size_of::<u32>()).map_err(|_| SocketError::Unsupported)?;
+    // SAFETY: socket live; `timeout_ms` is a valid `SO_RCVTIMEO` DWORD; pointer valid for optlen.
+    let result = unsafe {
+      setsockopt(
         self.socket,
         SOL_SOCKET,
         SO_RCVTIMEO,
         &raw const timeout_ms as *const _,
-        core::mem::size_of::<u32>() as i32,
-      );
-      if result == SOCKET_ERROR {
-        return Err(get_last_wsa_error());
-      }
+        optlen,
+      )
+    };
+    if result == SOCKET_ERROR {
+      return Err(get_last_wsa_error());
     }
     Ok(())
   }
@@ -282,18 +305,19 @@ impl OsSocket {
     &mut self,
     timeout_ms: u32,
   ) -> Result<(), SocketError> {
-    unsafe {
-      #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-      let result = setsockopt(
+    let optlen = i32::try_from(core::mem::size_of::<u32>()).map_err(|_| SocketError::Unsupported)?;
+    // SAFETY: socket live; `timeout_ms` is a valid `SO_SNDTIMEO` DWORD; pointer valid for optlen.
+    let result = unsafe {
+      setsockopt(
         self.socket,
         SOL_SOCKET,
         SO_SNDTIMEO,
         &raw const timeout_ms as *const _,
-        core::mem::size_of::<u32>() as i32,
-      );
-      if result == SOCKET_ERROR {
-        return Err(get_last_wsa_error());
-      }
+        optlen,
+      )
+    };
+    if result == SOCKET_ERROR {
+      return Err(get_last_wsa_error());
     }
     Ok(())
   }
@@ -302,6 +326,7 @@ impl OsSocket {
 impl Drop for OsSocket {
   fn drop(&mut self) {
     if self.socket != INVALID_SOCKET {
+      // SAFETY: socket was created by Winsock and not yet closed.
       unsafe {
         closesocket(self.socket);
       }

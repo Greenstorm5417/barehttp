@@ -11,6 +11,18 @@ impl Version {
   /// HTTP/1.1
   pub const HTTP_11: Self = Self { major: 1, minor: 1 };
 
+  /// Major version digit.
+  #[must_use]
+  pub const fn major(self) -> u8 {
+    self.major
+  }
+
+  /// Minor version digit.
+  #[must_use]
+  pub const fn minor(self) -> u8 {
+    self.minor
+  }
+
   /// RFC 9112 §9.3: HTTP/1.1 (or later) defaults to persistent connections.
   #[must_use]
   pub const fn defaults_to_persistent(self) -> bool {
@@ -49,6 +61,15 @@ impl Version {
       major: major - b'0',
       minor: minor - b'0',
     })
+  }
+}
+
+impl core::fmt::Display for Version {
+  fn fmt(
+    &self,
+    f: &mut core::fmt::Formatter<'_>,
+  ) -> core::fmt::Result {
+    write!(f, "HTTP/{}.{}", self.major, self.minor)
   }
 }
 

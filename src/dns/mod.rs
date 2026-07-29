@@ -7,6 +7,16 @@ use crate::util::IpAddr;
 use alloc::vec::Vec;
 
 /// Resolve hostnames to IP addresses.
+///
+/// # Examples
+///
+/// ```no_run
+/// use barehttp::{DnsResolver, OsDnsResolver};
+///
+/// let ips = OsDnsResolver.resolve("example.com")?;
+/// assert!(!ips.is_empty());
+/// # Ok::<(), barehttp::DnsError>(())
+/// ```
 pub trait DnsResolver {
   /// Look up `host`. An empty `Vec` means NXDOMAIN / no records.
   ///

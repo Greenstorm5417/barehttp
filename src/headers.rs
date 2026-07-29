@@ -1,10 +1,35 @@
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::slice;
 
 /// Ordered list of `(name, value)` header fields.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Headers {
   headers: Vec<(String, String)>,
+}
+
+/// Iterator over `(name, value)` pairs in a [`Headers`] map.
+#[derive(Debug, Clone)]
+pub struct Iter<'a> {
+  inner: slice::Iter<'a, (String, String)>,
+}
+
+impl<'a> Iterator for Iter<'a> {
+  type Item = (&'a str, &'a str);
+
+  fn next(&mut self) -> Option<Self::Item> {
+    self.inner.next().map(|(n, v)| (n.as_str(), v.as_str()))
+  }
+
+  fn size_hint(&self) -> (usize, Option<usize>) {
+    self.inner.size_hint()
+  }
+}
+
+impl ExactSizeIterator for Iter<'_> {
+  fn len(&self) -> usize {
+    self.inner.len()
+  }
 }
 
 impl Headers {
@@ -106,8 +131,11 @@ impl Headers {
   }
 
   /// Iterate `(name, value)` pairs in insertion order.
-  pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-    self.headers.iter().map(|(n, v)| (n.as_str(), v.as_str()))
+  #[must_use]
+  pub fn iter(&self) -> Iter<'_> {
+    Iter {
+      inner: self.headers.iter(),
+    }
   }
 
   /// Number of fields (including duplicate names).
@@ -153,12 +181,29 @@ impl From<Vec<(String, String)>> for Headers {
   }
 }
 
+impl FromIterator<(String, String)> for Headers {
+  fn from_iter<T: IntoIterator<Item = (String, String)>>(iter: T) -> Self {
+    Self {
+      headers: iter.into_iter().collect(),
+    }
+  }
+}
+
+impl Extend<(String, String)> for Headers {
+  fn extend<T: IntoIterator<Item = (String, String)>>(
+    &mut self,
+    iter: T,
+  ) {
+    self.headers.extend(iter);
+  }
+}
+
 impl<'a> IntoIterator for &'a Headers {
-  type Item = &'a (String, String);
-  type IntoIter = core::slice::Iter<'a, (String, String)>;
+  type Item = (&'a str, &'a str);
+  type IntoIter = Iter<'a>;
 
   fn into_iter(self) -> Self::IntoIter {
-    self.headers.iter()
+    self.iter()
   }
 }
 
@@ -204,6 +249,17 @@ mod tests {
     assert_eq!(h.get(Headers::COOKIE), Some("a=1; b=2"));
     h.merge_cookie("");
     assert_eq!(h.get(Headers::COOKIE), Some("a=1; b=2"));
+  }
+
+  #[test]
+  fn from_iterator_and_extend() {
+    let h: Headers = [(String::from("A"), String::from("1")), (String::from("B"), String::from("2"))]
+      .into_iter()
+      .collect();
+    assert_eq!(h.get("a"), Some("1"));
+    let mut h2 = Headers::new();
+    h2.extend([(String::from("C"), String::from("3"))]);
+    assert_eq!(h2.get("c"), Some("3"));
   }
 
   #[test]

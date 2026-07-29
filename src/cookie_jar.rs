@@ -8,26 +8,68 @@ use crate::parser::uri::{Host, Uri};
 #[derive(Debug, Clone)]
 /// Cookie entry in [`CookieStore`].
 pub struct StoredCookie {
-  /// Name.
-  pub name: String,
-  /// Value.
-  pub value: String,
+  name: String,
+  value: String,
+  domain: String,
+  path: String,
+  secure: bool,
+  host_only: bool,
+  creation_time: u64,
+  expiry_time: Option<u64>,
+}
+
+impl StoredCookie {
+  /// Cookie name.
+  #[must_use]
+  pub fn name(&self) -> &str {
+    &self.name
+  }
+
+  /// Cookie value.
+  #[must_use]
+  pub fn value(&self) -> &str {
+    &self.value
+  }
+
   /// Domain attribute (lowercase).
-  pub domain: String,
+  #[must_use]
+  pub fn domain(&self) -> &str {
+    &self.domain
+  }
+
   /// Path attribute.
-  pub path: String,
+  #[must_use]
+  pub fn path(&self) -> &str {
+    &self.path
+  }
+
   /// Send only on HTTPS (`Secure`).
-  pub secure: bool,
+  #[must_use]
+  pub const fn secure(&self) -> bool {
+    self.secure
+  }
+
   /// Match the exact host only (`host-only`).
-  pub host_only: bool,
+  #[must_use]
+  pub const fn host_only(&self) -> bool {
+    self.host_only
+  }
+
   /// Logical creation counter (sort key).
-  pub creation_time: u64,
+  #[must_use]
+  pub const fn creation_time(&self) -> u64 {
+    self.creation_time
+  }
+
   /// Expiry as Unix seconds (UTC); `None` = session cookie.
-  pub expiry_time: Option<u64>,
+  #[must_use]
+  pub const fn expiry_time(&self) -> Option<u64> {
+    self.expiry_time
+  }
 }
 
 #[derive(Debug)]
-/// Mutex-backed jar: RFC 6265 domain/path matching, expiry, and `Secure`.
+/// Mutex-backed RFC 6265 cookie jar (domain/path match, expiry, `Secure`).
 pub struct CookieStore {
   cookies: Mutex<Vec<StoredCookie>>,
 }
@@ -127,7 +169,7 @@ impl CookieStore {
   /// Cookie header value for `uri` (RFC 6265 path-length / creation-time sort).
   ///
   /// Empty when nothing matches. Skips `Secure` cookies unless `is_secure`.
-  pub fn get_request_cookies(
+  pub fn request_cookie_header(
     &self,
     uri: &str,
     is_secure: bool,
@@ -204,16 +246,54 @@ impl CookieStore {
     before != cookies.len()
   }
 
-  /// Snapshot of all stored cookies (including expired).
+  /// Iterate stored cookies (including expired). Holds the store lock for the iterator's lifetime.
   #[must_use]
-  pub fn iter(&self) -> alloc::vec::IntoIter<StoredCookie> {
-    self.cookies.lock().clone().into_iter()
+  pub fn iter(&self) -> Iter<'_> {
+    Iter {
+      guard: self.cookies.lock(),
+      index: 0,
+    }
   }
 }
 
-impl IntoIterator for &CookieStore {
-  type Item = StoredCookie;
-  type IntoIter = alloc::vec::IntoIter<StoredCookie>;
+/// Iterator over [`StoredCookie`]s in a [`CookieStore`] (holds the store lock).
+pub struct Iter<'a> {
+  guard: crate::sync::MutexGuard<'a, Vec<StoredCookie>>,
+  index: usize,
+}
+
+impl core::fmt::Debug for Iter<'_> {
+  fn fmt(
+    &self,
+    f: &mut core::fmt::Formatter<'_>,
+  ) -> core::fmt::Result {
+    f.debug_struct("Iter").field("index", &self.index).finish_non_exhaustive()
+  }
+}
+
+impl<'a> Iterator for Iter<'a> {
+  type Item = &'a StoredCookie;
+
+  fn next(&mut self) -> Option<&'a StoredCookie> {
+    let cookie = self.guard.get(self.index)?;
+    self.index = self.index.saturating_add(1);
+    // SAFETY: `guard` is held for `'a` and grants exclusive access to the `Vec`.
+    // The returned reference points into that Vec and does not outlive the guard.
+    // `Iter` never mutates the Vec, so the reference stays valid.
+    Some(unsafe { &*core::ptr::from_ref(cookie) })
+  }
+
+  fn size_hint(&self) -> (usize, Option<usize>) {
+    let remaining = self.guard.len().saturating_sub(self.index);
+    (remaining, Some(remaining))
+  }
+}
+
+impl ExactSizeIterator for Iter<'_> {}
+
+impl<'a> IntoIterator for &'a CookieStore {
+  type Item = &'a StoredCookie;
+  type IntoIter = Iter<'a>;
 
   fn into_iter(self) -> Self::IntoIter {
     self.iter()
@@ -225,6 +305,9 @@ impl Default for CookieStore {
     Self::new()
   }
 }
+
+/// Alias for [`CookieStore`] (matches the `cookie-jar` feature / module name).
+pub type CookieJar = CookieStore;
 
 fn host_path_secure(uri: &str) -> Option<(String, String, bool)> {
   let parsed = Uri::parse(uri).ok()?;
@@ -316,8 +399,8 @@ fn sort_cookies_for_send(cookies: &mut [&StoredCookie]) {
       let Some(cur) = cookies.get(j).copied() else {
         break;
       };
-      let swap = cur.path.len() > prev.path.len()
-        || (cur.path.len() == prev.path.len() && cur.creation_time < prev.creation_time);
+      let swap = cur.path().len() > prev.path().len()
+        || (cur.path().len() == prev.path().len() && cur.creation_time() < prev.creation_time());
       if !swap {
         break;
       }
@@ -402,7 +485,7 @@ mod tests {
     let set_cookie = alloc::vec!["session=abc123".to_string()];
     store.store_response_cookies("http://example.com/", &set_cookie);
 
-    let cookies = store.get_request_cookies("http://example.com/", false);
+    let cookies = store.request_cookie_header("http://example.com/", false);
     assert_eq!(cookies, "session=abc123");
   }
 
@@ -413,10 +496,10 @@ mod tests {
     let set_cookie = alloc::vec!["id=123; Path=/admin".to_string()];
     store.store_response_cookies("http://example.com/admin/panel", &set_cookie);
 
-    let cookies_admin = store.get_request_cookies("http://example.com/admin/panel", false);
+    let cookies_admin = store.request_cookie_header("http://example.com/admin/panel", false);
     assert_eq!(cookies_admin, "id=123");
 
-    let cookies_other = store.get_request_cookies("http://example.com/other", false);
+    let cookies_other = store.request_cookie_header("http://example.com/other", false);
     assert_eq!(cookies_other, "");
   }
 
@@ -427,13 +510,13 @@ mod tests {
     let set_cookie = alloc::vec!["id=123; Domain=example.com".to_string()];
     store.store_response_cookies("http://www.example.com/", &set_cookie);
 
-    let cookies_www = store.get_request_cookies("http://www.example.com/", false);
+    let cookies_www = store.request_cookie_header("http://www.example.com/", false);
     assert_eq!(cookies_www, "id=123");
 
-    let cookies_sub = store.get_request_cookies("http://sub.example.com/", false);
+    let cookies_sub = store.request_cookie_header("http://sub.example.com/", false);
     assert_eq!(cookies_sub, "id=123");
 
-    let cookies_other = store.get_request_cookies("http://other.com/", false);
+    let cookies_other = store.request_cookie_header("http://other.com/", false);
     assert_eq!(cookies_other, "");
   }
 
@@ -444,10 +527,10 @@ mod tests {
     let set_cookie = alloc::vec!["token=secret; Secure".to_string()];
     store.store_response_cookies("https://example.com/", &set_cookie);
 
-    let cookies_https = store.get_request_cookies("https://example.com/", true);
+    let cookies_https = store.request_cookie_header("https://example.com/", true);
     assert_eq!(cookies_https, "token=secret");
 
-    let cookies_http = store.get_request_cookies("http://example.com/", false);
+    let cookies_http = store.request_cookie_header("http://example.com/", false);
     assert_eq!(cookies_http, "");
   }
 
@@ -456,7 +539,7 @@ mod tests {
     let store = CookieStore::new();
     store.store_response_cookies("http://example.com/", &alloc::vec!["token=secret; Secure".to_string()]);
     // Must not store — later HTTPS must not see a Secure cookie set over cleartext.
-    assert_eq!(store.get_request_cookies("https://example.com/", true), "");
+    assert_eq!(store.request_cookie_header("https://example.com/", true), "");
     assert!(store.iter().next().is_none());
   }
 
@@ -465,11 +548,11 @@ mod tests {
     let store = CookieStore::new();
 
     store.store_response_cookies("http://example.com/", &alloc::vec!["id=first".to_string()]);
-    let cookies_first = store.get_request_cookies("http://example.com/", false);
+    let cookies_first = store.request_cookie_header("http://example.com/", false);
     assert_eq!(cookies_first, "id=first");
 
     store.store_response_cookies("http://example.com/", &alloc::vec!["id=second".to_string()]);
-    let cookies_second = store.get_request_cookies("http://example.com/", false);
+    let cookies_second = store.request_cookie_header("http://example.com/", false);
     assert_eq!(cookies_second, "id=second");
   }
 
@@ -481,7 +564,7 @@ mod tests {
     store.store_response_cookies("http://example.com/a/b", &alloc::vec!["b=2; Path=/a".to_string()]);
     store.store_response_cookies("http://example.com/a/b", &alloc::vec!["c=3; Path=/a/b".to_string()]);
     assert_eq!(
-      store.get_request_cookies("http://example.com/a/b", false),
+      store.request_cookie_header("http://example.com/a/b", false),
       "c=3; b=2; a=1"
     );
   }
@@ -492,7 +575,7 @@ mod tests {
     store.store_response_cookies("http://example.com/", &alloc::vec!["first=1; Path=/".to_string()]);
     store.store_response_cookies("http://example.com/", &alloc::vec!["second=2; Path=/".to_string()]);
     assert_eq!(
-      store.get_request_cookies("http://example.com/", false),
+      store.request_cookie_header("http://example.com/", false),
       "first=1; second=2"
     );
   }
@@ -506,7 +589,7 @@ mod tests {
       &alloc::vec!["session=abc".to_string(), "lang=en".to_string()],
     );
 
-    let cookies = store.get_request_cookies("http://example.com/", false);
+    let cookies = store.request_cookie_header("http://example.com/", false);
     assert!(cookies.contains("session=abc"));
     assert!(cookies.contains("lang=en"));
   }
@@ -520,7 +603,7 @@ mod tests {
     );
     assert!(
       store
-        .get_request_cookies("http://example.com/", false)
+        .request_cookie_header("http://example.com/", false)
         .is_empty()
     );
   }
@@ -532,18 +615,18 @@ mod tests {
       "http://example.com/",
       &alloc::vec!["keep=1; Expires=Wed, 09 Jun 2099 10:18:14 GMT".to_string()],
     );
-    assert_eq!(store.get_request_cookies("http://example.com/", false), "keep=1");
+    assert_eq!(store.request_cookie_header("http://example.com/", false), "keep=1");
   }
 
   #[test]
   fn max_age_zero_deletes() {
     let store = CookieStore::new();
     store.store_response_cookies("http://example.com/", &alloc::vec!["id=1".to_string()]);
-    assert_eq!(store.get_request_cookies("http://example.com/", false), "id=1");
+    assert_eq!(store.request_cookie_header("http://example.com/", false), "id=1");
     store.store_response_cookies("http://example.com/", &alloc::vec!["id=1; Max-Age=0".to_string()]);
     assert!(
       store
-        .get_request_cookies("http://example.com/", false)
+        .request_cookie_header("http://example.com/", false)
         .is_empty()
     );
   }
@@ -554,7 +637,7 @@ mod tests {
     store.store_response_cookies("http://example.com/", &alloc::vec!["x=1; Domain=com".to_string()]);
     assert!(
       store
-        .get_request_cookies("http://example.com/", false)
+        .request_cookie_header("http://example.com/", false)
         .is_empty()
     );
     assert_eq!(store.iter().len(), 0);

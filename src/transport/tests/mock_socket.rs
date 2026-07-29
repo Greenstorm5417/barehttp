@@ -1,5 +1,5 @@
 use crate::error::SocketError;
-use crate::socket::{BlockingSocket, SocketAddr};
+use crate::socket::{BlockingSocket, BlockingSocketFactory, SocketAddr};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -89,10 +89,6 @@ impl MockSocket {
 }
 
 impl BlockingSocket for MockSocket {
-  fn new() -> Result<Self, SocketError> {
-    Ok(Self::empty())
-  }
-
   fn connect(
     &mut self,
     addr: &SocketAddr,
@@ -151,5 +147,11 @@ impl BlockingSocket for MockSocket {
   ) -> Result<(), SocketError> {
     self.write_timeout = Some(timeout_ms);
     Ok(())
+  }
+}
+
+impl BlockingSocketFactory for MockSocket {
+  fn new() -> Result<Self, SocketError> {
+    Ok(Self::empty())
   }
 }

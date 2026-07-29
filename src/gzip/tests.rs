@@ -10,7 +10,7 @@
 )]
 
 use super::crc32::crc32;
-use super::{DecompressError, decompress_gzip, decompress_http_deflate, inflate_raw};
+use super::{DecompressError, decompress_gzip, decompress_http_deflate, decompress_raw_deflate};
 use alloc::vec::Vec;
 
 fn long_text() -> Vec<u8> {
@@ -159,19 +159,19 @@ fn gzip_fixed_and_dynamic_huffman() {
 
 #[test]
 fn raw_stored_and_multi_block() {
-  assert_eq!(inflate_raw(RAW_STORED, 64).unwrap(), b"ABCD");
-  assert_eq!(inflate_raw(RAW_MULTI_STORED, 64).unwrap(), b"HelloWorld");
+  assert_eq!(decompress_raw_deflate(RAW_STORED, 64).unwrap(), b"ABCD");
+  assert_eq!(decompress_raw_deflate(RAW_MULTI_STORED, 64).unwrap(), b"HelloWorld");
 }
 
 #[test]
 fn raw_fixed_huffman() {
-  assert_eq!(inflate_raw(RAW_FIXED, 64).unwrap(), b"fixed raw");
+  assert_eq!(decompress_raw_deflate(RAW_FIXED, 64).unwrap(), b"fixed raw");
 }
 
 #[test]
 fn zlib_and_raw_deflate() {
-  assert_eq!(inflate_raw(RAW_HI, 64).unwrap(), b"hi");
-  assert_eq!(inflate_raw(RAW_HELLO_WORLD, 64).unwrap(), b"hello world");
+  assert_eq!(decompress_raw_deflate(RAW_HI, 64).unwrap(), b"hi");
+  assert_eq!(decompress_raw_deflate(RAW_HELLO_WORLD, 64).unwrap(), b"hello world");
   assert_eq!(decompress_http_deflate(ZLIB_HI, 64).unwrap(), b"hi");
   assert_eq!(decompress_http_deflate(ZLIB_HELLO, 64).unwrap(), b"hello");
   // raw fallback when zlib header invalid
@@ -183,7 +183,7 @@ fn long_corpus_gzip_zlib_raw() {
   let expect = long_text();
   assert_eq!(decompress_gzip(GZIP_LONG, 4096).unwrap(), expect);
   assert_eq!(decompress_http_deflate(ZLIB_LONG, 4096).unwrap(), expect);
-  assert_eq!(inflate_raw(RAW_LONG, 4096).unwrap(), expect);
+  assert_eq!(decompress_raw_deflate(RAW_LONG, 4096).unwrap(), expect);
 }
 
 #[test]
@@ -234,13 +234,13 @@ fn distance_too_far() {
   // BFINAL=1, BTYPE=01 (fixed), length code 257 (len=3), distance code 0 (dist=1) with empty window.
   // Bit stream (LSB-first within bytes): 1 0 1 | 0000001 | 00000 → [0x05, 0x02]
   let bad: &[u8] = &[0x05, 0x02];
-  assert_eq!(inflate_raw(bad, 64), Err(DecompressError::InvalidInput));
+  assert_eq!(decompress_raw_deflate(bad, 64), Err(DecompressError::InvalidInput));
 }
 
 #[test]
 fn limit_exceeded() {
   assert_eq!(decompress_gzip(GZIP_HI, 1), Err(DecompressError::LimitExceeded));
-  assert_eq!(inflate_raw(RAW_STORED, 2), Err(DecompressError::LimitExceeded));
+  assert_eq!(decompress_raw_deflate(RAW_STORED, 2), Err(DecompressError::LimitExceeded));
 }
 
 #[test]
@@ -336,14 +336,14 @@ fn fixture_zlib_and_raw_corpus() {
     plain
   );
   assert_eq!(
-    inflate_raw(include_bytes!("fixtures/raw_corpus.bin"), 4096).unwrap(),
+    decompress_raw_deflate(include_bytes!("fixtures/raw_corpus.bin"), 4096).unwrap(),
     plain
   );
   assert_eq!(
     decompress_http_deflate(include_bytes!("fixtures/zlib_hi.bin"), 64).unwrap(),
     b"hi"
   );
-  assert_eq!(inflate_raw(include_bytes!("fixtures/raw_hi.bin"), 64).unwrap(), b"hi");
+  assert_eq!(decompress_raw_deflate(include_bytes!("fixtures/raw_hi.bin"), 64).unwrap(), b"hi");
 }
 
 #[test]
@@ -392,8 +392,8 @@ fn decompression_bomb_stored_block_hits_limit() {
   // Large stored block with tiny max_out → LimitExceeded (no panic).
   let payload = alloc::vec![0u8; 4096];
   let raw = stored_block(&payload, true);
-  assert_eq!(inflate_raw(&raw, 64), Err(DecompressError::LimitExceeded));
-  assert_eq!(inflate_raw(&raw, 4096).unwrap().len(), 4096);
+  assert_eq!(decompress_raw_deflate(&raw, 64), Err(DecompressError::LimitExceeded));
+  assert_eq!(decompress_raw_deflate(&raw, 4096).unwrap().len(), 4096);
 }
 
 #[test]
@@ -401,7 +401,7 @@ fn property_stored_blocks_roundtrip() {
   use proptest::prelude::*;
   proptest::proptest!(|(payload in prop::collection::vec(any::<u8>(), 0..200))| {
     let raw = stored_block(&payload, true);
-    let out = inflate_raw(&raw, payload.len().saturating_add(1)).expect("inflate stored");
+    let out = decompress_raw_deflate(&raw, payload.len().saturating_add(1)).expect("inflate stored");
     prop_assert_eq!(out.as_slice(), payload.as_slice());
   });
 }
@@ -414,7 +414,7 @@ fn property_multi_stored_blocks_roundtrip() {
     raw.extend_from_slice(&stored_block(&b, true));
     let mut expect = a;
     expect.extend_from_slice(&b);
-    let out = inflate_raw(&raw, expect.len().saturating_add(1)).expect("inflate multi");
+    let out = decompress_raw_deflate(&raw, expect.len().saturating_add(1)).expect("inflate multi");
     prop_assert_eq!(out, expect);
   });
 }

@@ -7,9 +7,10 @@ authors = ["greenstorm5417"]
 license = "MIT OR Apache-2.0"
 description = "Blocking HTTP/1.1 client for no_std + alloc"
 repository = "https://github.com/Greenstorm5417/barehttp"
+homepage = "https://github.com/Greenstorm5417/barehttp"
 documentation = "https://docs.rs/barehttp"
 readme = "README.md"
-keywords = ["http", "client", "no_std", "blocking", "minimal"]
+keywords = ["http", "client", "no_std", "blocking", "http1"]
 categories = ["network-programming", "no-std", "web-programming::http-client"]
 
 [package.metadata.docs.rs]
@@ -19,8 +20,8 @@ all-features = true
 default = []
 cookie-jar = []
 
-gzip-decompression = []
-zstd-decompression = ["dep:ruzstd"]
+gzip = []
+zstd = ["dep:ruzstd"]
 
 [dependencies]
 ruzstd = { version = "0.9.0", default-features = false, optional = true }
@@ -51,7 +52,7 @@ name = "custom_adapters"
 
 [[example]]
 name = "gzip"
-required-features = ["gzip-decompression"]
+required-features = ["gzip"]
 
 [[example]]
 name = "cookies"

@@ -1,5 +1,9 @@
+use core::fmt;
+use core::str::FromStr;
+
 /// HTTP request method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Method {
   /// `GET`
   Get,
@@ -16,7 +20,7 @@ pub enum Method {
 }
 
 impl Method {
-  /// Wire token (`"GET"`, `"POST"`, …).
+  /// Wire token (`"GET"`, `"POST"`, ...).
   #[must_use]
   pub const fn as_str(self) -> &'static str {
     match self {
@@ -31,7 +35,38 @@ impl Method {
 
   /// Whether the method is expected to carry a request body (POST, PUT, PATCH).
   #[must_use]
-  pub const fn need_request_body(self) -> bool {
+  pub const fn needs_request_body(self) -> bool {
     matches!(self, Self::Post | Self::Put | Self::Patch)
+  }
+}
+
+impl fmt::Display for Method {
+  fn fmt(
+    &self,
+    f: &mut fmt::Formatter<'_>,
+  ) -> fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+impl AsRef<str> for Method {
+  fn as_ref(&self) -> &str {
+    self.as_str()
+  }
+}
+
+impl FromStr for Method {
+  type Err = ();
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s {
+      "GET" => Ok(Self::Get),
+      "POST" => Ok(Self::Post),
+      "PUT" => Ok(Self::Put),
+      "DELETE" => Ok(Self::Delete),
+      "HEAD" => Ok(Self::Head),
+      "PATCH" => Ok(Self::Patch),
+      _ => Err(()),
+    }
   }
 }

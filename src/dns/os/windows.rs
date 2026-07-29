@@ -24,9 +24,11 @@ pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
     ai_next: ptr::null_mut(),
   };
 
+  // SAFETY: `host_c` is NUL-terminated; `hints`/`result` are valid for getaddrinfo.
   let ret = unsafe { getaddrinfo(host_c.as_ptr().cast(), ptr::null(), &raw const hints, &raw mut result) };
 
   if ret != 0 {
+    // SAFETY: reads thread-local Winsock last-error after a failed getaddrinfo.
     let err_code = unsafe { WSAGetLastError() };
     return Err(DnsError::ResolutionFailed(err_code));
   }
@@ -34,6 +36,8 @@ pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
   let mut addresses = Vec::new();
   let mut current = result;
 
+  // SAFETY: `result` is a getaddrinfo-owned linked list until `freeaddrinfo`; each `ai_addr`
+  // is valid for its `ai_family` when non-null. Freed exactly once after the walk.
   unsafe {
     while !current.is_null() {
       let info = &*current;
@@ -43,7 +47,7 @@ pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
         addresses.push(IpAddr::V4(Ipv4Addr::from(sockaddr.sin_addr.S_un.S_addr.to_ne_bytes())));
       } else if info.ai_family == i32::from(AF_INET6) && !info.ai_addr.is_null() {
         let sockaddr = ptr::read_unaligned(info.ai_addr.cast::<SOCKADDR_IN6>());
-        // IN6_ADDR.u is a union; Byte is the octet view (already in unsafe).
+        // IN6_ADDR.u is a union; Byte is the octet view.
         let octets = sockaddr.sin6_addr.u.Byte;
         addresses.push(IpAddr::V6(Ipv6Addr::from(octets)));
       }

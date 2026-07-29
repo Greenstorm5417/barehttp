@@ -1,4 +1,4 @@
-/// Percent-encode a string; leaves RFC 3986 unreserved (`A-Z` `a-z` `0-9` `-` `_` `.` `~`) alone.
+/// Percent-encode octets; RFC 3986 unreserved (`A-Z` `a-z` `0-9` `-` `_` `.` `~`) pass through.
 ///
 /// Space becomes `%20` (query-string style).
 #[must_use]

@@ -53,7 +53,11 @@ impl HuffmanDecoder {
         .get(usize::from(bits.saturating_sub(1)))
         .copied()
         .unwrap_or(0);
-      code = code.saturating_add(prev) << 1;
+      code = code
+        .checked_add(prev)
+        .ok_or(DecompressError::InvalidInput)?
+        .checked_mul(2)
+        .ok_or(DecompressError::InvalidInput)?;
       if let Some(slot) = next_code.get_mut(usize::from(bits)) {
         *slot = code;
       }
@@ -63,7 +67,9 @@ impl HuffmanDecoder {
     let mut table_size = 1usize;
     let mut b = 0u8;
     while b < max_bits {
-      table_size = table_size.saturating_mul(2);
+      table_size = table_size
+        .checked_mul(2)
+        .ok_or(DecompressError::InvalidInput)?;
       b = b.saturating_add(1);
     }
     let mut table = vec![(0u16, 0u8); table_size];
@@ -76,7 +82,7 @@ impl HuffmanDecoder {
         return Err(DecompressError::InvalidInput);
       };
       let c_msb = *nc;
-      *nc = nc.saturating_add(1);
+      *nc = nc.checked_add(1).ok_or(DecompressError::InvalidInput)?;
       let sym_u = u16::try_from(sym).map_err(|_| DecompressError::InvalidInput)?;
       // Reverse `len` bits so table keys match LSB-first bit peeks (§3.1.1 / §3.2.2).
       let c_lsb = reverse_bits(c_msb, len);
@@ -86,7 +92,9 @@ impl HuffmanDecoder {
         if let Some(slot) = table.get_mut(fill) {
           *slot = (sym_u, len);
         }
-        fill = fill.saturating_add(step);
+        fill = fill
+          .checked_add(step)
+          .ok_or(DecompressError::InvalidInput)?;
       }
     }
 

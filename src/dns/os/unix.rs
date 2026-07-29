@@ -22,6 +22,7 @@ pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
 
   let mut result: *mut addrinfo = ptr::null_mut();
 
+  // SAFETY: `host_c` is a NUL-terminated CString; `hints`/`result` are valid for getaddrinfo.
   let ret = unsafe { libc::getaddrinfo(host_c.as_ptr(), ptr::null(), &raw const hints, &raw mut result) };
 
   if ret != 0 {
@@ -31,6 +32,8 @@ pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
   let mut addresses = Vec::new();
   let mut current = result;
 
+  // SAFETY: `result` is a getaddrinfo-owned linked list until `freeaddrinfo`; each `ai_addr`
+  // is valid for its `ai_family` when non-null. Freed exactly once after the walk.
   unsafe {
     while !current.is_null() {
       let info = &*current;

@@ -8,7 +8,7 @@ fn test_chunked_simple_single_chunk() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), b"Hello");
+  assert_eq!(response.body(), b"Hello");
 }
 
 #[test]
@@ -17,7 +17,7 @@ fn test_chunked_multiple_chunks() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), b"Hello World");
+  assert_eq!(response.body(), b"Hello World");
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn test_chunked_zero_size_terminator() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert!(response.body.is_empty());
+  assert!(response.body().is_empty());
 }
 
 #[test]
@@ -34,15 +34,13 @@ fn test_chunked_hex_size() {
   assert_eq!(
     Response::parse(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nA\r\n0123456789\r\n0\r\n\r\n")
       .unwrap()
-      .body
-      .as_slice(),
+      .body(),
     b"0123456789"
   );
   assert_eq!(
     Response::parse(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\na\r\n0123456789\r\n0\r\n\r\n")
       .unwrap()
-      .body
-      .as_slice(),
+      .body(),
     b"0123456789"
   );
 }
@@ -55,7 +53,7 @@ fn test_chunked_hex_mixed_case() {
   let result = Response::parse(&input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.len(), 31);
+  assert_eq!(response.body().len(), 31);
 }
 
 #[test]
@@ -64,7 +62,7 @@ fn test_chunked_with_chunk_extension() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), b"Hello");
+  assert_eq!(response.body(), b"Hello");
 }
 
 #[test]
@@ -73,7 +71,7 @@ fn test_chunked_with_trailer_fields() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), b"Hello");
+  assert_eq!(response.body(), b"Hello");
 }
 
 #[test]
@@ -110,7 +108,7 @@ fn test_chunked_empty_chunks_between_data() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), b"foobar");
+  assert_eq!(response.body(), b"foobar");
 }
 
 #[test]
@@ -119,7 +117,7 @@ fn test_chunked_with_leading_zeros_in_size() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), b"Hello");
+  assert_eq!(response.body(), b"Hello");
 }
 
 #[test]
@@ -130,7 +128,7 @@ fn test_chunked_binary_data() {
   let result = Response::parse(&input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), &[0x00, 0xFF, 0xAA, 0x55]);
+  assert_eq!(response.body(), &[0x00, 0xFF, 0xAA, 0x55]);
 }
 
 #[test]
@@ -139,7 +137,7 @@ fn test_chunked_case_insensitive_transfer_encoding() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), b"Hello");
+  assert_eq!(response.body(), b"Hello");
 }
 
 #[test]
@@ -148,7 +146,7 @@ fn test_chunked_gzip_then_chunked() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert_eq!(response.body.as_slice(), b"Hello");
+  assert_eq!(response.body(), b"Hello");
 }
 
 #[test]

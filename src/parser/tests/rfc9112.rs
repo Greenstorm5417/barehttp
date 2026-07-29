@@ -1,4 +1,4 @@
-//! Unique RFC 9112 MUST cases not covered by `message_body` / `chunked` / `security`.
+//! RFC 9112 MUST cases beyond `message_body` / `chunked` / `security`.
 use crate::error::ParseError;
 use crate::parser::version::Version;
 use crate::parser::*;
@@ -15,13 +15,13 @@ fn obs_fold_rejected() {
 #[test]
 fn leading_empty_lines_skipped() {
   let input = b"\r\n\nHTTP/1.1 200 OK\r\n\r\n";
-  assert_eq!(Response::parse(input).unwrap().status_code, 200);
+  assert_eq!(Response::parse(input).unwrap().status_code(), 200);
 }
 
 #[test]
 fn lf_only_line_terminators_accepted() {
   let input = b"HTTP/1.1 200 OK\nContent-Length: 5\n\nHello";
-  assert_eq!(Response::parse(input).unwrap().body.as_slice(), b"Hello");
+  assert_eq!(Response::parse(input).unwrap().body(), b"Hello");
 }
 
 #[test]
@@ -42,16 +42,16 @@ fn invalid_header_name_rejected() {
 #[test]
 fn identical_comma_separated_content_lengths_accepted() {
   let input = b"HTTP/1.1 200 OK\r\nContent-Length: 5, 5, 5\r\n\r\nHello";
-  assert_eq!(Response::parse(input).unwrap().body.as_slice(), b"Hello");
+  assert_eq!(Response::parse(input).unwrap().body(), b"Hello");
 }
 
 #[test]
 fn trailers_not_merged_into_headers() {
   let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\nX-Trailer: value\r\n\r\n";
   let response = Response::parse(input).unwrap();
-  assert_eq!(response.body.as_slice(), b"Hello");
-  assert!(response.get_header("X-Trailer").is_none());
-  assert_eq!(response.trailers.len(), 1);
+  assert_eq!(response.body(), b"Hello");
+  assert!(response.header("X-Trailer").is_none());
+  assert_eq!(response.trailers().len(), 1);
 }
 
 #[test]

@@ -8,32 +8,30 @@ use core::time::Duration;
 fn client_constructors() {
   let _ = HttpClient::new();
 
-  let config = Config {
-    timeout_read: Some(Duration::from_secs(30)),
-    timeout_write: Some(Duration::from_secs(30)),
-    max_redirects: 0,
-    user_agent: String::from("smoke/1.0"),
-    ..Default::default()
-  };
+  let config = Config::builder()
+    .timeout_read(Some(Duration::from_secs(30)))
+    .timeout_write(Some(Duration::from_secs(30)))
+    .max_redirects(0)
+    .user_agent("smoke/1.0")
+    .build();
   let _ = HttpClient::with_config(config);
 
   let _client: HttpClient<OsBlockingSocket, _> = HttpClient::with_adapters(OsDnsResolver, Config::default());
 }
 
 #[test]
-fn config_struct_update() {
-  let config = Config {
-    timeout_read: Some(Duration::from_secs(10)),
-    timeout_write: Some(Duration::from_secs(10)),
-    user_agent: String::from("app/1.0"),
-    max_redirects: 0,
-    ..Default::default()
-  };
+fn config_builder() {
+  let config = Config::builder()
+    .timeout_read(Some(Duration::from_secs(10)))
+    .timeout_write(Some(Duration::from_secs(10)))
+    .user_agent("app/1.0")
+    .max_redirects(0)
+    .build();
 
-  assert_eq!(config.timeout_read, Some(Duration::from_secs(10)));
-  assert_eq!(config.timeout_write, Some(Duration::from_secs(10)));
-  assert_eq!(config.user_agent, "app/1.0");
-  assert_eq!(config.max_redirects, 0);
+  assert_eq!(config.timeout_read(), Some(Duration::from_secs(10)));
+  assert_eq!(config.timeout_write(), Some(Duration::from_secs(10)));
+  assert_eq!(config.user_agent(), "app/1.0");
+  assert_eq!(config.max_redirects(), 0);
 }
 
 #[test]

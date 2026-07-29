@@ -1,33 +1,38 @@
 # barehttp
 
-Blocking HTTP/1.1 client for `no_std` + `alloc`. Cleartext HTTP by default; no async runtime.
+Blocking HTTP/1.1 client for `no_std` + `alloc`. Cleartext HTTP; no async.
 
-`https://` needs `Config::assume_tls_socket` and a [`BlockingSocket`] that terminates TLS.
-`OsBlockingSocket` is TCP only — pairing it with `assume_tls_socket` returns
-`Error::TlsNotConfigured`.
+`https://` needs [`config::Config::assume_tls_socket`] and a [`BlockingSocket`] that terminates TLS.
+[`OsBlockingSocket`] is TCP only. Pairing it with `assume_tls_socket` returns
+[`Error::TlsNotConfigured`].
 
-```rust
+```rust,no_run
 fn main() -> Result<(), barehttp::Error> {
     let response = barehttp::get("http://example.com").call()?;
-    println!("{} {}", response.status(), response.text()?);
+    println!("{} {}", response.status(), response.to_text()?);
     Ok(())
 }
 ```
 
-`Agent` is `HttpClient<OsBlockingSocket, OsDnsResolver>`. `barehttp::agent()` builds one.
-Free functions (`get`, `post`, …) return a `RequestBuilder`; finish with `.call()` or `.send(body)`:
+[`Agent`] is `HttpClient<OsBlockingSocket, OsDnsResolver>`. [`agent`] builds one.
+Free functions ([`get`], [`post`], …) return a [`RequestBuilder`]; finish with
+[`ClientRequestBuilder::call`] or [`ClientRequestBuilder::send`]:
 
-```rust
+```rust,no_run
+# fn main() -> Result<(), barehttp::Error> {
 let response = barehttp::get("http://example.com").call()?;
 let response = barehttp::post("http://example.com/api").send(b"{}")?;
+# let _ = response;
+# Ok(())
+# }
 ```
 
 ## Features
 
-- Custom `BlockingSocket` / `DnsResolver` (`connect` gets the hostname for SNI)
+- Custom [`BlockingSocket`] / [`DnsResolver`] (`connect` gets the hostname for SNI)
 - Connection pooling (`Config::max_idle_per_host` default 3; `0` disables; `max_idle_age` default 15s)
 - Response body size limit (`Config::max_response_body_size`, default ~10 MiB)
-- Optional Cargo features: `cookie-jar`, `gzip-decompression` (hand-rolled RFC 1951/1952), `zstd-decompression`
+- Optional Cargo features: `cookie-jar`, `gzip` (hand-rolled RFC 1951/1952), `zstd`
 - Request builder: `.form` / `.body` then `.call()`, or `.send(bytes)`; per-request `.timeout_read` / `.timeout_write` / `.timeout_connect`
 
 ## Examples
@@ -38,7 +43,7 @@ All examples use cleartext HTTP (`http://` only):
 cargo run --example basic                    # GET http://example.com
 cargo run --example agent                    # shared client, headers + query
 cargo run --example custom_adapters          # logging DnsResolver + BlockingSocket over the OS stack
-cargo run --example gzip --features gzip-decompression   # http://httpbingo.org/gzip
+cargo run --example gzip --features gzip     # http://httpbingo.org/gzip
 cargo run --example cookies --features cookie-jar        # httpbingo/postman-echo cookie endpoints
 ```
 
@@ -46,19 +51,18 @@ cargo run --example cookies --features cookie-jar        # httpbingo/postman-ech
 
 barehttp does not implement TLS. For `https://`:
 
-1. Use a `BlockingSocket` whose `connect` / read / write speak TLS (or wrap one that does).
+1. Use a [`BlockingSocket`] whose `connect` / read / write speak TLS (or wrap one that does).
    `connect` receives the URI hostname for SNI.
-2. Set `Config { assume_tls_socket: true, .. }` so the client accepts `https`.
-   Without that flag you get `Error::TlsNotConfigured`.
+2. Set `assume_tls_socket` on [`config::Config`] so the client accepts `https`.
+   Without that flag you get [`Error::TlsNotConfigured`].
 
-```rust
+```rust,ignore
 use barehttp::config::Config;
 use barehttp::HttpClient;
 
-let config = Config {
-    assume_tls_socket: true,
-    ..Default::default()
-};
+let config = Config::builder()
+    .assume_tls_socket(true)
+    .build();
 // Pair with a TLS-capable BlockingSocket. OsBlockingSocket is cleartext
 // and rejects this config.
 let client = HttpClient::<MyTlsSocket, _>::with_adapters(my_dns, config);
@@ -66,11 +70,12 @@ let client = HttpClient::<MyTlsSocket, _>::with_adapters(my_dns, config);
 
 ## Config
 
-```rust
+```rust,no_run
 use barehttp::config::Config;
 use barehttp::HttpClient;
 use core::time::Duration;
 
+# fn main() {
 let config = Config::builder()
     .timeout_read(Some(Duration::from_secs(30)))
     .timeout_write(Some(Duration::from_secs(30)))
@@ -79,11 +84,13 @@ let config = Config::builder()
     .build();
 
 let client = HttpClient::with_config(config);
+# let _ = client;
+# }
 ```
 
 ## Custom adapters
 
-```rust
+```rust,ignore
 use barehttp::config::Config;
 use barehttp::{HttpClient, OsBlockingSocket};
 
@@ -91,7 +98,7 @@ let client: HttpClient<OsBlockingSocket, _> =
     HttpClient::with_adapters(my_dns, Config::default());
 ```
 
-See `examples/custom_adapters.rs` for logging wrappers around `OsDnsResolver` / `OsBlockingSocket`.
+See `examples/custom_adapters.rs` for logging wrappers around [`OsDnsResolver`] / [`OsBlockingSocket`].
 
 ## Testing
 
@@ -102,7 +109,7 @@ cargo install cargo-nextest --locked
 cargo nextest run --all-features
 ```
 
-CI runs nextest on push and pull requests. Details in [CONTRIBUTING.md](CONTRIBUTING.md); fuzz targets in [`fuzz/README.md`](fuzz/README.md).
+CI runs nextest on push and pull requests. Details in [CONTRIBUTING.md](https://github.com/Greenstorm5417/barehttp/blob/main/CONTRIBUTING.md); fuzz targets in [fuzz/README.md](https://github.com/Greenstorm5417/barehttp/blob/main/fuzz/README.md).
 
 ## License
 
