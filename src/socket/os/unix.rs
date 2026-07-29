@@ -45,6 +45,7 @@ impl crate::socket::BlockingSocket for OsSocket {
   fn connect(
     &mut self,
     addr: &SocketAddr,
+    _host: &str,
   ) -> Result<(), SocketError> {
     if self.connected {
       return Ok(());
@@ -55,6 +56,10 @@ impl crate::socket::BlockingSocket for OsSocket {
       SocketAddr::V6(a) => self.connect_ipv6(a)?,
     }
     Ok(())
+  }
+
+  fn is_os_cleartext() -> bool {
+    true
   }
 
   fn read(

@@ -30,15 +30,22 @@ fn raw_to_response_for_test(
   raw: RawResponse,
   method: Method,
 ) -> crate::parser::Response {
+  let RawResponse {
+    status_code,
+    reason,
+    mut headers,
+    version,
+    body_bytes,
+  } = raw;
   let (body, trailers) = if method == Method::Head {
     (Vec::new(), Vec::new())
   } else {
-    crate::parser::Response::parse_body_from_bytes(&raw.body_bytes, &raw.headers, raw.status_code, raw.version).unwrap()
+    crate::parser::Response::parse_body_from_bytes(&body_bytes, &mut headers, status_code, version, usize::MAX).unwrap()
   };
   crate::parser::Response {
-    status_code: raw.status_code,
-    reason: raw.reason,
-    headers: raw.headers,
+    status_code,
+    reason,
+    headers,
     body,
     trailers,
   }
@@ -52,9 +59,10 @@ fn process(
   current_url: &str,
   method: Method,
   body: Option<Vec<u8>>,
-) -> Result<Option<(String, Method, Option<Vec<u8>>, bool)>, Error> {
+) -> Result<Option<(String, Method, Option<Vec<u8>>)>, Error> {
   if config.http_status_as_error && (400..600).contains(&raw.status_code) {
-    return Err(Error::HttpStatus(raw.status_code));
+    let response = raw_to_response_for_test(raw, method);
+    return Err(Error::HttpStatus(response.status_code, response));
   }
   let uri = Uri::parse(current_url).unwrap();
   let response = raw_to_response_for_test(raw, method);
@@ -78,7 +86,7 @@ fn https_only_policy_rejects_http() {
     ..Default::default()
   };
   let uri = Uri::parse("http://example.com").unwrap();
-  assert!(matches!(validate_protocol(&config, &uri), Err(Error::HttpsRequired)));
+  assert!(matches!(validate_protocol(&config, &uri), Err(Error::HttpsOnly)));
 }
 
 #[test]
@@ -97,7 +105,7 @@ fn default_rejects_https_without_tls_socket() {
   let uri = Uri::parse("https://example.com").unwrap();
   assert!(matches!(
     validate_protocol(&Config::default(), &uri),
-    Err(Error::HttpsRequired)
+    Err(Error::TlsNotConfigured)
   ));
 }
 
@@ -134,23 +142,117 @@ fn policy_drops_body_for_head_requests() {
 }
 
 #[test]
-fn post_3xx_redirect_becomes_get() {
-  for status in [301_u16, 302, 303] {
+fn redirect_method_table_301_302_303() {
+  // ureq: GET/HEAD keep; all others → GET, drop body
+  let statuses = [301_u16, 302, 303];
+  let cases: &[(Method, Option<Vec<u8>>, Method, bool)] = &[
+    (Method::Get, None, Method::Get, false),
+    (Method::Head, None, Method::Head, false),
+    (Method::Post, Some(vec![1]), Method::Get, true),
+    (Method::Put, Some(vec![1]), Method::Get, true),
+    (Method::Patch, Some(vec![1]), Method::Get, true),
+    (Method::Delete, None, Method::Get, true),
+  ];
+
+  for status in statuses {
+    for &(method, ref body, expect_method, drop_body) in cases {
+      let mut visited = Vec::new();
+      let mut count = 0;
+      let next = process(
+        &Config::default(),
+        &mut visited,
+        &mut count,
+        make_redirect_response(status, "/next"),
+        "http://a.com",
+        method,
+        body.clone(),
+      )
+      .unwrap()
+      .expect("expected redirect");
+      assert_eq!(next.1, expect_method, "{method:?} {status} → method");
+      if drop_body {
+        assert!(next.2.is_none(), "{method:?} {status} should drop body");
+      }
+    }
+  }
+}
+
+#[test]
+fn redirect_method_table_307_308() {
+  // GET/HEAD follow keeping method; body methods → RedirectFailed
+  for status in [307_u16, 308] {
+    for method in [Method::Get, Method::Head] {
+      let mut visited = Vec::new();
+      let mut count = 0;
+      let next = process(
+        &Config::default(),
+        &mut visited,
+        &mut count,
+        make_redirect_response(status, "/next"),
+        "http://a.com",
+        method,
+        None,
+      )
+      .unwrap()
+      .expect("expected redirect");
+      assert_eq!(next.1, method, "{method:?} {status} keeps method");
+    }
+
+    for method in [Method::Post, Method::Put, Method::Patch, Method::Delete] {
+      let mut visited = Vec::new();
+      let mut count = 0;
+      let body = if method == Method::Delete {
+        None
+      } else {
+        Some(vec![1, 2, 3])
+      };
+      let err = process(
+        &Config::default(),
+        &mut visited,
+        &mut count,
+        make_redirect_response(status, "/next"),
+        "http://a.com",
+        method,
+        body,
+      )
+      .unwrap_err();
+      assert!(
+        matches!(err, Error::RedirectFailed),
+        "{method:?} {status} → RedirectFailed"
+      );
+    }
+  }
+}
+
+#[test]
+fn non_followable_3xx_is_returned() {
+  // 304 and other 3xx (not 301/302/303/307/308) are not followed
+  for status in [300_u16, 304, 305, 306, 399] {
     let mut visited = Vec::new();
     let mut count = 0;
-    let next = process(
-      &Config::default(),
-      &mut visited,
-      &mut count,
-      make_redirect_response(status, "/next"),
-      "http://a.com",
-      Method::Post,
-      Some(vec![1, 2, 3]),
-    )
-    .unwrap()
-    .expect("expected redirect");
-    assert_eq!(next.1, Method::Get, "POST {status} should become GET");
-    assert!(next.2.is_none(), "GET should not have body");
+    let mut headers = Headers::new();
+    headers.insert("Location", "/next");
+    let raw = RawResponse {
+      status_code: status,
+      reason: String::from("x"),
+      headers,
+      version: Version::HTTP_11,
+      body_bytes: Vec::new(),
+    };
+    assert!(
+      process(
+        &Config::default(),
+        &mut visited,
+        &mut count,
+        raw,
+        "http://a.com",
+        Method::Get,
+        None,
+      )
+      .unwrap()
+      .is_none(),
+      "status {status} must not be followed"
+    );
   }
 }
 
@@ -212,12 +314,14 @@ fn status_error_when_configured() {
       http_status_as_error: true,
       ..Default::default()
     };
+    let mut headers = Headers::new();
+    headers.insert("X-Err", "yes");
     let raw = RawResponse {
       status_code: status,
       reason: String::from("err"),
-      headers: Headers::new(),
+      headers,
       version: Version::HTTP_11,
-      body_bytes: Vec::new(),
+      body_bytes: b"fail".to_vec(),
     };
     let err = process(
       &config,
@@ -229,7 +333,15 @@ fn status_error_when_configured() {
       None,
     )
     .unwrap_err();
-    assert!(matches!(err, Error::HttpStatus(s) if s == status));
+    match err {
+      Error::HttpStatus(code, resp) => {
+        assert_eq!(code, status);
+        assert_eq!(resp.status_code, status);
+        assert_eq!(resp.body.as_slice(), b"fail");
+        assert_eq!(resp.get_header("X-Err"), Some("yes"));
+      },
+      other => panic!("expected HttpStatus, got {other:?}"),
+    }
   }
 }
 
@@ -307,7 +419,7 @@ fn too_many_redirects_is_error() {
 }
 
 #[test]
-fn same_origin_redirect_keeps_credentials_flag_clear() {
+fn same_origin_redirect_follows() {
   let mut visited = Vec::new();
   let mut count = 0;
   let next = process(
@@ -321,12 +433,11 @@ fn same_origin_redirect_keeps_credentials_flag_clear() {
   )
   .unwrap()
   .expect("expected redirect");
-  assert!(!next.3);
   assert_eq!(next.0, "http://a.com/next");
 }
 
 #[test]
-fn cross_origin_redirect_sets_flag() {
+fn cross_origin_redirect_follows() {
   let mut visited = Vec::new();
   let mut count = 0;
   let next = process(
@@ -340,11 +451,11 @@ fn cross_origin_redirect_sets_flag() {
   )
   .unwrap()
   .expect("expected redirect");
-  assert!(next.3);
+  assert_eq!(next.0, "http://b.com/next");
 }
 
 #[test]
-fn different_port_is_cross_origin() {
+fn different_port_redirect_follows() {
   let mut visited = Vec::new();
   let mut count = 0;
   let next = process(
@@ -358,44 +469,42 @@ fn different_port_is_cross_origin() {
   )
   .unwrap()
   .expect("expected redirect");
-  assert!(next.3);
+  assert_eq!(next.0, "http://a.com:9090/next");
 }
 
 #[test]
-fn sanitize_strips_credentials_cross_origin_and_hop_by_hop() {
+fn sanitize_strips_credentials_on_every_hop() {
   let mut headers = Headers::new();
   headers.insert("Authorization", "Bearer secret");
   headers.insert("Cookie", "sid=1");
   headers.insert("Connection", "keep-alive");
+  headers.insert("Content-Length", "3");
+  headers.insert("Host", "old.example.com");
   headers.insert("X-Custom", "keep");
 
-  sanitize_redirect_headers(&mut headers, true, false);
+  // Same-origin hop still strips Auth/Cookie (RedirectAuthHeaders::Never)
+  sanitize_redirect_headers(&mut headers, false);
   assert!(!headers.contains("Authorization"));
   assert!(!headers.contains("Cookie"));
   assert!(!headers.contains("Connection"));
+  assert!(!headers.contains("Content-Length"));
+  assert!(!headers.contains("Host"));
   assert_eq!(headers.get("X-Custom"), Some("keep"));
-
-  let mut same_origin = Headers::new();
-  same_origin.insert("Authorization", "Bearer secret");
-  same_origin.insert("TE", "trailers");
-  sanitize_redirect_headers(&mut same_origin, false, false);
-  assert_eq!(same_origin.get("Authorization"), Some("Bearer secret"));
-  assert!(!same_origin.contains("TE"));
 
   let mut drop_body = Headers::new();
   drop_body.insert("Content-Length", "99");
   drop_body.insert("Content-Type", "application/json");
-  sanitize_redirect_headers(&mut drop_body, false, true);
+  sanitize_redirect_headers(&mut drop_body, true);
   assert!(!drop_body.contains("Content-Length"));
   assert!(!drop_body.contains("Content-Type"));
 }
 
 #[test]
-fn no_follow_policy_returns_redirect_response() {
+fn max_redirects_zero_does_not_follow() {
   let mut visited = Vec::new();
   let mut count = 0;
   let config = Config {
-    follow_redirects: false,
+    max_redirects: 0,
     ..Default::default()
   };
   assert!(

@@ -11,9 +11,8 @@ fn client_constructors() {
   let config = Config {
     timeout_read: Some(Duration::from_secs(30)),
     timeout_write: Some(Duration::from_secs(30)),
-    max_redirects: 5,
+    max_redirects: 0,
     user_agent: String::from("smoke/1.0"),
-    follow_redirects: false,
     ..Default::default()
   };
   let _ = HttpClient::with_config(config);
@@ -27,16 +26,14 @@ fn config_struct_update() {
     timeout_read: Some(Duration::from_secs(10)),
     timeout_write: Some(Duration::from_secs(10)),
     user_agent: String::from("app/1.0"),
-    max_redirects: 3,
-    follow_redirects: false,
+    max_redirects: 0,
     ..Default::default()
   };
 
   assert_eq!(config.timeout_read, Some(Duration::from_secs(10)));
   assert_eq!(config.timeout_write, Some(Duration::from_secs(10)));
   assert_eq!(config.user_agent, "app/1.0");
-  assert_eq!(config.max_redirects, 3);
-  assert!(!config.follow_redirects);
+  assert_eq!(config.max_redirects, 0);
 }
 
 #[test]
@@ -50,8 +47,23 @@ fn headers_basics() {
   assert!(headers.contains("X-Custom"));
   assert_eq!(headers.len(), 2);
 
+  headers.set("content-type", "text/plain");
+  assert_eq!(headers.get("Content-Type"), Some("text/plain"));
+  assert_eq!(headers.get_all("content-type").len(), 1);
+
   headers.remove("x-custom");
   assert!(!headers.contains("X-Custom"));
+}
+
+#[test]
+fn free_fn_builders() {
+  let _ = barehttp::get("http://example.com");
+  let _ = barehttp::post("http://example.com");
+  let _ = barehttp::put("http://example.com");
+  let _ = barehttp::delete("http://example.com");
+  let _ = barehttp::head("http://example.com");
+  let _ = barehttp::patch("http://example.com");
+  let _ = barehttp::agent();
 }
 
 #[test]

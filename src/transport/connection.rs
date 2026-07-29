@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::dns::DnsResolver;
 use crate::error::{Error, SocketError};
 use crate::headers::Headers;
+use crate::parser::chunked::ChunkedDecoder;
 use crate::parser::framing::has_complete_headers;
 use crate::parser::uri::{Host, Uri};
 use crate::parser::version::Version;
@@ -13,7 +14,7 @@ use alloc::vec::Vec;
 use core::net::SocketAddr;
 use core::time::Duration;
 
-/// Raw HTTP response without policy interpretation
+/// Parsed status line + headers + body bytes (no redirect / status policy applied).
 #[derive(Debug, Clone)]
 pub struct RawResponse {
   pub status_code: u16,
@@ -23,10 +24,11 @@ pub struct RawResponse {
   pub body_bytes: Vec<u8>,
 }
 
-/// A single live HTTP connection (policy-free I/O operations)
+/// One live HTTP connection (raw send/receive only).
 pub struct Connection<'a, S> {
   socket: &'a mut S,
   max_header_size: usize,
+  max_body_size: usize,
   reusable: bool,
 }
 
@@ -34,16 +36,17 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
   pub const fn new(
     socket: &'a mut S,
     max_header_size: usize,
+    max_body_size: usize,
   ) -> Self {
     Self {
       socket,
       max_header_size,
+      max_body_size,
       reusable: true,
     }
   }
 
-  /// Send HTTP request bytes to the socket
-  ///
+  /// Write the request octets to the socket.
   pub fn send_request(
     &mut self,
     request_bytes: &[u8],
@@ -69,11 +72,10 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
     Ok(())
   }
 
-  /// Read complete HTTP response (headers + body) with HTTP protocol awareness.
+  /// Read headers and body into a [`RawResponse`].
   ///
-  /// When `expect_body` is false (HEAD), no entity body is read from the wire.
-  /// 1xx interim responses are discarded; reading continues until a non-1xx
-  /// final response (RFC 9112 §15).
+  /// When `expect_body` is false (HEAD), no entity body is read.
+  /// 1xx interim responses are discarded until a final non-1xx response (RFC 9112 §15).
   pub fn read_raw_response(
     &mut self,
     expect_body: bool,
@@ -184,6 +186,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
     strategy: BodyReadStrategy,
     initial_bytes: &[u8],
   ) -> Result<Vec<u8>, Error> {
+    let max_body = self.max_body_size;
     match strategy {
       BodyReadStrategy::NoBody => {
         if !initial_bytes.is_empty() {
@@ -192,6 +195,10 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         Ok(Vec::new())
       },
       BodyReadStrategy::ContentLength(len) => {
+        if len > max_body {
+          self.reusable = false;
+          return Err(Error::BodyExceedsLimit(max_body));
+        }
         let mut body_bytes = if initial_bytes.len() > len {
           // Extra bytes past CL are a framing desync — do not reuse the connection.
           self.reusable = false;
@@ -224,12 +231,20 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
       },
       BodyReadStrategy::Chunked => {
         let mut raw_bytes = Vec::from(initial_bytes);
+        if raw_bytes.len() > max_body {
+          self.reusable = false;
+          return Err(Error::BodyExceedsLimit(max_body));
+        }
         let mut chunk_buffer = alloc::vec![0u8; 8192];
 
         loop {
-          // ponytail: read-stop heuristic; ChunkedDecoder is authoritative at parse time.
-          if chunked_body_looks_complete(&raw_bytes) {
-            break;
+          match ChunkedDecoder::message_complete(&raw_bytes) {
+            Ok(true) => break,
+            Ok(false) => {},
+            Err(e) => {
+              self.reusable = false;
+              return Err(Error::Parse(e));
+            },
           }
 
           let n = self.read_socket(&mut chunk_buffer)?;
@@ -239,12 +254,29 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
           if let Some(slice) = chunk_buffer.get(..n) {
             raw_bytes.extend_from_slice(slice);
           }
+          if raw_bytes.len() > max_body {
+            self.reusable = false;
+            return Err(Error::BodyExceedsLimit(max_body));
+          }
         }
 
+        let consumed = ChunkedDecoder::message_len(&raw_bytes).map_err(|e| {
+          self.reusable = false;
+          Error::Parse(e)
+        })?;
+        if consumed < raw_bytes.len() {
+          // Bytes past the chunked message cannot be unread; do not pool.
+          self.reusable = false;
+        }
+        raw_bytes.truncate(consumed);
         Ok(raw_bytes)
       },
       BodyReadStrategy::UntilClose => {
         let mut body_bytes = Vec::from(initial_bytes);
+        if body_bytes.len() > max_body {
+          self.reusable = false;
+          return Err(Error::BodyExceedsLimit(max_body));
+        }
         let mut read_buffer = alloc::vec![0u8; 8192];
 
         loop {
@@ -255,6 +287,10 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
           if let Some(slice) = read_buffer.get(..n) {
             body_bytes.extend_from_slice(slice);
           }
+          if body_bytes.len() > max_body {
+            self.reusable = false;
+            return Err(Error::BodyExceedsLimit(max_body));
+          }
         }
 
         Ok(body_bytes)
@@ -262,20 +298,20 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
     }
   }
 
-  /// Check if the connection can be reused for another request
+  /// Whether this connection may be returned to the pool.
   ///
-  /// RFC 9112 Section 9.6: Connection cannot be reused if either side sent Connection: close
+  /// False after either side sent `Connection: close` (RFC 9112 §9.6).
   pub const fn is_reusable(&self) -> bool {
     self.reusable
   }
 }
 
-/// Establish a connection to the given URI, or prepare a pooled already-connected socket.
+/// Connect to `uri`, or wrap a pooled already-connected socket.
 ///
-/// When `reused` is true, skips DNS and connect (socket came from the pool).
+/// When `reused` is true, skips DNS and connect.
 ///
 /// # Errors
-/// Returns [`Error`] on invalid URL, DNS failure, or socket failure.
+/// [`Error::InvalidUrl`], [`Error::Dns`], or [`Error::Socket`].
 pub fn connect<'a, S, D>(
   socket: &'a mut S,
   dns: &D,
@@ -290,6 +326,10 @@ where
   if !reused {
     let authority = uri.authority().ok_or(Error::InvalidUrl)?;
     let port = uri.port_or_default();
+    let host_for_sni = match authority.host() {
+      Host::RegName(name) => String::from(*name),
+      Host::IpAddr(addr) => crate::util::format_ip_for_host(*addr),
+    };
 
     let addresses: Vec<IpAddr> = match authority.host() {
       Host::RegName(name) => dns.resolve(name).map_err(Error::Dns)?,
@@ -305,7 +345,7 @@ where
         socket.set_write_timeout(ms).map_err(Error::Socket)?;
       }
 
-      match socket.connect(&SocketAddr::new(*addr, port)) {
+      match socket.connect(&SocketAddr::new(*addr, port), host_for_sni.as_str()) {
         Ok(()) => {
           last_error = None;
           break;
@@ -323,14 +363,25 @@ where
     }
   }
 
-  if let Some(ms) = duration_ms_u32(config.timeout_read) {
-    socket.set_read_timeout(ms).map_err(Error::Socket)?;
-  }
-  if let Some(ms) = duration_ms_u32(config.timeout_write) {
-    socket.set_write_timeout(ms).map_err(Error::Socket)?;
-  }
+  apply_io_timeouts(socket, config)?;
+  Ok(Connection::new(
+    socket,
+    config.max_response_header_size,
+    config.max_response_body_size,
+  ))
+}
 
-  Ok(Connection::new(socket, config.max_response_header_size))
+fn apply_io_timeouts<S: BlockingSocket>(
+  socket: &mut S,
+  config: &Config,
+) -> Result<(), Error> {
+  // Always apply (including 0 = blocking) so a pooled socket cannot keep a prior
+  // request's timeout when this request leaves timeout_* as None.
+  let read_ms = duration_ms_u32(config.timeout_read).unwrap_or(0);
+  socket.set_read_timeout(read_ms).map_err(Error::Socket)?;
+  let write_ms = duration_ms_u32(config.timeout_write).unwrap_or(0);
+  socket.set_write_timeout(write_ms).map_err(Error::Socket)?;
+  Ok(())
 }
 
 fn duration_ms_u32(d: Option<Duration>) -> Option<u32> {
@@ -341,20 +392,6 @@ fn duration_ms_u32(d: Option<Duration>) -> Option<u32> {
   } else {
     None
   }
-}
-
-/// End-anchored heuristic for when to stop reading a chunked body.
-fn chunked_body_looks_complete(data: &[u8]) -> bool {
-  if data.ends_with(b"0\r\n\r\n") || data.ends_with(b"0\n\n") {
-    return true;
-  }
-  if data.len() >= 5 && data.ends_with(b"\r\n\r\n") {
-    return data.starts_with(b"0\r\n") || data.windows(4).any(|w| w == b"\n0\r\n");
-  }
-  if data.len() >= 3 && data.ends_with(b"\n\n") {
-    return data.starts_with(b"0\n") || data.windows(3).any(|w| w == b"\n0\n");
-  }
-  false
 }
 
 /// Length of the header section including the terminating blank line, if complete.

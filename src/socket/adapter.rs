@@ -1,58 +1,79 @@
-//! Blocking socket trait (TLS wrappers, mocks, embedded stacks).
+//! Blocking socket trait for TLS wrappers, mocks, and embedded stacks.
 
 use crate::error::SocketError;
 use core::net::SocketAddr;
 
-/// Blocking byte-stream socket. Implement for TLS, proxies, or test doubles.
+/// Blocking byte-stream socket.
 pub trait BlockingSocket: Sized {
-  /// Create a new unbound socket.
+  /// Create an unbound socket.
   ///
   /// # Errors
-  /// Returns [`SocketError`] if the OS socket cannot be created.
+  /// [`SocketError::OsError`] (or platform equivalent) if the OS cannot create the socket.
   fn new() -> Result<Self, SocketError>;
+
   /// Connect to `addr`.
   ///
+  /// `host` is the URI hostname for SNI / TLS identity. Cleartext adapters may ignore it.
+  ///
   /// # Errors
-  /// Returns [`SocketError`] on connect failure.
+  /// [`SocketError::ConnectionRefused`], [`SocketError::TimedOut`],
+  /// [`SocketError::InvalidAddress`], or [`SocketError::OsError`] on failure.
   fn connect(
     &mut self,
     addr: &SocketAddr,
+    host: &str,
   ) -> Result<(), SocketError>;
-  /// Read into `buf`. Returns bytes read.
+
+  /// Read into `buf`; returns bytes read.
   ///
   /// # Errors
-  /// Returns [`SocketError`] on I/O failure.
+  /// [`SocketError::NotConnected`], [`SocketError::TimedOut`],
+  /// [`SocketError::Interrupted`], or [`SocketError::OsError`].
   fn read(
     &mut self,
     buf: &mut [u8],
   ) -> Result<usize, SocketError>;
-  /// Write `buf`. Returns bytes written.
+
+  /// Write `buf`; returns bytes written.
   ///
   /// # Errors
-  /// Returns [`SocketError`] on I/O failure.
+  /// [`SocketError::NotConnected`], [`SocketError::TimedOut`],
+  /// [`SocketError::Interrupted`], or [`SocketError::OsError`].
   fn write(
     &mut self,
     buf: &[u8],
   ) -> Result<usize, SocketError>;
+
   /// Shut down the socket.
   ///
   /// # Errors
-  /// Returns [`SocketError`] on failure.
+  /// [`SocketError::NotConnected`] or [`SocketError::OsError`].
   fn shutdown(&mut self) -> Result<(), SocketError>;
-  /// Read timeout in milliseconds (`0` = blocking forever, if supported).
+
+  /// Read timeout in milliseconds (`0` = block until data, if the platform supports it).
   ///
   /// # Errors
-  /// Returns [`SocketError`] if the timeout cannot be set.
+  /// [`SocketError::Unsupported`] if timeouts are unavailable; otherwise OS set-option failures.
   fn set_read_timeout(
     &mut self,
     timeout_ms: u32,
   ) -> Result<(), SocketError>;
-  /// Write timeout in milliseconds.
+
+  /// Write timeout in milliseconds (`0` = block until writable, if supported).
   ///
   /// # Errors
-  /// Returns [`SocketError`] if the timeout cannot be set.
+  /// [`SocketError::Unsupported`] if timeouts are unavailable; otherwise OS set-option failures.
   fn set_write_timeout(
     &mut self,
     timeout_ms: u32,
   ) -> Result<(), SocketError>;
+
+  /// `true` for the cleartext OS TCP adapter ([`crate::OsBlockingSocket`]).
+  ///
+  /// Default is `false` (TLS wrappers). The client uses this to reject
+  /// [`crate::config::Config::assume_tls_socket`] with a cleartext OS socket.
+  #[must_use]
+  fn is_os_cleartext() -> bool {
+    false
+  }
 }

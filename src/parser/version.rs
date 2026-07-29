@@ -11,12 +11,10 @@ impl Version {
   /// HTTP/1.1
   pub const HTTP_11: Self = Self { major: 1, minor: 1 };
 
-  /// Parse HTTP version from bytes (`HTTP/x.y`).
+  /// Parse `HTTP/x.y` from bytes.
   ///
   /// # Errors
-  ///
-  /// Returns [`crate::ParseError::InvalidHttpVersion`] if the input is too short, has an
-  /// invalid prefix, or contains invalid version numbers.
+  /// [`crate::ParseError::InvalidHttpVersion`] if the prefix is wrong or digits are missing.
   pub fn parse(input: &[u8]) -> Result<Self, crate::error::ParseError> {
     use crate::error::ParseError;
     if input.len() < 8 {

@@ -2,12 +2,12 @@
 
 use crate::error::ParseError;
 
-/// Parse header fields. Obs-fold is rejected (`ObsoleteFoldInHeader`).
+/// Parse header fields; obs-fold is rejected (`ObsoleteFoldInHeader`).
 ///
-/// Returns owned name/value pairs and remainder after the blank line.
+/// Returns owned name/value pairs and the remainder after the blank line.
 ///
 /// # Errors
-/// Returns [`ParseError`] on malformed headers, obs-fold, or whitespace before the first field.
+/// Malformed fields, obs-fold, or whitespace before the first field.
 pub fn parse_header_fields(
   input: &[u8]
 ) -> Result<(alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)>, &[u8]), ParseError> {

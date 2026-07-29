@@ -6,10 +6,10 @@ use alloc::vec::Vec;
 
 /// Resolve hostnames to IP addresses.
 pub trait DnsResolver {
-  /// Look up `host`. Empty `Vec` means NXDOMAIN / no records.
+  /// Look up `host`. An empty `Vec` means NXDOMAIN / no records.
   ///
   /// # Errors
-  /// Returns [`DnsError`] on resolver failure.
+  /// [`DnsError::ResolutionFailed`] when the OS resolver itself fails.
   fn resolve(
     &self,
     host: &str,

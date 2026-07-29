@@ -46,6 +46,18 @@ fn connector_resolves_dns_and_connects() {
 
   assert!(result.is_ok());
   assert!(socket.connected_addr.is_some());
+  assert_eq!(socket.connected_host.as_deref(), Some("example.com"));
+}
+
+#[test]
+fn connector_passes_hostname_for_sni() {
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
+
+  let uri = Uri::parse("https://Api.Example.COM:8443/").unwrap();
+  let _ = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
+
+  assert_eq!(socket.connected_host.as_deref(), Some("Api.Example.COM"));
 }
 
 #[test]
@@ -263,8 +275,23 @@ fn connector_no_timeouts_when_not_configured() {
   let uri = Uri::parse("http://example.com").unwrap();
   let _result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
-  assert_eq!(socket.read_timeout, None);
-  assert_eq!(socket.write_timeout, None);
+  // None → clear to 0 (blocking) so pooled sockets cannot keep a prior timeout.
+  assert_eq!(socket.read_timeout, Some(0));
+  assert_eq!(socket.write_timeout, Some(0));
+}
+
+#[test]
+fn connector_clears_prior_timeout_when_none() {
+  let mut socket = MockSocket::empty();
+  socket.read_timeout = Some(5_000);
+  socket.write_timeout = Some(5_000);
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
+
+  let uri = Uri::parse("http://example.com").unwrap();
+  let _ = connection::connect(&mut socket, &dns, &uri, &Config::default(), true).unwrap();
+
+  assert_eq!(socket.read_timeout, Some(0));
+  assert_eq!(socket.write_timeout, Some(0));
 }
 
 #[test]

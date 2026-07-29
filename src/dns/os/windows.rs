@@ -1,19 +1,19 @@
-use crate::dns::os::{host_cstring, ip_v4};
+use crate::dns::os::{host_cstring, ip_v4, ip_v6};
 use crate::error::DnsError;
 use crate::util::IpAddr;
 use alloc::vec::Vec;
 use core::ptr;
 use windows_sys::Win32::Networking::WinSock::{
-  ADDRINFOA, AF_INET, SOCKADDR_IN, WSAGetLastError, freeaddrinfo, getaddrinfo,
+  ADDRINFOA, AF_INET, AF_INET6, SOCKADDR_IN, SOCKADDR_IN6, WSAGetLastError, freeaddrinfo, getaddrinfo,
 };
 
 pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
   let host_c = host_cstring(host)?;
 
   let mut result: *mut ADDRINFOA = ptr::null_mut();
-  // V4-only: WinSock connect path has no IPv6.
+  // AF_UNSPEC (0): return both IPv4 and IPv6, matching the Unix resolver.
   let hints = ADDRINFOA {
-    ai_family: i32::from(AF_INET),
+    ai_family: 0,
     ai_socktype: 0,
     ai_protocol: 0,
     ai_flags: 0,
@@ -40,6 +40,11 @@ pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
       if info.ai_family == i32::from(AF_INET) && !info.ai_addr.is_null() {
         let sockaddr = ptr::read_unaligned(info.ai_addr.cast::<SOCKADDR_IN>());
         addresses.push(ip_v4(sockaddr.sin_addr.S_un.S_addr.to_ne_bytes()));
+      } else if info.ai_family == i32::from(AF_INET6) && !info.ai_addr.is_null() {
+        let sockaddr = ptr::read_unaligned(info.ai_addr.cast::<SOCKADDR_IN6>());
+        // SAFETY: IN6_ADDR.u is a union; Byte is the octet view.
+        let octets = unsafe { sockaddr.sin6_addr.u.Byte };
+        addresses.push(ip_v6(octets));
       }
 
       current = info.ai_next;

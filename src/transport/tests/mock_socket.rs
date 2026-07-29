@@ -12,6 +12,8 @@ pub struct MockSocket {
   /// Cap bytes returned per `write` call (simulates short writes).
   pub max_write: usize,
   pub connected_addr: Option<String>,
+  /// Hostname passed to [`BlockingSocket::connect`] (SNI).
+  pub connected_host: Option<String>,
   pub read_timeout: Option<u32>,
   pub write_timeout: Option<u32>,
   pub should_fail_connect: bool,
@@ -27,6 +29,7 @@ impl MockSocket {
       written: Vec::new(),
       max_write: usize::MAX,
       connected_addr: None,
+      connected_host: None,
       read_timeout: None,
       write_timeout: None,
       should_fail_connect: false,
@@ -79,6 +82,7 @@ impl BlockingSocket for MockSocket {
   fn connect(
     &mut self,
     addr: &SocketAddr,
+    host: &str,
   ) -> Result<(), SocketError> {
     if self.should_fail_connect {
       return Err(SocketError::NotConnected);
@@ -88,6 +92,7 @@ impl BlockingSocket for MockSocket {
       return Err(SocketError::ConnectionRefused);
     }
     self.connected_addr = Some(format!("{addr}"));
+    self.connected_host = Some(String::from(host));
     Ok(())
   }
 

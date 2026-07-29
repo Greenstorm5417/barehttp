@@ -1,13 +1,15 @@
-//! Blocking HTTP client for `no_std` + `alloc`. Cleartext HTTP only unless your socket does TLS (`Config::assume_tls_socket`).
+//! Blocking HTTP client for `no_std` + `alloc`. Cleartext HTTP unless your socket
+//! terminates TLS (`Config::assume_tls_socket`). Setting that flag with
+//! [`OsBlockingSocket`] yields [`Error::TlsNotConfigured`].
 //!
 //! ```no_run
-//! let response = barehttp::get("http://httpbin.org/get")?;
+//! let response = barehttp::get("http://httpbin.org/get").call()?;
 //! println!("{}", response.text()?);
 //! # Ok::<(), barehttp::Error>(())
 //! ```
 //!
-//! [`HttpClient`] takes custom headers, follows redirects, and accepts [`config::Config`].
-//! `text` and `is_success` are methods on [`Response`].
+//! Configure via [`config::Config`]. [`HttpClient`] follows redirects and accepts
+//! custom headers. Read the body with [`Response::text`] / [`Response::is_success`].
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -64,24 +66,54 @@ pub use headers::Headers;
 pub use method::Method;
 pub use parser::Response;
 pub use parser::version::Version;
+pub use request_builder::ClientRequestBuilder;
 
-/// GET with default OS adapters.
-///
-/// # Errors
-/// URL parse, DNS, connect, or HTTP failure.
-pub fn get(url: &str) -> Result<Response, Error> {
-  HttpClient::new().get(url).call()
+/// Alias for [`HttpClient`] with OS adapters (ureq naming).
+pub type Agent = HttpClient<OsBlockingSocket, OsDnsResolver>;
+
+/// Alias for [`ClientRequestBuilder`] with OS adapters (ureq naming).
+pub type RequestBuilder = ClientRequestBuilder<OsBlockingSocket, OsDnsResolver>;
+
+/// [`Agent`] / [`HttpClient`] with default OS adapters.
+#[must_use]
+pub fn agent() -> Agent {
+  HttpClient::new()
 }
 
-/// POST with default OS adapters.
-///
-/// # Errors
-/// URL parse, DNS, connect, or HTTP failure.
-pub fn post(
-  url: &str,
-  body: impl AsRef<[u8]>,
-) -> Result<Response, Error> {
-  HttpClient::new().post(url).send(body)
+/// GET using a fresh default OS client.
+#[must_use]
+pub fn get(url: &str) -> RequestBuilder {
+  HttpClient::new().get(url)
+}
+
+/// POST using a fresh default OS client (body via [`.send()`](ClientRequestBuilder::send)).
+#[must_use]
+pub fn post(url: &str) -> RequestBuilder {
+  HttpClient::new().post(url)
+}
+
+/// PUT using a fresh default OS client (body via [`.send()`](ClientRequestBuilder::send)).
+#[must_use]
+pub fn put(url: &str) -> RequestBuilder {
+  HttpClient::new().put(url)
+}
+
+/// DELETE using a fresh default OS client.
+#[must_use]
+pub fn delete(url: &str) -> RequestBuilder {
+  HttpClient::new().delete(url)
+}
+
+/// HEAD using a fresh default OS client.
+#[must_use]
+pub fn head(url: &str) -> RequestBuilder {
+  HttpClient::new().head(url)
+}
+
+/// PATCH using a fresh default OS client (body via [`.send()`](ClientRequestBuilder::send)).
+#[must_use]
+pub fn patch(url: &str) -> RequestBuilder {
+  HttpClient::new().patch(url)
 }
 
 /// Client configuration.

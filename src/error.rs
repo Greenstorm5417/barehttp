@@ -1,58 +1,60 @@
 /// HTTP/1.1 message parse failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseError {
-  /// Invalid HTTP version format
+  /// Status-line version token is not `HTTP/x.y`.
   InvalidHttpVersion,
-  /// Invalid HTTP status code
+  /// Status code is missing or not three DIGIT.
   InvalidStatusCode,
-  /// Invalid reason phrase in status line
+  /// Reason phrase bytes are illegal.
   InvalidReasonPhrase,
-  /// Invalid header field name
+  /// Header field name is not a token.
   InvalidHeaderName,
-  /// Invalid header field value
+  /// Header field value contains illegal octets.
   InvalidHeaderValue,
-  /// Invalid URI format
+  /// URI / absolute-form could not be parsed.
   InvalidUri,
-  /// Missing required CRLF (\r\n) sequence
+  /// Required CRLF (`\r\n`) missing.
   MissingCrlf,
-  /// Bare carriage return without line feed
+  /// Bare CR without LF.
   BareCarriageReturn,
-  /// Unexpected end of input while parsing
+  /// Input ended before a complete message.
   UnexpectedEndOfInput,
-  /// Invalid whitespace in message
+  /// Illegal whitespace in the message.
   InvalidWhitespace,
-  /// Invalid chunk size in chunked transfer encoding
+  /// Chunk-size hex is malformed.
   InvalidChunkSize,
-  /// Invalid Content-Length header value
+  /// `Content-Length` value is not a valid length.
   InvalidContentLength,
-  /// Both Transfer-Encoding and Content-Length present (RFC 9112 Section 6.3)
+  /// Both `Transfer-Encoding` and `Content-Length` present (RFC 9112 §6.3).
   ConflictingFraming,
-  /// Transfer-Encoding present but chunked is not the final encoding (RFC 9112 Section 6.3)
+  /// `chunked` is present but not the final coding (RFC 9112 §6.3).
   ChunkedNotFinal,
-  /// Whitespace found between start-line and first header field (RFC 9112 Section 2.2)
+  /// Whitespace between start-line and first header field (RFC 9112 §2.2).
   WhitespaceBeforeHeaders,
-  /// Extra data found after complete response body (RFC 9112 Section 6.3)
+  /// Bytes after a complete response body (RFC 9112 §6.3).
   ExtraDataAfterResponse,
-  /// Host header is required in HTTP/1.1 requests (RFC 9112 Section 3.2)
+  /// HTTP/1.1 request missing `Host` (RFC 9112 §3.2).
   MissingHostHeader,
-  /// Header value contains obsolete line folding (RFC 9112 Section 5.2)
+  /// Obs-fold in a header value (RFC 9112 §5.2).
   ObsoleteFoldInHeader,
-  /// Transfer-Encoding in responses that must not have it (RFC 9112 Section 6.1)
+  /// `Transfer-Encoding` on a status that must not carry it (RFC 9112 §6.1).
   InvalidTransferEncodingForStatus,
-  /// TE header contains "chunked" which is forbidden (RFC 9112 Section 7.4)
+  /// `TE` lists `chunked` (forbidden; RFC 9112 §7.4).
   ChunkedInTeHeader,
-  /// TE header present but Connection header missing "TE" (RFC 9112 Section 7.4)
+  /// `TE` present without `TE` in `Connection` (RFC 9112 §7.4).
   TeHeaderMissingConnection,
-  /// Multiple Host headers present (RFC 9112 Section 3.2)
+  /// More than one `Host` header (RFC 9112 §3.2).
   MultipleHostHeaders,
-  /// Invalid Host header value format (RFC 9112 Section 3.2)
+  /// `Host` value is not a valid authority (RFC 9112 §3.2).
   InvalidHostHeaderValue,
-  /// Transfer-Encoding used with HTTP version < 1.1 (RFC 9112 Section 6.1)
+  /// `Transfer-Encoding` on HTTP/1.0 or earlier (RFC 9112 §6.1).
   TransferEncodingRequiresHttp11,
-  /// Chunked appears multiple times in Transfer-Encoding (RFC 9112 Section 6.1)
+  /// `chunked` listed more than once (RFC 9112 §6.1).
   ChunkedAppliedMultipleTimes,
-  /// Failed to decompress response body (gzip/deflate)
+  /// gzip / deflate / zstd decompression failed.
   DecompressionFailed,
+  /// Decompressed body larger than the configured size limit.
+  BodyExceedsLimit(usize),
 }
 
 impl ParseError {
@@ -84,6 +86,7 @@ impl ParseError {
       Self::TransferEncodingRequiresHttp11 => "Transfer-Encoding requires HTTP/1.1 or higher",
       Self::ChunkedAppliedMultipleTimes => "chunked transfer coding applied multiple times",
       Self::DecompressionFailed => "failed to decompress response body",
+      Self::BodyExceedsLimit(_) => "response body exceeds size limit",
     }
   }
 }
@@ -93,7 +96,10 @@ impl core::fmt::Display for ParseError {
     &self,
     f: &mut core::fmt::Formatter<'_>,
   ) -> core::fmt::Result {
-    f.write_str(self.as_str())
+    match self {
+      Self::BodyExceedsLimit(limit) => write!(f, "response body exceeds limit of {limit} bytes"),
+      other => f.write_str(other.as_str()),
+    }
   }
 }
 
@@ -102,9 +108,9 @@ impl core::error::Error for ParseError {}
 /// DNS lookup failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DnsError {
-  /// DNS resolution failed with error code
+  /// OS resolver failed; payload is the platform error code.
   ResolutionFailed(i32),
-  /// No IP addresses found for hostname
+  /// Hostname resolved to an empty address list.
   NoAddressesFound,
 }
 
@@ -134,19 +140,19 @@ impl core::error::Error for DnsError {}
 /// Socket I/O failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketError {
-  /// Socket is not connected
+  /// Socket is not connected.
   NotConnected,
-  /// Connection refused by remote host
+  /// Peer refused the connection.
   ConnectionRefused,
-  /// Operation timed out
+  /// Deadline elapsed.
   TimedOut,
-  /// Operation was interrupted
+  /// Call interrupted (e.g. signal); may be retried.
   Interrupted,
-  /// Invalid socket address
+  /// Address is unusable.
   InvalidAddress,
-  /// Operation not supported
+  /// Operation unsupported on this socket / platform.
   Unsupported,
-  /// Operating system error with code
+  /// OS error; payload is the platform errno / WSA code.
   OsError(i32),
 }
 
@@ -178,32 +184,40 @@ impl core::fmt::Display for SocketError {
 
 impl core::error::Error for SocketError {}
 
-/// Error from [`crate::HttpClient`] and the free `get` / `post` helpers.
+/// Error from [`crate::HttpClient`] and the free `get` / `post` / … functions.
 #[derive(Debug)]
 pub enum Error {
-  /// HTTP message parsing error
+  /// Wire / framing parse failure.
   Parse(ParseError),
-  /// DNS resolution error
+  /// DNS lookup failure.
   Dns(DnsError),
-  /// Socket operation error
+  /// Socket I/O failure.
   Socket(SocketError),
-  /// Invalid or malformed URL
+  /// URL could not be parsed or is unusable for this request.
   InvalidUrl,
-  /// Maximum redirect limit exceeded
+  /// Redirect hops exceeded [`crate::config::Config::max_redirects`].
   TooManyRedirects,
-  /// Redirect response missing Location header
+  /// Redirect response had no `Location` header.
   MissingRedirectLocation,
-  /// Circular redirect detected
+  /// Redirect target already visited in this request.
   RedirectLoop,
-  /// HTTP error status code (4xx or 5xx)
-  HttpStatus(u16),
-  /// HTTPS/TLS not available on this socket (or HTTPS-only policy rejected HTTP)
-  HttpsRequired,
-  /// Response headers exceed maximum allowed size
+  /// Redirect cannot be followed (e.g. 307/308 with a request body).
+  RedirectFailed,
+  /// 4xx/5xx when [`crate::config::Config::http_status_as_error`] is set.
+  ///
+  /// `(status, response)`, same shape as ureq 2.x `Status(code, Response)`.
+  HttpStatus(u16, crate::parser::Response),
+  /// Non-HTTPS URL rejected by [`crate::config::Config::https_only`].
+  HttpsOnly,
+  /// `https://` without TLS, or `assume_tls_socket` with cleartext [`crate::OsBlockingSocket`].
+  TlsNotConfigured,
+  /// Response header section larger than [`crate::config::Config::max_response_header_size`].
   ResponseHeaderTooLarge,
-  /// UTF-8 decoding error
+  /// Body larger than [`crate::config::Config::max_response_body_size`].
+  BodyExceedsLimit(usize),
+  /// Response body is not valid UTF-8.
   Utf8Error,
-  /// Invalid request (illegal cookie, form and body both set, …)
+  /// Bad request construction (illegal cookie octets, form fields plus an explicit body, …).
   InvalidRequest,
 }
 
@@ -217,9 +231,14 @@ impl Error {
       Self::TooManyRedirects => "too many redirects",
       Self::MissingRedirectLocation => "redirect missing Location header",
       Self::RedirectLoop => "redirect loop detected",
-      Self::HttpStatus(_) => "HTTP status",
-      Self::HttpsRequired => "HTTPS/TLS not available on this socket; use a TLS-capable BlockingSocket or http://",
+      Self::RedirectFailed => "redirect failed",
+      Self::HttpStatus(_, _) => "HTTP status",
+      Self::HttpsOnly => "HTTPS-only policy rejected non-HTTPS URL",
+      Self::TlsNotConfigured => {
+        "TLS not configured: use a TLS-capable BlockingSocket with assume_tls_socket, or http://"
+      },
       Self::ResponseHeaderTooLarge => "response headers too large",
+      Self::BodyExceedsLimit(_) => "response body exceeds size limit",
       Self::Utf8Error => "invalid UTF-8",
       Self::InvalidRequest => "invalid request",
     }
@@ -235,7 +254,8 @@ impl core::fmt::Display for Error {
       Self::Parse(e) => write!(f, "parse error: {e}"),
       Self::Dns(e) => write!(f, "DNS error: {e}"),
       Self::Socket(e) => write!(f, "socket error: {e}"),
-      Self::HttpStatus(code) => write!(f, "HTTP status {code}"),
+      Self::HttpStatus(code, _) => write!(f, "HTTP status {code}"),
+      Self::BodyExceedsLimit(limit) => write!(f, "response body exceeds limit of {limit} bytes"),
       other => f.write_str(other.as_str()),
     }
   }

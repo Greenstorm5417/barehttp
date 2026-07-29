@@ -30,6 +30,29 @@ impl ChunkedDecoder {
     &self.trailers
   }
 
+  /// `Ok(true)` if `input` contains a complete chunked message; `Ok(false)` if more
+  /// bytes are needed; `Err` on malformed framing.
+  pub fn message_complete(input: &[u8]) -> Result<bool, ParseError> {
+    let mut decoder = Self::new();
+    let mut output = alloc::vec::Vec::new();
+    match decoder.decode_chunk(input, &mut output) {
+      Ok(_) => Ok(true),
+      Err(ParseError::UnexpectedEndOfInput | ParseError::MissingCrlf) => Ok(false),
+      Err(e) => Err(e),
+    }
+  }
+
+  /// Bytes consumed by a complete chunked message in `input` (excludes trailing data).
+  ///
+  /// # Errors
+  /// [`ParseError`] when the message is incomplete or the framing is illegal.
+  pub fn message_len(input: &[u8]) -> Result<usize, ParseError> {
+    let mut decoder = Self::new();
+    let mut output = alloc::vec::Vec::new();
+    let rest = decoder.decode_chunk(input, &mut output)?;
+    Ok(input.len().saturating_sub(rest.len()))
+  }
+
   pub fn decode_chunk<'a>(
     &'a mut self,
     input: &'a [u8],
@@ -40,6 +63,9 @@ impl ChunkedDecoder {
     loop {
       match self.state {
         DecodeState::ChunkSize => {
+          if remaining.is_empty() {
+            return Err(ParseError::UnexpectedEndOfInput);
+          }
           let (size, rest) = Self::parse_chunk_size(remaining)?;
           remaining = rest;
 
@@ -69,6 +95,9 @@ impl ChunkedDecoder {
           self.state = DecodeState::ChunkSize;
         },
         DecodeState::TrailerSection => {
+          if !trailer_section_looks_complete(remaining) {
+            return Err(ParseError::UnexpectedEndOfInput);
+          }
           let (trailers, rest) = parse_header_fields(remaining)?;
           self.trailers = trailers;
           self.state = DecodeState::Complete;
@@ -113,6 +142,11 @@ impl ChunkedDecoder {
       return Err(ParseError::InvalidChunkSize);
     }
 
+    // Hex digits without a size-line terminator yet.
+    if i == input.len() {
+      return Err(ParseError::UnexpectedEndOfInput);
+    }
+
     let mut rest = input.get(i..).ok_or(ParseError::InvalidChunkSize)?;
 
     while !rest.is_empty() {
@@ -123,8 +157,23 @@ impl ChunkedDecoder {
       rest = rest.get(1..).ok_or(ParseError::InvalidChunkSize)?;
     }
 
+    if rest.is_empty() {
+      return Err(ParseError::UnexpectedEndOfInput);
+    }
+
     rest = expect_crlf(rest)?;
 
     Ok((size, rest))
   }
+}
+
+/// True when `data` contains a blank line ending the trailer section.
+fn trailer_section_looks_complete(data: &[u8]) -> bool {
+  if data.is_empty() {
+    return false;
+  }
+  if data == b"\r\n" || data == b"\n" {
+    return true;
+  }
+  data.windows(4).any(|w| w == b"\r\n\r\n") || data.windows(2).any(|w| w == b"\n\n")
 }

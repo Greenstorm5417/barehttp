@@ -1,10 +1,10 @@
 use crate::error::SocketError;
-use core::net::{SocketAddr, SocketAddrV4};
+use core::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use core::sync::atomic::{AtomicBool, Ordering};
 use windows_sys::Win32::Networking::WinSock::{
-  AF_INET, INVALID_SOCKET, IPPROTO_TCP, SD_BOTH, SO_RCVTIMEO, SO_SNDTIMEO, SOCK_STREAM, SOCKADDR_IN, SOCKET,
-  SOCKET_ERROR, SOL_SOCKET, WSADATA, WSAGetLastError, WSAStartup, closesocket, connect, recv, send, setsockopt,
-  shutdown, socket,
+  AF_INET, AF_INET6, INVALID_SOCKET, IPPROTO_TCP, SD_BOTH, SO_RCVTIMEO, SO_SNDTIMEO, SOCK_STREAM, SOCKADDR_IN,
+  SOCKADDR_IN6, SOCKET, SOCKET_ERROR, SOL_SOCKET, WSADATA, WSAGetLastError, WSAStartup, closesocket, connect, recv,
+  send, setsockopt, shutdown, socket,
 };
 
 static WSA_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -66,6 +66,7 @@ impl crate::socket::BlockingSocket for OsSocket {
   fn connect(
     &mut self,
     addr: &SocketAddr,
+    _host: &str,
   ) -> Result<(), SocketError> {
     if self.connected {
       return Ok(());
@@ -73,9 +74,12 @@ impl crate::socket::BlockingSocket for OsSocket {
 
     match addr {
       SocketAddr::V4(a) => self.connect_ipv4(a),
-      // ponytail: WinSock IPv6 path not wired; DNS filters to V4 on Windows.
-      SocketAddr::V6(_) => Err(SocketError::Unsupported),
+      SocketAddr::V6(a) => self.connect_ipv6(a),
     }
+  }
+
+  fn is_os_cleartext() -> bool {
+    true
   }
 
   fn read(
@@ -172,13 +176,16 @@ impl crate::socket::BlockingSocket for OsSocket {
 
 impl OsSocket {
   /// Fresh SOCKET per attempt: failed connect leaves it unusable (same as Unix).
-  fn recreate(&mut self) -> Result<(), SocketError> {
+  fn recreate(
+    &mut self,
+    family: u16,
+  ) -> Result<(), SocketError> {
     unsafe {
       if self.socket != INVALID_SOCKET {
         closesocket(self.socket);
         self.socket = INVALID_SOCKET;
       }
-      let sock = socket(i32::from(AF_INET), SOCK_STREAM, IPPROTO_TCP);
+      let sock = socket(i32::from(family), SOCK_STREAM, IPPROTO_TCP);
       if sock == INVALID_SOCKET {
         return Err(get_last_wsa_error());
       }
@@ -197,7 +204,7 @@ impl OsSocket {
     &mut self,
     addr: &SocketAddrV4,
   ) -> Result<(), SocketError> {
-    self.recreate()?;
+    self.recreate(AF_INET)?;
 
     let ip = u32::from_ne_bytes(addr.ip().octets());
 
@@ -212,6 +219,37 @@ impl OsSocket {
         self.socket,
         &raw const sockaddr as *const _,
         core::mem::size_of::<SOCKADDR_IN>() as i32,
+      );
+
+      if result == SOCKET_ERROR {
+        return Err(get_last_wsa_error());
+      }
+    }
+
+    self.connected = true;
+    Ok(())
+  }
+
+  fn connect_ipv6(
+    &mut self,
+    addr: &SocketAddrV6,
+  ) -> Result<(), SocketError> {
+    self.recreate(AF_INET6)?;
+
+    unsafe {
+      let mut sockaddr: SOCKADDR_IN6 = core::mem::zeroed();
+      sockaddr.sin6_family = AF_INET6;
+      sockaddr.sin6_port = addr.port().to_be();
+      sockaddr.sin6_flowinfo = 0;
+      // SAFETY: writing the Byte / scope_id views of the WinSock unions.
+      sockaddr.sin6_addr.u.Byte = addr.ip().octets();
+      sockaddr.Anonymous.sin6_scope_id = addr.scope_id();
+
+      #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+      let result = connect(
+        self.socket,
+        &raw const sockaddr as *const _,
+        core::mem::size_of::<SOCKADDR_IN6>() as i32,
       );
 
       if result == SOCKET_ERROR {

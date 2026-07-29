@@ -162,6 +162,17 @@ fn request_te_and_cl_conflict_rejected() {
 }
 
 #[test]
+fn request_rejects_content_length_mismatch() {
+  let mut headers = Headers::new();
+  headers.insert("Host", "example.com");
+  headers.insert("Content-Length", "99");
+  assert_eq!(
+    serialize_with_headers("POST", "/", &headers, Some(b"test")).unwrap_err(),
+    ParseError::InvalidContentLength
+  );
+}
+
+#[test]
 fn request_rejects_ctl_injection_in_headers() {
   let mut bad_cr = Headers::new();
   bad_cr.insert("Host", "example.com");

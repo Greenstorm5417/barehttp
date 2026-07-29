@@ -3,3 +3,6 @@
 # Build artifacts from scripts
 update_readme
 update_readme.exe
+
+# Reference clone only — do not commit
+ureq/

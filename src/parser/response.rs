@@ -1,4 +1,4 @@
-//! Parsed HTTP/1.1 responses and body-read strategy.
+//! Parsed HTTP/1.1 responses and body-length strategy.
 
 extern crate alloc;
 use crate::error::ParseError;
@@ -10,7 +10,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 #[cfg(feature = "gzip-decompression")]
-use miniz_oxide::inflate::{decompress_to_vec, decompress_to_vec_zlib};
+use miniz_oxide::inflate::{TINFLStatus, decompress_to_vec_with_limit, decompress_to_vec_zlib_with_limit};
 
 #[cfg(feature = "zstd-decompression")]
 use ruzstd::decoding::StreamingDecoder;
@@ -34,10 +34,10 @@ impl Response {
   /// Parse a complete buffered HTTP/1.1 response.
   ///
   /// # Errors
-  /// Returns [`ParseError`] if the message is malformed.
+  /// [`ParseError`] when the status line, headers, framing, or body are illegal.
   pub fn parse(input: &[u8]) -> Result<Self, ParseError> {
-    let (status_code, reason, headers, version, rest) = Self::parse_headers_only(input)?;
-    let (body, trailers) = Self::parse_body_from_bytes(rest, &headers, status_code, version)?;
+    let (status_code, reason, mut headers, version, rest) = Self::parse_headers_only(input)?;
+    let (body, trailers) = Self::parse_body_from_bytes(rest, &mut headers, status_code, version, usize::MAX)?;
     Ok(Self {
       status_code,
       reason,
@@ -48,30 +48,48 @@ impl Response {
   }
 
   fn decompress_body_if_needed(
-    headers: &Headers,
-    mut body_bytes: Vec<u8>,
+    headers: &mut Headers,
+    body_bytes: Vec<u8>,
+    max_body: usize,
   ) -> Result<Vec<u8>, ParseError> {
+    if body_bytes.len() > max_body {
+      return Err(ParseError::BodyExceedsLimit(max_body));
+    }
+
     let encodings = headers.get_all("content-encoding");
     if encodings.is_empty() {
       return Ok(body_bytes);
     }
 
     // RFC 9110: comma-separated codings, applied in listed order → decompress reverse.
-    let tokens: Vec<&str> = encodings
+    let tokens: Vec<String> = encodings
       .iter()
       .flat_map(|v| v.split(','))
       .map(str::trim)
       .filter(|t| !t.is_empty() && !t.eq_ignore_ascii_case("identity"))
+      .map(String::from)
       .collect();
 
     if tokens.is_empty() {
       return Ok(body_bytes);
     }
 
-    for coding in tokens.iter().rev() {
-      body_bytes = decompress_coding(coding, body_bytes)?;
+    // Unknown / unsupported coding: leave body compressed (do not fail the response).
+    if tokens.iter().any(|c| !coding_is_supported(c)) {
+      return Ok(body_bytes);
     }
-    Ok(body_bytes)
+
+    let mut decoded = body_bytes;
+    for coding in tokens.iter().rev() {
+      decoded = decompress_coding(coding, decoded, max_body)?;
+      if decoded.len() > max_body {
+        return Err(ParseError::BodyExceedsLimit(max_body));
+      }
+    }
+
+    headers.remove("content-encoding");
+    headers.remove(Headers::CONTENT_LENGTH);
+    Ok(decoded)
   }
 
   /// Look up a header by name (case-insensitive).
@@ -83,12 +101,12 @@ impl Response {
     self.headers.get(name)
   }
 
-  /// Parse response headers only (for two-phase reading).
+  /// Parse the status line and headers only (two-phase reading).
   ///
-  /// Returns (`status_code`, reason, headers, version, `remaining_bytes_after_headers`).
+  /// Returns `(status_code, reason, headers, version, remainder_after_headers)`.
   ///
   /// # Errors
-  /// Returns [`ParseError`] if the status line or headers are invalid.
+  /// [`ParseError`] when the status line or header section is illegal.
   pub fn parse_headers_only(input: &[u8]) -> Result<(u16, String, Headers, Version, &[u8]), ParseError> {
     // Skip leading CRLF (RFC 9112 Section 2.2 robustness)
     let mut data = input;
@@ -124,10 +142,10 @@ impl Response {
     ))
   }
 
-  /// Determine how many bytes to read for the response body.
+  /// Choose how to read the entity body from framing headers.
   ///
   /// # Errors
-  /// Returns framing [`ParseError`]s when headers are malformed or illegal for the status/version.
+  /// Framing [`ParseError`]s when headers conflict or are illegal for the status/version.
   pub fn body_read_strategy(
     headers: &Headers,
     status_code: u16,
@@ -189,17 +207,19 @@ impl Response {
     Ok(BodyReadStrategy::UntilClose)
   }
 
-  /// Parse body from remaining bytes after headers (for two-phase reading).
+  /// Decode the body from bytes after the header section (two-phase reading).
   ///
-  /// Returns decoded body and any chunked trailer fields.
+  /// Returns the (possibly decompressed) body and any chunked trailer fields.
+  /// `max_body` caps wire-decoded and decompressed size ([`ParseError::BodyExceedsLimit`]).
   ///
   /// # Errors
-  /// Returns [`ParseError`] if the body cannot be decoded.
+  /// [`ParseError`] when framing is illegal or the body cannot be decoded / decompressed.
   pub fn parse_body_from_bytes(
     body_bytes: &[u8],
-    headers: &Headers,
+    headers: &mut Headers,
     status_code: u16,
     version: Version,
+    max_body: usize,
   ) -> Result<(Vec<u8>, Vec<(String, String)>), ParseError> {
     let strategy = Self::body_read_strategy(headers, status_code, version)?;
     let (body_vec, trailer_bytes) = decode_body_bytes(body_bytes, strategy)?;
@@ -214,75 +234,114 @@ impl Response {
       })
       .collect();
 
-    let decompressed_body = Self::decompress_body_if_needed(headers, body_vec)?;
+    let decompressed_body = Self::decompress_body_if_needed(headers, body_vec, max_body)?;
     Ok((decompressed_body, trailers))
   }
 
-  /// `true` if status is 2xx.
+  /// Status code (alias of [`Self::status_code`]).
+  #[must_use]
+  pub const fn status(&self) -> u16 {
+    self.status_code
+  }
+
+  /// Status is 2xx.
   #[must_use]
   pub const fn is_success(&self) -> bool {
     matches!(self.status_code, 200..300)
   }
 
-  /// `true` if status is 3xx.
+  /// Status is 3xx.
   #[must_use]
   pub const fn is_redirect(&self) -> bool {
     matches!(self.status_code, 300..400)
   }
 
-  /// `true` if status is 4xx.
+  /// Status is 4xx.
   #[must_use]
   pub const fn is_client_error(&self) -> bool {
     matches!(self.status_code, 400..500)
   }
 
-  /// `true` if status is 5xx.
+  /// Status is 5xx.
   #[must_use]
   pub const fn is_server_error(&self) -> bool {
     matches!(self.status_code, 500..600)
   }
 
-  /// Body as UTF-8 string.
+  /// Body bytes.
+  #[must_use]
+  pub fn as_bytes(&self) -> &[u8] {
+    &self.body
+  }
+
+  /// Body as UTF-8.
   ///
   /// # Errors
-  /// Returns [`crate::Error::Utf8Error`] if the body is not valid UTF-8.
+  /// [`crate::Error::Utf8Error`] if the body is not valid UTF-8.
   pub fn text(&self) -> Result<String, crate::Error> {
     String::from_utf8(self.body.clone()).map_err(Into::into)
   }
 
-  /// Consume the response and return body bytes.
+  /// Consume the response; return the body as UTF-8.
+  ///
+  /// # Errors
+  /// [`crate::Error::Utf8Error`] if the body is not valid UTF-8.
+  pub fn into_string(self) -> Result<String, crate::Error> {
+    String::from_utf8(self.body).map_err(Into::into)
+  }
+
+  /// Consume the response; return body bytes.
   #[must_use]
   pub fn into_bytes(self) -> Vec<u8> {
     self.body
   }
 }
 
-/// Strategy for reading response body
+/// How the client should read the response entity body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyReadStrategy {
-  /// No body expected
+  /// No entity body (1xx, 204, 304, …).
   NoBody,
-  /// Read exactly n bytes
+  /// Exactly `n` octets (`Content-Length`).
   ContentLength(usize),
-  /// Read chunks until terminating chunk
+  /// Chunked transfer coding until the final chunk.
   Chunked,
-  /// Read until connection closes
+  /// Read until the peer closes the connection.
   UntilClose,
+}
+
+fn coding_is_supported(coding: &str) -> bool {
+  #[cfg(feature = "gzip-decompression")]
+  if coding.eq_ignore_ascii_case("gzip") || coding.eq_ignore_ascii_case("deflate") {
+    return true;
+  }
+  #[cfg(feature = "zstd-decompression")]
+  if coding.eq_ignore_ascii_case("zstd") {
+    return true;
+  }
+  let _ = coding;
+  false
 }
 
 fn decompress_coding(
   coding: &str,
   body_bytes: Vec<u8>,
+  max_body: usize,
 ) -> Result<Vec<u8>, ParseError> {
   #[cfg(feature = "gzip-decompression")]
   if coding.eq_ignore_ascii_case("gzip") {
     let deflate_data = gzip_deflate_payload(&body_bytes).ok_or(ParseError::DecompressionFailed)?;
-    return decompress_to_vec(deflate_data).map_err(|_| ParseError::DecompressionFailed);
+    return map_inflate_result(decompress_to_vec_with_limit(deflate_data, max_body), max_body);
   }
 
   #[cfg(feature = "gzip-decompression")]
   if coding.eq_ignore_ascii_case("deflate") {
-    return decompress_to_vec_zlib(&body_bytes).map_err(|_| ParseError::DecompressionFailed);
+    // Servers send either zlib-wrapped (RFC 1950) or raw DEFLATE (RFC 1951).
+    return match decompress_to_vec_zlib_with_limit(&body_bytes, max_body) {
+      Ok(v) => Ok(v),
+      Err(e) if e.status == TINFLStatus::HasMoreOutput => Err(ParseError::BodyExceedsLimit(max_body)),
+      Err(_) => map_inflate_result(decompress_to_vec_with_limit(&body_bytes, max_body), max_body),
+    };
   }
 
   #[cfg(feature = "zstd-decompression")]
@@ -290,14 +349,38 @@ fn decompress_coding(
     use ruzstd::io_nostd::Read;
     let mut decoder = StreamingDecoder::new(&body_bytes[..]).map_err(|_| ParseError::DecompressionFailed)?;
     let mut decompressed = Vec::new();
-    decoder
-      .read_to_end(&mut decompressed)
-      .map_err(|_| ParseError::DecompressionFailed)?;
+    let mut buf = [0u8; 8192];
+    loop {
+      let n = decoder
+        .read(&mut buf)
+        .map_err(|_| ParseError::DecompressionFailed)?;
+      if n == 0 {
+        break;
+      }
+      if decompressed.len().saturating_add(n) > max_body {
+        return Err(ParseError::BodyExceedsLimit(max_body));
+      }
+      if let Some(slice) = buf.get(..n) {
+        decompressed.extend_from_slice(slice);
+      }
+    }
     return Ok(decompressed);
   }
 
-  let _ = (coding, body_bytes);
+  let _ = (coding, body_bytes, max_body);
   Err(ParseError::DecompressionFailed)
+}
+
+#[cfg(feature = "gzip-decompression")]
+fn map_inflate_result(
+  result: Result<Vec<u8>, miniz_oxide::inflate::DecompressError>,
+  max_body: usize,
+) -> Result<Vec<u8>, ParseError> {
+  match result {
+    Ok(v) => Ok(v),
+    Err(e) if e.status == TINFLStatus::HasMoreOutput => Err(ParseError::BodyExceedsLimit(max_body)),
+    Err(_) => Err(ParseError::DecompressionFailed),
+  }
 }
 
 /// RFC 1952: skip gzip header/footer, return raw deflate payload.
@@ -442,6 +525,8 @@ mod response_helpers_tests {
       body: b"hi".to_vec(),
       trailers: Vec::new(),
     };
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.as_bytes(), b"hi");
     assert_eq!(r.text().unwrap(), "hi");
     let r2 = Response {
       status_code: 200,
@@ -450,7 +535,7 @@ mod response_helpers_tests {
       body: b"data".to_vec(),
       trailers: Vec::new(),
     };
-    assert_eq!(r2.into_bytes(), b"data");
+    assert_eq!(r2.into_string().unwrap(), "data");
   }
 
   #[test]
@@ -473,11 +558,64 @@ mod response_helpers_tests {
   }
 
   #[test]
-  fn unsupported_content_encoding_errors() {
+  fn unsupported_content_encoding_left_as_is() {
     let input = b"HTTP/1.1 200 OK\r\nContent-Encoding: br\r\nContent-Length: 4\r\n\r\ndata";
-    assert!(matches!(Response::parse(input), Err(ParseError::DecompressionFailed)));
+    let resp = Response::parse(input).unwrap();
+    assert_eq!(resp.body.as_slice(), b"data");
+    assert_eq!(resp.get_header("content-encoding"), Some("br"));
+    assert_eq!(resp.get_header("content-length"), Some("4"));
 
     let identity = b"HTTP/1.1 200 OK\r\nContent-Encoding: identity\r\nContent-Length: 4\r\n\r\ndata";
     assert_eq!(Response::parse(identity).unwrap().body.as_slice(), b"data");
+  }
+
+  #[cfg(feature = "gzip-decompression")]
+  #[test]
+  fn gzip_decompress_strips_content_encoding_and_length() {
+    use alloc::string::ToString;
+    // gzip.compress(b"hi")
+    let gzipped: &[u8] = &[
+      0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xcb, 0xc8, 0x04, 0x00, 0xac, 0x2a, 0x93, 0xd8, 0x02,
+      0x00, 0x00, 0x00,
+    ];
+    let mut msg = Vec::from(&b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: "[..]);
+    msg.extend_from_slice(gzipped.len().to_string().as_bytes());
+    msg.extend_from_slice(b"\r\n\r\n");
+    msg.extend_from_slice(gzipped);
+
+    let resp = Response::parse(&msg).unwrap();
+    assert_eq!(resp.body.as_slice(), b"hi");
+    assert!(resp.get_header("content-encoding").is_none());
+    assert!(resp.get_header("content-length").is_none());
+  }
+
+  #[cfg(feature = "gzip-decompression")]
+  #[test]
+  fn gzip_decompress_exceeds_limit() {
+    use alloc::string::ToString;
+    let gzipped: &[u8] = &[
+      0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xcb, 0xc8, 0x04, 0x00, 0xac, 0x2a, 0x93, 0xd8, 0x02,
+      0x00, 0x00, 0x00,
+    ];
+    let mut headers = Headers::new();
+    headers.insert("Content-Encoding", "gzip");
+    headers.insert("Content-Length", gzipped.len().to_string());
+    let err = Response::parse_body_from_bytes(gzipped, &mut headers, 200, Version::HTTP_11, 1).unwrap_err();
+    assert_eq!(err, ParseError::BodyExceedsLimit(1));
+  }
+
+  #[cfg(feature = "gzip-decompression")]
+  #[test]
+  fn raw_deflate_accepted_after_zlib_fails() {
+    use alloc::string::ToString;
+    let deflated = miniz_oxide::deflate::compress_to_vec(b"hi", 6);
+    let mut msg = Vec::from(&b"HTTP/1.1 200 OK\r\nContent-Encoding: deflate\r\nContent-Length: "[..]);
+    msg.extend_from_slice(deflated.len().to_string().as_bytes());
+    msg.extend_from_slice(b"\r\n\r\n");
+    msg.extend_from_slice(&deflated);
+
+    let resp = Response::parse(&msg).unwrap();
+    assert_eq!(resp.body.as_slice(), b"hi");
+    assert!(resp.get_header("content-encoding").is_none());
   }
 }

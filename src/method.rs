@@ -1,22 +1,22 @@
-/// HTTP request method
+/// HTTP request method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Method {
-  /// GET method - retrieve resource
+  /// `GET`
   Get,
-  /// POST method - submit data
+  /// `POST`
   Post,
-  /// PUT method - replace resource
+  /// `PUT`
   Put,
-  /// DELETE method - remove resource
+  /// `DELETE`
   Delete,
-  /// HEAD method - retrieve headers only
+  /// `HEAD`
   Head,
-  /// PATCH method - partial modification
+  /// `PATCH`
   Patch,
 }
 
 impl Method {
-  /// Returns the method as a string slice
+  /// Wire token (`"GET"`, `"POST"`, …).
   #[must_use]
   pub const fn as_str(self) -> &'static str {
     match self {
@@ -27,5 +27,11 @@ impl Method {
       Self::Head => "HEAD",
       Self::Patch => "PATCH",
     }
+  }
+
+  /// `true` for POST, PUT, and PATCH (methods that usually send a body).
+  #[must_use]
+  pub const fn need_request_body(self) -> bool {
+    matches!(self, Self::Post | Self::Put | Self::Patch)
   }
 }

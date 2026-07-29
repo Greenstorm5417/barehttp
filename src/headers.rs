@@ -1,26 +1,26 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// HTTP headers collection
+/// Ordered list of `(name, value)` header fields.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Headers {
   headers: Vec<(String, String)>,
 }
 
 impl Headers {
-  /// Create an empty headers collection
+  /// Empty collection.
   #[must_use]
   pub const fn new() -> Self {
     Self { headers: Vec::new() }
   }
 
-  /// Create headers from a vector of tuples
+  /// Wrap an existing `(name, value)` list.
   #[must_use]
   pub const fn from_vec(headers: Vec<(String, String)>) -> Self {
     Self { headers }
   }
 
-  /// Add a header
+  /// Append a field; keeps any existing values for the same name.
   pub fn insert(
     &mut self,
     name: impl Into<String>,
@@ -29,7 +29,20 @@ impl Headers {
     self.headers.push((name.into(), value.into()));
   }
 
-  /// Get the first value for a header name (case-insensitive)
+  /// Replace every value for `name` (case-insensitive) with a single value.
+  pub fn set(
+    &mut self,
+    name: impl Into<String>,
+    value: impl Into<String>,
+  ) {
+    let owned_name = name.into();
+    self
+      .headers
+      .retain(|(n, _)| !n.eq_ignore_ascii_case(&owned_name));
+    self.headers.push((owned_name, value.into()));
+  }
+
+  /// First value for `name`, if any (case-insensitive).
   #[must_use]
   pub fn get(
     &self,
@@ -42,7 +55,7 @@ impl Headers {
       .map(|(_, v)| v.as_str())
   }
 
-  /// Get all values for a header name (case-insensitive)
+  /// All values for `name` (case-insensitive).
   #[must_use]
   pub fn get_all(
     &self,
@@ -56,7 +69,7 @@ impl Headers {
       .collect()
   }
 
-  /// Check if a header exists (case-insensitive)
+  /// Whether any field matches `name` (case-insensitive).
   #[must_use]
   pub fn contains(
     &self,
@@ -68,7 +81,7 @@ impl Headers {
       .any(|(n, _)| n.eq_ignore_ascii_case(name))
   }
 
-  /// Remove all headers with the given name (case-insensitive)
+  /// Remove every field matching `name` (case-insensitive).
   pub fn remove(
     &mut self,
     name: &str,
@@ -76,7 +89,7 @@ impl Headers {
     self.headers.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
   }
 
-  /// Append to Cookie header (`; `-joined), or insert if absent. No-op if `value` is empty.
+  /// Append to `Cookie` (`; `-joined), or insert if absent. No-op when `value` is empty.
   pub fn merge_cookie(
     &mut self,
     value: &str,
@@ -93,24 +106,24 @@ impl Headers {
     }
   }
 
-  /// Get an iterator over all headers
+  /// Iterate `(name, value)` pairs in insertion order.
   pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
     self.headers.iter().map(|(n, v)| (n.as_str(), v.as_str()))
   }
 
-  /// Get the number of headers
+  /// Number of fields (including duplicate names).
   #[must_use]
-  pub const fn len(&self) -> usize {
+  pub fn len(&self) -> usize {
     self.headers.len()
   }
 
-  /// Check if the headers collection is empty
+  /// `true` when there are no fields.
   #[must_use]
-  pub const fn is_empty(&self) -> bool {
+  pub fn is_empty(&self) -> bool {
     self.headers.is_empty()
   }
 
-  // Header names used by this crate (string literals elsewhere are fine too).
+  // Wire names used by this crate (string literals elsewhere are fine too).
   /// `accept`
   pub const ACCEPT: &'static str = "accept";
   /// `accept-encoding`

@@ -81,7 +81,7 @@ where
     config: Config,
   ) -> Self {
     Self {
-      pool: Arc::new(ConnectionPool::new(config.max_idle_per_host)),
+      pool: Arc::new(ConnectionPool::new(config.max_idle_per_host, config.max_idle_age)),
       dns: Arc::new(dns),
       config: Arc::new(config),
       #[cfg(feature = "cookie-jar")]
@@ -94,31 +94,31 @@ where
     &self,
     method: Method,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D> {
-    ClientRequestBuilder::new(self, method, url)
+  ) -> ClientRequestBuilder<S, D> {
+    ClientRequestBuilder::new(self.clone(), method, url)
   }
 
   /// GET (no body).
   pub fn get(
     &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D> {
+  ) -> ClientRequestBuilder<S, D> {
     self.method(Method::Get, url)
   }
 
-  /// POST (body required).
+  /// POST (body via [`ClientRequestBuilder::send`] / [`ClientRequestBuilder::call`]).
   pub fn post(
     &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D> {
+  ) -> ClientRequestBuilder<S, D> {
     self.method(Method::Post, url)
   }
 
-  /// PUT (body required).
+  /// PUT (body via [`ClientRequestBuilder::send`] / [`ClientRequestBuilder::call`]).
   pub fn put(
     &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D> {
+  ) -> ClientRequestBuilder<S, D> {
     self.method(Method::Put, url)
   }
 
@@ -126,7 +126,7 @@ where
   pub fn delete(
     &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D> {
+  ) -> ClientRequestBuilder<S, D> {
     self.method(Method::Delete, url)
   }
 
@@ -134,15 +134,15 @@ where
   pub fn head(
     &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D> {
+  ) -> ClientRequestBuilder<S, D> {
     self.method(Method::Head, url)
   }
 
-  /// PATCH (body required).
+  /// PATCH (body via [`ClientRequestBuilder::send`] / [`ClientRequestBuilder::call`]).
   pub fn patch(
     &self,
     url: impl Into<String>,
-  ) -> ClientRequestBuilder<'_, S, D> {
+  ) -> ClientRequestBuilder<S, D> {
     self.method(Method::Patch, url)
   }
 
@@ -153,10 +153,17 @@ where
     &self.cookie_store
   }
 
-  /// Redirect loop; each hop performs connect / write / read.
+  /// Shared client config.
+  #[must_use]
+  pub fn config(&self) -> &Config {
+    self.config.as_ref()
+  }
+
+  /// Redirect loop; each hop connect / write / read.
   ///
   /// # Errors
-  /// URL parse, DNS, connect, HTTP, or policy failure.
+  /// [`Error::InvalidUrl`], [`Error::Dns`], [`Error::Socket`], [`Error::Parse`],
+  /// redirect / TLS / size-limit variants, or [`Error::HttpStatus`] when configured.
   pub fn request(
     &self,
     method: Method,
@@ -164,7 +171,26 @@ where
     custom_headers: &Headers,
     body: Option<Vec<u8>>,
   ) -> Result<Response, Error> {
-    let config = self.config.as_ref();
+    self.request_with_config(self.config.as_ref(), method, url, custom_headers, body)
+  }
+
+  /// Like [`Self::request`] with an explicit config (per-request overrides).
+  ///
+  /// # Errors
+  /// Same as [`Self::request`].
+  pub fn request_with_config(
+    &self,
+    config: &Config,
+    method: Method,
+    url: &str,
+    custom_headers: &Headers,
+    body: Option<Vec<u8>>,
+  ) -> Result<Response, Error> {
+    // Refuse assume_tls_socket with cleartext OS adapter.
+    if config.assume_tls_socket && S::is_os_cleartext() {
+      return Err(Error::TlsNotConfigured);
+    }
+
     let mut current_url = String::from(url);
     let mut current_method = method;
     let mut current_body = body;
@@ -218,13 +244,13 @@ where
         }
       }
 
-      let response = raw_to_response(raw, current_method)?;
+      let response = raw_to_response(raw, current_method, config.max_response_body_size)?;
 
       if config.http_status_as_error && (400..600).contains(&response.status_code) {
-        return Err(Error::HttpStatus(response.status_code));
+        return Err(Error::HttpStatus(response.status_code, response));
       }
 
-      let Some((next_url, next_method, next_body, cross_origin)) = follow_redirect(
+      let Some((next_url, next_method, next_body)) = follow_redirect(
         config,
         &mut visited_urls,
         &mut redirect_count,
@@ -238,7 +264,7 @@ where
         return Ok(response);
       };
 
-      sanitize_redirect_headers(&mut current_headers, cross_origin, next_body.is_none());
+      sanitize_redirect_headers(&mut current_headers, next_body.is_none());
       current_url = next_url;
       current_method = next_method;
       current_body = next_body;
@@ -253,43 +279,54 @@ const fn pooling_enabled(config: &Config) -> bool {
 fn raw_to_response(
   raw: RawResponse,
   method: Method,
+  max_body: usize,
 ) -> Result<Response, Error> {
+  let RawResponse {
+    status_code,
+    reason,
+    mut headers,
+    version,
+    body_bytes,
+  } = raw;
+
   let (response_body, trailers) = if method == Method::Head {
     (Vec::new(), Vec::new())
   } else {
-    Response::parse_body_from_bytes(&raw.body_bytes, &raw.headers, raw.status_code, raw.version)
-      .map_err(Error::Parse)?
+    Response::parse_body_from_bytes(&body_bytes, &mut headers, status_code, version, max_body).map_err(|e| match e {
+      crate::error::ParseError::BodyExceedsLimit(n) => Error::BodyExceedsLimit(n),
+      other => Error::Parse(other),
+    })?
   };
 
   Ok(Response {
-    status_code: raw.status_code,
-    reason: raw.reason,
-    headers: raw.headers,
+    status_code,
+    reason,
+    headers,
     body: response_body,
     trailers,
   })
 }
 
-/// Enforce TLS honesty and `https_only`.
-pub const fn validate_protocol(
+/// Check scheme against `assume_tls_socket` and `https_only`.
+pub fn validate_protocol(
   config: &Config,
   uri: &Uri,
 ) -> Result<(), Error> {
   if uri.scheme().eq_ignore_ascii_case("https") && !config.assume_tls_socket {
-    return Err(Error::HttpsRequired);
+    return Err(Error::TlsNotConfigured);
   }
   if config.https_only && !uri.scheme().eq_ignore_ascii_case("https") {
-    return Err(Error::HttpsRequired);
+    return Err(Error::HttpsOnly);
   }
   Ok(())
 }
 
-/// Strip hop-by-hop headers; on cross-origin also strip Authorization and Cookie.
-/// When `drop_body` is true (redirect became GET / body cleared), also strip
-/// Content-Length and Content-Type so they cannot disagree with an empty body.
+/// Strip hop-by-hop headers plus Authorization and Cookie on every redirect hop
+/// (`RedirectAuthHeaders::Never`). Always strip Content-Length and Host (rebuilt
+/// for the next hop); when `drop_body` also strip Content-Type so it cannot
+/// disagree with an empty body.
 pub fn sanitize_redirect_headers(
   headers: &mut Headers,
-  cross_origin: bool,
   drop_body: bool,
 ) {
   for name in [
@@ -304,41 +341,25 @@ pub fn sanitize_redirect_headers(
   ] {
     headers.remove(name);
   }
+  headers.remove("Authorization");
+  headers.remove("Cookie");
+  headers.remove("Content-Length");
+  headers.remove(Headers::HOST);
   if drop_body {
-    headers.remove("Content-Length");
     headers.remove("Content-Type");
   }
-  if cross_origin {
-    headers.remove("Authorization");
-    headers.remove("Cookie");
-  }
 }
 
-fn host_eq(
-  a: &Host<'_>,
-  b: &Host<'_>,
-) -> bool {
-  match (a, b) {
-    (Host::RegName(x), Host::RegName(y)) => x.eq_ignore_ascii_case(y),
-    (Host::IpAddr(x), Host::IpAddr(y)) => x == y,
-    _ => false,
-  }
-}
-
-fn is_cross_origin(
-  current: &Uri<'_>,
-  next: &Uri<'_>,
-) -> bool {
-  if !current.scheme().eq_ignore_ascii_case(next.scheme()) {
-    return true;
-  }
-  match (current.authority(), next.authority()) {
-    (Some(a), Some(b)) => !host_eq(a.host(), b.host()) || current.port_or_default() != next.port_or_default(),
-    _ => true,
-  }
+/// Status codes we follow (not 304 or other 3xx).
+const fn is_followable_redirect(status: u16) -> bool {
+  matches!(status, 301 | 302 | 303 | 307 | 308)
 }
 
 /// `Ok(None)` = return this response. `Ok(Some(...))` = follow redirect.
+///
+/// Method / body rules match ureq (`ureq_proto` redirect):
+/// - 301/302/303: GET/HEAD keep method; all others become GET with no body.
+/// - 307/308: GET/HEAD keep method; POST/PUT/PATCH/DELETE → [`Error::RedirectFailed`].
 pub fn follow_redirect(
   config: &Config,
   visited_urls: &mut Vec<String>,
@@ -348,8 +369,9 @@ pub fn follow_redirect(
   current_url: &str,
   current_method: Method,
   current_body: Option<Vec<u8>>,
-) -> Result<Option<(String, Method, Option<Vec<u8>>, bool)>, Error> {
-  if !config.follow_redirects || !(300..400).contains(&response.status_code) {
+) -> Result<Option<(String, Method, Option<Vec<u8>>)>, Error> {
+  // `max_redirects == 0` means do not follow (return the redirect response).
+  if config.max_redirects == 0 || !is_followable_redirect(response.status_code) {
     return Ok(None);
   }
 
@@ -371,23 +393,40 @@ pub fn follow_redirect(
 
   visited_urls.push(String::from(current_url));
 
-  let (next_method, next_body) = if response.status_code == 303
-    || ((response.status_code == 301 || response.status_code == 302) && current_method == Method::Post)
-  {
-    (Method::Get, None)
-  } else {
-    (current_method, current_body)
-  };
-
-  let next_uri_parsed = Uri::parse(&next_url).map_err(Error::Parse)?;
-  let cross_origin = is_cross_origin(current_uri, &next_uri_parsed);
+  let (next_method, next_body) = redirect_method_and_body(response.status_code, current_method, current_body)?;
 
   *redirect_count = redirect_count.saturating_add(1);
 
-  Ok(Some((next_url, next_method, next_body, cross_origin)))
+  Ok(Some((next_url, next_method, next_body)))
+}
+
+fn redirect_method_and_body(
+  status: u16,
+  method: Method,
+  body: Option<Vec<u8>>,
+) -> Result<(Method, Option<Vec<u8>>), Error> {
+  match status {
+    307 | 308 => {
+      // Retain method only when there is no request body to replay (ureq).
+      if method.need_request_body() || method == Method::Delete {
+        return Err(Error::RedirectFailed);
+      }
+      Ok((method, body))
+    },
+    // 301, 302, 303 (and only those are followable besides 307/308)
+    _ => {
+      if matches!(method, Method::Get | Method::Head) {
+        Ok((method, body))
+      } else {
+        Ok((Method::Get, None))
+      }
+    },
+  }
 }
 
 /// One HTTP hop: pool/connect, send, read, maybe return socket to pool.
+///
+/// On I/O failure with a reused pooled socket, drops it and retries once with a fresh connect.
 fn execute<S, D>(
   pool: &Arc<ConnectionPool<S>>,
   dns: &D,
@@ -403,21 +442,73 @@ where
 {
   let host_str = host_from_uri(uri);
   let port = uri.port_or_default();
-  let pool_key = PoolKey::new(uri.scheme().to_ascii_lowercase(), host_str.clone(), port);
+  let pool_key = PoolKey::new(uri.scheme().to_ascii_lowercase(), &host_str, port);
 
   let (mut socket, reused) = get_or_create_socket(pool, config, &pool_key)?;
-  let mut conn = crate::transport::connection::connect(&mut socket, dns, uri, config, reused)?;
-
-  let request_bytes = build_request(uri, method, &host_str, port, custom_headers, body, config)?;
-  conn.send_request(&request_bytes)?;
-
-  let raw = conn.read_raw_response(method != Method::Head)?;
-
-  if pooling_enabled(config) && conn.is_reusable() {
-    pool.return_connection(pool_key, socket);
+  match try_one_hop(
+    dns,
+    config,
+    uri,
+    method,
+    custom_headers,
+    body,
+    &host_str,
+    port,
+    &mut socket,
+    reused,
+  ) {
+    Ok((raw, reusable)) => {
+      if pooling_enabled(config) && reusable {
+        pool.return_connection(pool_key, socket);
+      }
+      Ok(raw)
+    },
+    Err(e) if reused && matches!(e, Error::Socket(_)) => {
+      drop(socket);
+      let mut fresh = S::new().map_err(Error::Socket)?;
+      let (raw, reusable) = try_one_hop(
+        dns,
+        config,
+        uri,
+        method,
+        custom_headers,
+        body,
+        &host_str,
+        port,
+        &mut fresh,
+        false,
+      )?;
+      if pooling_enabled(config) && reusable {
+        pool.return_connection(pool_key, fresh);
+      }
+      Ok(raw)
+    },
+    Err(e) => Err(e),
   }
+}
 
-  Ok(raw)
+fn try_one_hop<S, D>(
+  dns: &D,
+  config: &Config,
+  uri: &Uri,
+  method: Method,
+  custom_headers: &Headers,
+  body: Option<&[u8]>,
+  host_str: &str,
+  port: u16,
+  socket: &mut S,
+  reused: bool,
+) -> Result<(RawResponse, bool), Error>
+where
+  S: BlockingSocket,
+  D: DnsResolver,
+{
+  let mut conn = crate::transport::connection::connect(socket, dns, uri, config, reused)?;
+  let request_bytes = build_request(uri, method, host_str, port, custom_headers, body, config)?;
+  conn.send_request(&request_bytes)?;
+  let raw = conn.read_raw_response(method != Method::Head)?;
+  let reusable = conn.is_reusable();
+  Ok((raw, reusable))
 }
 
 fn host_from_uri(uri: &Uri) -> String {
@@ -467,9 +558,8 @@ fn build_request(
 
   let mut headers = custom_headers.clone();
 
-  if !headers.contains(Headers::HOST) {
-    headers.insert(Headers::HOST, host_header.as_str());
-  }
+  // Always rebuild Host for the current hop (user Host may be stale after redirects).
+  headers.set(Headers::HOST, host_header.as_str());
 
   if !pooling_enabled(config) {
     headers.insert(Headers::CONNECTION, "close");

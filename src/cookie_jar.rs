@@ -8,21 +8,21 @@ use crate::parser::uri::{Host, Uri};
 #[derive(Debug, Clone)]
 /// One cookie as kept in [`CookieStore`].
 pub struct StoredCookie {
-  /// Cookie name
+  /// Name.
   pub name: String,
-  /// Cookie value
+  /// Value.
   pub value: String,
-  /// Domain attribute (lowercase)
+  /// Domain attribute (lowercase).
   pub domain: String,
-  /// Path attribute
+  /// Path attribute.
   pub path: String,
-  /// Secure flag - cookie only sent over HTTPS
+  /// Send only on HTTPS (`Secure`).
   pub secure: bool,
-  /// Host-only flag - cookie only matches exact host
+  /// Match the exact host only (`host-only`).
   pub host_only: bool,
-  /// Creation time (logical counter for sort order)
+  /// Logical creation counter (sort key).
   pub creation_time: u64,
-  /// Expiry as Unix seconds (UTC); `None` means session cookie
+  /// Expiry as Unix seconds (UTC); `None` = session cookie.
   pub expiry_time: Option<u64>,
 }
 
@@ -33,7 +33,7 @@ pub struct CookieStore {
 }
 
 impl CookieStore {
-  /// Creates a new empty cookie store
+  /// Empty store.
   #[must_use]
   pub const fn new() -> Self {
     Self {
@@ -42,19 +42,21 @@ impl CookieStore {
   }
 
   /// Parse `Set-Cookie` values and insert them (RFC 6265 domain/path match; replace on name+domain+path).
+  ///
+  /// `Secure` cookies are rejected unless `uri` is `https://` (RFC 6265bis).
   pub fn store_response_cookies(
     &self,
     uri: &str,
     set_cookie_headers: &[String],
   ) {
-    let Some((request_host, request_path)) = host_and_path(uri) else {
+    let Some((request_host, request_path, is_secure)) = host_path_secure(uri) else {
       return;
     };
 
     let mut cookies = self.cookies.lock();
     for header_value in set_cookie_headers {
       if let Some(parsed) = SetCookie::parse(header_value) {
-        Self::insert_cookie_locked(&mut cookies, parsed, &request_host, &request_path);
+        Self::insert_cookie_locked(&mut cookies, parsed, &request_host, &request_path, is_secure);
       }
     }
   }
@@ -64,13 +66,22 @@ impl CookieStore {
     cookie: SetCookie,
     request_host: &str,
     request_path: &str,
+    request_is_secure: bool,
   ) {
+    // RFC 6265bis: reject Secure cookies received over a non-secure channel.
+    if cookie.secure && !request_is_secure {
+      return;
+    }
+
     let creation = u64::try_from(cookies.len()).unwrap_or(u64::MAX);
-    let now = now_unix_secs();
+    let now = crate::util::now_unix_secs();
 
     let host_only = cookie.domain.is_none();
 
     let domain = if let Some(domain_attr) = cookie.domain {
+      if !domain_attr_acceptable(&domain_attr) {
+        return;
+      }
       if !domain_matches(request_host, &domain_attr) {
         return;
       }
@@ -121,11 +132,11 @@ impl CookieStore {
     uri: &str,
     is_secure: bool,
   ) -> String {
-    let Some((request_host, request_path)) = host_and_path(uri) else {
+    let Some((request_host, request_path, _)) = host_path_secure(uri) else {
       return String::new();
     };
 
-    let now = now_unix_secs();
+    let now = crate::util::now_unix_secs();
 
     let cookies = self.cookies.lock();
     let mut matching_cookies = Vec::new();
@@ -177,6 +188,41 @@ impl CookieStore {
 
     result
   }
+
+  /// Clear every cookie.
+  pub fn clear(&self) {
+    self.cookies.lock().clear();
+  }
+
+  /// Remove the cookie with this name, domain, and path.
+  ///
+  /// Returns `true` if one was present.
+  pub fn remove(
+    &self,
+    name: &str,
+    domain: &str,
+    path: &str,
+  ) -> bool {
+    let mut cookies = self.cookies.lock();
+    let before = cookies.len();
+    cookies.retain(|c| !(c.name == name && c.domain.eq_ignore_ascii_case(domain) && c.path == path));
+    before != cookies.len()
+  }
+
+  /// Snapshot of all stored cookies (including expired).
+  #[must_use]
+  pub fn iter(&self) -> alloc::vec::IntoIter<StoredCookie> {
+    self.cookies.lock().clone().into_iter()
+  }
+}
+
+impl IntoIterator for &CookieStore {
+  type Item = StoredCookie;
+  type IntoIter = alloc::vec::IntoIter<StoredCookie>;
+
+  fn into_iter(self) -> Self::IntoIter {
+    self.iter()
+  }
 }
 
 impl Default for CookieStore {
@@ -185,42 +231,7 @@ impl Default for CookieStore {
   }
 }
 
-/// Wall-clock Unix seconds for cookie expiry (RFC 6265 Absolute Time).
-fn now_unix_secs() -> u64 {
-  #[cfg(unix)]
-  {
-    // SAFETY: time(NULL) is well-defined; negative means error → 0.
-    let t = unsafe { libc::time(core::ptr::null_mut()) };
-    if t < 0 {
-      0
-    } else {
-      u64::try_from(t).unwrap_or(0)
-    }
-  }
-  #[cfg(windows)]
-  {
-    use windows_sys::Win32::Foundation::FILETIME;
-    use windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
-    let mut ft = FILETIME {
-      dwLowDateTime: 0,
-      dwHighDateTime: 0,
-    };
-    // SAFETY: writes into stack FILETIME.
-    unsafe { GetSystemTimeAsFileTime(&mut ft) };
-    let ticks = (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime);
-    // FILETIME: 100ns since 1601-01-01; Unix epoch offset = 11_644_473_600 s
-    ticks
-      .checked_div(10_000_000)
-      .and_then(|s| s.checked_sub(11_644_473_600))
-      .unwrap_or(0)
-  }
-  #[cfg(not(any(unix, windows)))]
-  {
-    0
-  }
-}
-
-fn host_and_path(uri: &str) -> Option<(String, String)> {
+fn host_path_secure(uri: &str) -> Option<(String, String, bool)> {
   let parsed = Uri::parse(uri).ok()?;
   let auth = parsed.authority()?;
   let host = match auth.host() {
@@ -232,7 +243,8 @@ fn host_and_path(uri: &str) -> Option<(String, String)> {
   } else {
     String::from(parsed.path())
   };
-  Some((host, path))
+  let is_secure = parsed.scheme().eq_ignore_ascii_case("https");
+  Some((host, path, is_secure))
 }
 
 fn domain_matches(
@@ -254,6 +266,26 @@ fn domain_matches(
   }
 
   false
+}
+
+/// Reject public-suffix-like Domain attrs (no embedded `.`) and IP Domain (RFC 6265).
+fn domain_attr_acceptable(domain: &str) -> bool {
+  if domain.is_empty() {
+    return false;
+  }
+  if is_ip_host(domain) {
+    return false;
+  }
+  // Minimal PSL guard: require an embedded dot (`Domain=com` → reject).
+  domain.contains('.')
+}
+
+fn is_ip_host(host: &str) -> bool {
+  let bare = host
+    .strip_prefix('[')
+    .and_then(|h| h.strip_suffix(']'))
+    .unwrap_or(host);
+  bare.parse::<core::net::IpAddr>().is_ok()
 }
 
 fn path_matches(
@@ -299,22 +331,22 @@ mod tests {
   use super::*;
 
   #[test]
-  fn test_host_and_path() {
+  fn test_host_path_secure() {
     assert_eq!(
-      host_and_path("http://example.com"),
-      Some((String::from("example.com"), String::from("/")))
+      host_path_secure("http://example.com"),
+      Some((String::from("example.com"), String::from("/"), false))
     );
     assert_eq!(
-      host_and_path("https://example.com/path"),
-      Some((String::from("example.com"), String::from("/path")))
+      host_path_secure("https://example.com/path"),
+      Some((String::from("example.com"), String::from("/path"), true))
     );
     assert_eq!(
-      host_and_path("http://example.com:8080/path"),
-      Some((String::from("example.com"), String::from("/path")))
+      host_path_secure("http://example.com:8080/path"),
+      Some((String::from("example.com"), String::from("/path"), false))
     );
     assert_eq!(
-      host_and_path("http://example.com/path?query"),
-      Some((String::from("example.com"), String::from("/path")))
+      host_path_secure("http://example.com/path?query"),
+      Some((String::from("example.com"), String::from("/path"), false))
     );
   }
 
@@ -402,6 +434,15 @@ mod tests {
   }
 
   #[test]
+  fn test_secure_cookie_rejected_over_http() {
+    let store = CookieStore::new();
+    store.store_response_cookies("http://example.com/", &alloc::vec!["token=secret; Secure".to_string()]);
+    // Must not store — later HTTPS must not see a Secure cookie set over cleartext.
+    assert_eq!(store.get_request_cookies("https://example.com/", true), "");
+    assert!(store.iter().next().is_none());
+  }
+
+  #[test]
   fn test_cookie_replacement() {
     let store = CookieStore::new();
 
@@ -463,5 +504,38 @@ mod tests {
         .get_request_cookies("http://example.com/", false)
         .is_empty()
     );
+  }
+
+  #[test]
+  fn rejects_public_suffix_like_domain() {
+    let store = CookieStore::new();
+    store.store_response_cookies("http://example.com/", &alloc::vec!["x=1; Domain=com".to_string()]);
+    assert!(
+      store
+        .get_request_cookies("http://example.com/", false)
+        .is_empty()
+    );
+    assert_eq!(store.iter().len(), 0);
+  }
+
+  #[test]
+  fn rejects_ip_domain_attribute() {
+    let store = CookieStore::new();
+    store.store_response_cookies("http://192.0.2.1/", &alloc::vec!["x=1; Domain=192.0.2.1".to_string()]);
+    assert_eq!(store.iter().len(), 0);
+  }
+
+  #[test]
+  fn clear_and_remove() {
+    let store = CookieStore::new();
+    store.store_response_cookies(
+      "http://example.com/",
+      &alloc::vec!["a=1".to_string(), "b=2; Path=/".to_string()],
+    );
+    assert_eq!(store.iter().len(), 2);
+    assert!(store.remove("a", "example.com", "/"));
+    assert_eq!(store.iter().len(), 1);
+    store.clear();
+    assert_eq!(store.iter().len(), 0);
   }
 }

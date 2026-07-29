@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 /// Serialize an HTTP/1.1 request to wire bytes.
 ///
 /// # Errors
-/// Returns [`ParseError`] if headers or framing violate RFC 9112.
+/// [`ParseError::MissingHostHeader`], host / TE / framing violations of RFC 9112.
 pub fn serialize_request(
   method: &str,
   path: &str,
@@ -46,6 +46,19 @@ pub fn serialize_request(
     return Err(ParseError::ConflictingFraming);
   }
 
+  // Body length is authoritative: reject a mismatched Content-Length.
+  if let Some(body_bytes) = body
+    && let Some(cl_val) = headers.get(Headers::CONTENT_LENGTH)
+  {
+    let parsed = cl_val
+      .trim()
+      .parse::<usize>()
+      .map_err(|_| ParseError::InvalidContentLength)?;
+    if parsed != body_bytes.len() {
+      return Err(ParseError::InvalidContentLength);
+    }
+  }
+
   let mut request = Vec::new();
 
   request.extend_from_slice(method.as_bytes());
@@ -69,6 +82,7 @@ pub fn serialize_request(
 
   if let Some(body_bytes) = body
     && !headers.contains(Headers::CONTENT_LENGTH)
+    && !has_te
   {
     use alloc::string::ToString;
     request.extend_from_slice(b"Content-Length: ");
