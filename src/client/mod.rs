@@ -177,7 +177,7 @@ where
     self.request_with_config(self.config.as_ref(), method, url, custom_headers, body)
   }
 
-  /// Like [`Self::request`] with an explicit config (per-request overrides).
+  /// [`Self::request`] with a caller-supplied config.
   ///
   /// # Errors
   /// Same as [`Self::request`].
@@ -353,7 +353,7 @@ pub fn sanitize_redirect_headers(
   }
 }
 
-/// Status codes we follow (not 304 or other 3xx).
+/// True for followable redirects: 301/302/303/307/308.
 const fn is_followable_redirect(status: u16) -> bool {
   matches!(status, 301 | 302 | 303 | 307 | 308)
 }
@@ -427,7 +427,7 @@ fn redirect_method_and_body(
   }
 }
 
-/// One HTTP hop: pool/connect, send, read, maybe return socket to pool.
+/// HTTP hop: pool/connect, send, read, maybe return socket to pool.
 ///
 /// On I/O failure with a reused pooled socket, drops it and retries once with a fresh connect.
 fn execute<S, D>(
@@ -542,7 +542,7 @@ where
 
 /// Build wire request bytes (HTTP/1.1 + Host + origin-form target).
 ///
-/// Visible for unit tests of request serialization policy.
+/// `pub` so unit tests can assert serialization.
 pub fn build_request(
   uri: &Uri,
   method: Method,

@@ -29,7 +29,7 @@ impl Method {
     }
   }
 
-  /// `true` for POST, PUT, and PATCH (methods that usually send a body).
+  /// Whether the method is expected to carry a request body (POST, PUT, PATCH).
   #[must_use]
   pub const fn need_request_body(self) -> bool {
     matches!(self, Self::Post | Self::Put | Self::Patch)

@@ -1,4 +1,4 @@
-//! Hand-rolled gzip / zlib / raw DEFLATE decompression (RFC 1950–1952).
+//! Gzip, zlib, and raw DEFLATE decompression (RFC 1950–1952).
 
 mod bit;
 mod crc32;
@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 /// Errors from gzip / deflate decompression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecompressError {
-  /// Truncated, corrupt, or otherwise illegal input.
+  /// Truncated, corrupt, or illegal input.
   InvalidInput,
   /// Uncompressed output would exceed the configured limit.
   LimitExceeded,

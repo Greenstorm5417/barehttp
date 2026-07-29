@@ -76,7 +76,7 @@ impl<'a> Uri<'a> {
   /// Resolve `location` against this URI as base (RFC 3986 §5.2).
   ///
   /// # Errors
-  /// [`ParseError::InvalidUri`] if `location` is neither a usable relative nor absolute URL.
+  /// [`ParseError::InvalidUri`] if `location` is not a valid relative reference or absolute URL.
   pub fn resolve_relative(
     &self,
     location: &str,

@@ -1,7 +1,7 @@
-//! HTTP/1.1 parse and wire serialize (`pub(crate)`).
+//! HTTP/1.1 parsing and wire serialization (`pub(crate)`).
 //!
-//! Re-exported at the crate root: [`Response`], [`version::Version`].
-//! Crate-internal: [`serialize_request`], [`BodyReadStrategy`], [`uri::Uri`], [`has_complete_headers`].
+//! Crate-root re-exports: [`Response`], [`version::Version`].
+//! Internal: [`serialize_request`], [`BodyReadStrategy`], [`uri::Uri`], [`has_complete_headers`].
 
 pub mod chunked;
 #[cfg(feature = "cookie-jar")]

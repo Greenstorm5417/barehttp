@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use core::net::SocketAddr;
 use core::time::Duration;
 
-/// Parsed status line + headers + body bytes (no redirect / status policy applied).
+/// Status line plus headers and body bytes, before client redirect/status policy.
 #[derive(Debug, Clone)]
 pub struct RawResponse {
   pub status_code: u16,
@@ -24,7 +24,7 @@ pub struct RawResponse {
   pub body_bytes: Vec<u8>,
 }
 
-/// One live HTTP connection (raw send/receive only).
+/// Live HTTP connection for raw send and receive.
 pub struct Connection<'a, S> {
   socket: &'a mut S,
   max_header_size: usize,

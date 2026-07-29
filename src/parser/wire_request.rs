@@ -136,7 +136,7 @@ fn is_origin_form_request_target(path: &str) -> bool {
   path.starts_with('/') && !path.contains("://")
 }
 
-/// RFC 9110 §7.2 `Host = uri-host [ ":" port ]` — practical client-side checks.
+/// RFC 9110 §7.2 `Host = uri-host [ ":" port ]`; client-side validation.
 fn is_valid_host_field_value(value: &str) -> bool {
   let host = value.trim();
   if host.is_empty() {

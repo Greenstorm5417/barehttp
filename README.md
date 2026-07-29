@@ -1,27 +1,21 @@
 # barehttp
 
-Blocking HTTP/1.1 client for `no_std` + `alloc`. No async runtime.
+Blocking HTTP/1.1 client for `no_std` + `alloc`. Cleartext HTTP by default; no async runtime.
 
-Cleartext HTTP by default. `https://` needs `Config::assume_tls_socket`
-and a [`BlockingSocket`] that terminates TLS. The OS socket is TCP only.
-
-`assume_tls_socket` with [`OsBlockingSocket`] returns
-`Error::TlsNotConfigured`. Use a TLS-capable socket adapter.
+`https://` needs `Config::assume_tls_socket` and a [`BlockingSocket`] that terminates TLS.
+`OsBlockingSocket` is TCP only — pairing it with `assume_tls_socket` returns
+`Error::TlsNotConfigured`.
 
 ```rust
-use barehttp::HttpClient;
-
 fn main() -> Result<(), barehttp::Error> {
-    let client = HttpClient::new();
-    let response = client.get("http://example.com").call()?;
-    println!("{} {}", response.status_code, response.text()?);
+    let response = barehttp::get("http://example.com").call()?;
+    println!("{} {}", response.status(), response.text()?);
     Ok(())
 }
 ```
 
-`Agent` is `HttpClient<OsBlockingSocket, OsDnsResolver>`. `barehttp::agent()`
-builds one. Free functions (`get`, `post`, …) return a `RequestBuilder`
-(same as `HttpClient::get`). Finish with `.call()` or `.send(body)`:
+`Agent` is `HttpClient<OsBlockingSocket, OsDnsResolver>`. `barehttp::agent()` builds one.
+Free functions (`get`, `post`, …) return a `RequestBuilder`; finish with `.call()` or `.send(body)`:
 
 ```rust
 let response = barehttp::get("http://example.com").call()?;
@@ -36,12 +30,24 @@ let response = barehttp::post("http://example.com/api").send(b"{}")?;
 - Optional Cargo features: `cookie-jar`, `gzip-decompression` (hand-rolled RFC 1951/1952), `zstd-decompression`
 - Request builder: `.form` / `.body` then `.call()`, or `.send(bytes)`; per-request `.timeout_read` / `.timeout_write` / `.timeout_connect`
 
+## Examples
+
+All examples use real cleartext HTTP (`http://` only — no TLS by default):
+
+```text
+cargo run --example basic                    # GET http://example.com
+cargo run --example agent                    # shared client, headers + query
+cargo run --example custom_adapters          # logging DnsResolver + BlockingSocket over the OS stack
+cargo run --example gzip --features gzip-decompression   # http://httpbingo.org/gzip
+cargo run --example cookies --features cookie-jar        # httpbingo/postman-echo cookie endpoints
+```
+
 ## TLS / HTTPS
 
 barehttp does not implement TLS. For `https://`:
 
-1. Use a `BlockingSocket` whose `connect` / read / write speak TLS (or wrap one
-   that does). `connect` receives the URI hostname for SNI.
+1. Use a `BlockingSocket` whose `connect` / read / write speak TLS (or wrap one that does).
+   `connect` receives the URI hostname for SNI.
 2. Set `Config { assume_tls_socket: true, .. }` so the client accepts `https`.
    Without that flag you get `Error::TlsNotConfigured`.
 
@@ -84,6 +90,8 @@ use barehttp::{HttpClient, OsBlockingSocket};
 let client: HttpClient<OsBlockingSocket, _> =
     HttpClient::with_adapters(my_dns, Config::default());
 ```
+
+See `examples/custom_adapters.rs` for logging wrappers around `OsDnsResolver` / `OsBlockingSocket`.
 
 ## License
 

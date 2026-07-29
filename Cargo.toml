@@ -23,7 +23,6 @@ gzip-decompression = []
 zstd-decompression = ["dep:ruzstd"]
 
 [dependencies]
-spin = { version = "0.12.2", default-features = false, features = ["mutex", "spin_mutex"] }
 ruzstd = { version = "0.9.0", default-features = false, optional = true }
 
 
@@ -36,3 +35,20 @@ windows-sys = { version = "0.61.2", default-features = false, features = [
     "Win32_Foundation",
     "Win32_System_SystemInformation",
 ] }
+
+[[example]]
+name = "basic"
+
+[[example]]
+name = "agent"
+
+[[example]]
+name = "custom_adapters"
+
+[[example]]
+name = "gzip"
+required-features = ["gzip-decompression"]
+
+[[example]]
+name = "cookies"
+required-features = ["cookie-jar"]

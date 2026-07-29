@@ -1,4 +1,4 @@
-//! Blocking HTTP/1.1 client for `no_std` + `alloc`. Speaks cleartext HTTP.
+//! Blocking HTTP/1.1 client for `no_std` + `alloc`. Cleartext HTTP on the wire.
 //! For `https://`, supply a TLS-terminating [`BlockingSocket`] and set
 //! [`config::Config::assume_tls_socket`]. Pairing that flag with [`OsBlockingSocket`]
 //! returns [`Error::TlsNotConfigured`].
@@ -9,8 +9,8 @@
 //! # Ok::<(), barehttp::Error>(())
 //! ```
 //!
-//! Tune with [`config::Config`]. [`HttpClient`] follows redirects.
-//! Bodies: [`Response::text`], [`Response::is_success`].
+//! Configure via [`config::Config`]. [`HttpClient`] follows redirects.
+//! See [`Response::text`] and [`Response::is_success`].
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -130,5 +130,6 @@ mod headers;
 mod method;
 pub(crate) mod parser;
 pub(crate) mod socket;
+pub(crate) mod sync;
 mod transport;
 pub(crate) mod util;

@@ -1,4 +1,4 @@
-//! Tests for hand-rolled gzip / deflate decompression.
+//! Gzip / deflate decompression tests.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 

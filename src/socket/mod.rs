@@ -12,7 +12,7 @@ pub trait BlockingSocket: Sized {
   /// Create an unbound socket.
   ///
   /// # Errors
-  /// [`SocketError::OsError`] (or platform equivalent) if the OS cannot create the socket.
+  /// [`SocketError::OsError`] if the OS cannot create the socket.
   fn new() -> Result<Self, SocketError>;
 
   /// Connect to `addr`.

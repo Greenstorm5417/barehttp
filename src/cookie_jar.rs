@@ -1,12 +1,12 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use crate::parser::cookie::SetCookie;
 use crate::parser::uri::{Host, Uri};
 
 #[derive(Debug, Clone)]
-/// One cookie as kept in [`CookieStore`].
+/// Cookie entry in [`CookieStore`].
 pub struct StoredCookie {
   /// Name.
   pub name: String,
@@ -189,7 +189,7 @@ impl CookieStore {
     self.cookies.lock().clear();
   }
 
-  /// Remove the cookie with this name, domain, and path.
+  /// Remove the cookie matching `(name, domain, path)`.
   ///
   /// Returns `true` if one was present.
   pub fn remove(
@@ -305,7 +305,7 @@ fn path_matches(
 }
 
 /// RFC 6265 cookie ordering: longer path first, then earlier creation time.
-/// Insertion sort — jars are tiny; avoids pulling in `slice::sort` monomorphization.
+/// Insertion sort for small jars; avoids `slice::sort` monomorphization.
 fn sort_cookies_for_send(cookies: &mut [&StoredCookie]) {
   for i in 1..cookies.len() {
     let mut j = i;
