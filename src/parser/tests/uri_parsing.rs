@@ -325,6 +325,11 @@ fn test_error_invalid_scheme_char() {
 }
 
 #[test]
+fn test_invalid_scheme_with_multibyte_boundary() {
+  assert!(matches!(Uri::parse(")5;Π5"), Err(ParseError::InvalidUri)));
+}
+
+#[test]
 fn test_error_missing_colon_after_scheme() {
   assert!(matches!(Uri::parse("http//example.com"), Err(ParseError::InvalidUri)));
 }

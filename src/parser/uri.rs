@@ -260,10 +260,16 @@ impl<'a> Parser<'a> {
     let start = self.pos;
     let rest = &self.input[start..];
 
-    let scheme = if rest.len() >= 5 && rest[..5].eq_ignore_ascii_case("https") {
+    let scheme = if rest
+      .get(..5)
+      .is_some_and(|s| s.eq_ignore_ascii_case("https"))
+    {
       self.advance_by(5);
       self.slice_from(start)
-    } else if rest.len() >= 4 && rest[..4].eq_ignore_ascii_case("http") {
+    } else if rest
+      .get(..4)
+      .is_some_and(|s| s.eq_ignore_ascii_case("http"))
+    {
       // Avoid matching "http" as prefix of "https" — already handled above
       self.advance_by(4);
       self.slice_from(start)
