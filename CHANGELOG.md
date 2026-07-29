@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Dependencies (`no_std` / `alloc`): `bytes` (`default-features = false`), `phf` (`default-features = false`, `macros`) for well-known header name → id maps, `compact_str` (SSO header name/value storage), `hashbrown` (header side-index + pool). Gzip trailers stay `from_le_bytes` / `from_be_bytes` (no `zerocopy`).
+- `WellKnownHeader` + `well_known_header` / `well_known_header_bytes` (ASCII-lower + PHF). `Headers::CONTENT_ENCODING`.
+- Zero-copy header scanner (`HeaderRef`, `scan_header_fields`); materialize to owned `Headers` only when building the public response. Connection path runs framing on borrowed refs first.
+- Performance suite under `benches/`: Criterion, Gungraun Callgrind/Cachegrind, dhat-rs.
+- CI Benches job: compile all benches; Callgrind soft limits (+5% Ir / +10% EstimatedCycles); Criterion smoke; dhat smoke.
+
+### Changed
+
+- Connection pool uses `hashbrown::HashMap` (foldhash) instead of `BTreeMap`. Idle entries carry reusable receive `BytesMut` + read scratch; connections reuse those buffers across reads and pooled hops (public `Response` lifetime unchanged).
+- **Breaking:** `Response::into_bytes()` returns `bytes::Bytes` (not `Vec<u8>`). `body()` / `as_bytes()` remain `&[u8]`. Re-exported as `barehttp::Bytes`.
+- `RawResponse.body_bytes` and request wire output (`serialize_request` / `build_request`) use `Bytes` / `BytesMut` on the connection read and serialize paths.
+- Framing / wire / Accept-Encoding / Connection checks use PHF well-known header ids. Arbitrary headers remain supported.
+- Header parsing builds `Headers` in one pass (no double string materialization).
+- `Headers::set` replaces matching fields in place.
+- Fixed DEFLATE Huffman tables embedded as static data (no runtime build / leak cache).
+- Header value UTF-8 fast path; `body_read_strategy` single header pass; chunked output reserve (capped); percent-encode hex nibble table.
+- Gzip/DEFLATE: `u64` bit reader with bulk refill, packed Huffman tables, specialized fixed-block inflate, faster `copy_match` / CRC-32 / Adler-32.
+- Buffered `Response::parse` materializes owned headers in one pass. Framing TE/CL uses direct case-insensitive compare (no PHF per field). Byte Content-Length / TE token parse; stack decimal for injected `Content-Length`; `BytesMut` reserves on receive.
+- `Headers` stores `(CompactString, CompactString)` with a private lowercase→first-index `hashbrown` map (`Option<Box<_>>`) for `get`/`contains`. Public API still exposes `&str` / `(String, String)` at the edges. Materialize writes `CompactString` directly (`from_utf8_lossy` for values, no intermediate `String`).
+- After materialize, rebuild the header side-index in batch; skip the side-index below 8 fields; alloc-free case-insensitive lookup (`Equivalent`); `set` avoids a full rebuild on append or a single match.
+- `Error::HttpStatus` boxes its `Response` so `Error` stays small for `Result` call sites.
+
 ## [0.1.0] - 2026-07-29
 
 ### Added
@@ -27,8 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Cargo features: `gzip-decompression` → `gzip`, `zstd-decompression` → `zstd`. `gzip` is dep-free (no miniz); `zstd` still uses `ruzstd`.
 - Dropped runtime deps `miniz_oxide` and `spin`. Dev-deps: `flate2`, `proptest`.
-- `Config` defaults: connect **10s**, read/write **30s** (was unlimited).
-- `BlockingSocket::is_os_cleartext` default is **`true`** (fail closed); TLS adapters must return `false`.
+- `Config` defaults: connect `10s`, read/write `30s` (was unlimited).
+- `BlockingSocket::is_os_cleartext` default is `true` (fail closed); TLS adapters must return `false`.
 - `Response::status_code` is primary; `status` is an alias. `#[must_use]` on free/`HttpClient` request builders.
 - Chunked body receive: stateful `ChunkedDecoder::feed` + cursor (O(n) over wire bytes). Framing-only scan no longer re-decodes the whole buffer each read.
 - Public API (Rust API Guidelines):

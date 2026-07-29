@@ -2,6 +2,7 @@
 
 mod bit;
 mod crc32;
+mod fixed_tables;
 #[allow(clippy::module_inception)] // RFC 1952 member parser lives in `gzip.rs` by design
 mod gzip;
 mod huffman;

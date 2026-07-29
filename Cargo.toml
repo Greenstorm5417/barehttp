@@ -12,6 +12,7 @@ documentation = "https://docs.rs/barehttp"
 readme = "README.md"
 keywords = ["http", "client", "no_std", "blocking", "http1"]
 categories = ["network-programming", "no-std", "web-programming::http-client"]
+autobenches = false
 
 [package.metadata.docs.rs]
 all-features = true
@@ -24,22 +25,32 @@ gzip = []
 zstd = ["dep:ruzstd"]
 
 [dependencies]
+bytes = { version = "1.12.1", default-features = false }
+compact_str = { version = "0.10.0", default-features = false }
+hashbrown = { version = "0.17.1", default-features = false, features = ["default-hasher", "equivalent"] }
+phf = { version = "0.14.0", default-features = false, features = ["macros"] }
 ruzstd = { version = "0.9.0", default-features = false, optional = true }
 
 [dev-dependencies]
 # Test-only; never a runtime dep of the library.
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 proptest = "1.6"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+gungraun = { version = "0.19.4", features = ["client_requests"] }
+dhat = "0.3.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2.189", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", default-features = false, features = [
-    "Win32_Networking_WinSock",
-    "Win32_Foundation",
-    "Win32_System_SystemInformation",
+  "Win32_Networking_WinSock",
+  "Win32_Foundation",
+  "Win32_System_SystemInformation",
 ] }
+
+[profile.bench]
+debug = 1
 
 [[example]]
 name = "basic"
@@ -57,3 +68,32 @@ required-features = ["gzip"]
 [[example]]
 name = "cookies"
 required-features = ["cookie-jar"]
+
+[[bench]]
+name = "criterion_hot_paths"
+harness = false
+
+[[bench]]
+name = "criterion_e2e"
+harness = false
+
+[[bench]]
+name = "gungraun_callgrind"
+harness = false
+
+[[bench]]
+name = "gungraun_cachegrind"
+harness = false
+
+[[bench]]
+name = "dhat_parser"
+harness = false
+
+[[bench]]
+name = "dhat_gzip"
+harness = false
+required-features = ["gzip"]
+
+[[bench]]
+name = "dhat_e2e"
+harness = false

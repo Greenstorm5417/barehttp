@@ -1,10 +1,12 @@
 use crate::error::ParseError;
 use crate::parser::headers::{expect_crlf, parse_header_fields};
+use alloc::string::String;
+use alloc::vec::Vec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkedDecoder {
   state: DecodeState,
-  trailers: alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)>,
+  trailers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,20 +33,20 @@ impl ChunkedDecoder {
   pub const fn new() -> Self {
     Self {
       state: DecodeState::ChunkSize,
-      trailers: alloc::vec::Vec::new(),
+      trailers: Vec::new(),
     }
   }
 
   /// Trailer fields after the last chunk (RFC 9112 §7.1.2).
   #[must_use]
   #[allow(dead_code)]
-  pub fn trailers(&self) -> &[(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)] {
+  pub fn trailers(&self) -> &[(String, String)] {
     &self.trailers
   }
 
   /// Take trailer fields out of the decoder (avoids cloning after a successful decode).
   #[must_use]
-  pub fn take_trailers(&mut self) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> {
+  pub fn take_trailers(&mut self) -> Vec<(String, String)> {
     core::mem::take(&mut self.trailers)
   }
 
@@ -107,6 +109,11 @@ impl ChunkedDecoder {
               self.state = if size == 0 {
                 DecodeState::TrailerSection
               } else {
+                // Cap reserve so a forged huge chunk size cannot OOM before framing checks.
+                if let Some(out) = output.as_deref_mut() {
+                  const RESERVE_CAP: usize = 64 * 1024;
+                  out.reserve(size.min(RESERVE_CAP));
+                }
                 DecodeState::ChunkData(size)
               };
             },
@@ -162,7 +169,7 @@ impl ChunkedDecoder {
             });
           }
           let (trailers, rest) = parse_header_fields(remaining)?;
-          self.trailers = trailers;
+          self.trailers = trailers.into_vec();
           self.state = DecodeState::Complete;
           return Ok(FeedResult::Done { rest });
         },
@@ -249,7 +256,25 @@ fn trailer_section_looks_complete(data: &[u8]) -> bool {
   if data == b"\r\n" || data == b"\n" {
     return true;
   }
-  data.windows(4).any(|w| w == b"\r\n\r\n") || data.windows(2).any(|w| w == b"\n\n")
+  // Single scan for `\r\n\r\n` or `\n\n`.
+  let mut i = 0usize;
+  while i < data.len() {
+    match data.get(i).copied() {
+      Some(b'\r')
+        if data.get(i.saturating_add(1)).copied() == Some(b'\n')
+          && data.get(i.saturating_add(2)).copied() == Some(b'\r')
+          && data.get(i.saturating_add(3)).copied() == Some(b'\n') =>
+      {
+        return true;
+      },
+      Some(b'\n') if data.get(i.saturating_add(1)).copied() == Some(b'\n') => {
+        return true;
+      },
+      _ => {},
+    }
+    i = i.saturating_add(1);
+  }
+  false
 }
 
 #[cfg(test)]

@@ -8,14 +8,23 @@ const CM_DEFLATE: u8 = 8;
 const FDICT: u8 = 0x20;
 
 /// Adler-32 (RFC 1950) of `data`.
+///
+/// Defers `% 65521` across chunks of at most `NMAX` bytes so the inner loop is
+/// just two adds (zlib / RFC 1950 sample algorithm).
 #[allow(clippy::integer_division)] // Adler-32 uses mod 65521
 fn adler32(data: &[u8]) -> u32 {
   const MOD: u32 = 65_521;
+  // Largest n such that 255n(n+1)/2 + (n+1)(BASE-1) ≤ 2^32−1.
+  const NMAX: usize = 5552;
   let mut a = 1u32;
   let mut b = 0u32;
-  for &byte in data {
-    a = a.saturating_add(u32::from(byte)) % MOD;
-    b = b.saturating_add(a) % MOD;
+  for chunk in data.chunks(NMAX) {
+    for &byte in chunk {
+      a += u32::from(byte);
+      b += a;
+    }
+    a %= MOD;
+    b %= MOD;
   }
   (b << 16) | a
 }
@@ -43,16 +52,13 @@ pub(super) fn decompress(
   let trailer_off = consumed
     .checked_add(2)
     .ok_or(DecompressError::InvalidInput)?;
-  let b0 = *data.get(trailer_off).ok_or(DecompressError::InvalidInput)?;
-  let b1 = *data
-    .get(trailer_off.saturating_add(1))
+  let trailer = data
+    .get(trailer_off..trailer_off.saturating_add(4))
     .ok_or(DecompressError::InvalidInput)?;
-  let b2 = *data
-    .get(trailer_off.saturating_add(2))
-    .ok_or(DecompressError::InvalidInput)?;
-  let b3 = *data
-    .get(trailer_off.saturating_add(3))
-    .ok_or(DecompressError::InvalidInput)?;
+  let b0 = *trailer.first().ok_or(DecompressError::InvalidInput)?;
+  let b1 = *trailer.get(1).ok_or(DecompressError::InvalidInput)?;
+  let b2 = *trailer.get(2).ok_or(DecompressError::InvalidInput)?;
+  let b3 = *trailer.get(3).ok_or(DecompressError::InvalidInput)?;
   let got = u32::from_be_bytes([b0, b1, b2, b3]);
   if got != adler32(&out) {
     return Err(DecompressError::InvalidInput);

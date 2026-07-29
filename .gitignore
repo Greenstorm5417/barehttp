@@ -4,5 +4,14 @@
 update_readme
 update_readme.exe
 
+# Performance tooling outputs (do not commit flamegraphs / profiles)
+/target/perf/
+*.folded
+**/flamegraph*.svg
+**/perf.data
+**/perf.data.old
+dhat-heap.json
+dhat-ad-hoc.json
+
 # Reference clone only — do not commit
 ureq/

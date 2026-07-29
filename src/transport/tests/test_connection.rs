@@ -31,7 +31,7 @@ fn read_response_with_content_length() {
   let raw = result.unwrap();
   assert_eq!(raw.status_code, 200);
   assert_eq!(raw.reason, "OK");
-  assert_eq!(raw.body_bytes, b"Hello");
+  assert_eq!(&raw.body_bytes[..], b"Hello");
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn read_response_chunked_encoding() {
   assert!(result.is_ok());
   let raw = result.unwrap();
   assert_eq!(raw.status_code, 200);
-  assert_eq!(raw.body_bytes, b"5\r\nHello\r\n0\r\n\r\n");
+  assert_eq!(&raw.body_bytes[..], b"5\r\nHello\r\n0\r\n\r\n");
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn read_response_with_multiple_headers() {
   assert_eq!(raw.status_code, 200);
   assert_eq!(raw.headers.get("Content-Type"), Some("text/plain"));
   assert_eq!(raw.headers.get("Content-Length"), Some("2"));
-  assert_eq!(raw.body_bytes, b"OK");
+  assert_eq!(&raw.body_bytes[..], b"OK");
 }
 
 #[test]
@@ -142,7 +142,7 @@ fn read_response_handles_body_in_header_buffer() {
 
   assert!(result.is_ok());
   let raw = result.unwrap();
-  assert_eq!(raw.body_bytes, b"Hello World");
+  assert_eq!(&raw.body_bytes[..], b"Hello World");
 }
 
 #[test]
@@ -155,14 +155,14 @@ fn raw_response_can_be_cloned() {
     reason: String::from("OK"),
     headers,
     version: Version::HTTP_11,
-    body_bytes: vec![1, 2, 3],
+    body_bytes: bytes::Bytes::from(vec![1, 2, 3]),
   };
 
   let cloned = response.clone();
   assert_eq!(response.status_code, 200);
   assert_eq!(cloned.status_code, 200);
   assert_eq!(cloned.reason, "OK");
-  assert_eq!(cloned.body_bytes, vec![1, 2, 3]);
+  assert_eq!(&cloned.body_bytes[..], &[1, 2, 3]);
 }
 
 #[test]
@@ -176,7 +176,7 @@ fn read_response_1xx_informational_skipped() {
   assert!(result.is_ok());
   let raw = result.unwrap();
   assert_eq!(raw.status_code, 200);
-  assert_eq!(raw.body_bytes, b"Hello");
+  assert_eq!(&raw.body_bytes[..], b"Hello");
 }
 
 #[test]
@@ -331,7 +331,7 @@ fn chunked_read_keeps_payload_that_looks_like_terminator() {
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
 
   let raw = conn.read_raw_response(true).unwrap();
-  assert_eq!(raw.body_bytes, b"5\r\n0\r\n\r\n\r\n5\r\nHello\r\n0\r\n\r\n");
+  assert_eq!(&raw.body_bytes[..], b"5\r\n0\r\n\r\n\r\n5\r\nHello\r\n0\r\n\r\n");
 }
 
 #[test]

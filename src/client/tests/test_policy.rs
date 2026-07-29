@@ -22,7 +22,7 @@ fn make_redirect_response(
     reason: String::from("Redirect"),
     headers,
     version: Version::HTTP_11,
-    body_bytes: Vec::new(),
+    body_bytes: bytes::Bytes::new(),
   }
 }
 
@@ -38,7 +38,7 @@ fn raw_to_response_for_test(
     body_bytes,
   } = raw;
   let (body, trailers) = if method == Method::Head {
-    (Vec::new(), Vec::new())
+    (bytes::Bytes::new(), Vec::new())
   } else {
     crate::parser::Response::parse_body_from_bytes(&body_bytes, &mut headers, status_code, version, usize::MAX).unwrap()
   };
@@ -56,7 +56,10 @@ fn process(
 ) -> Result<Option<(String, Method, Option<Vec<u8>>)>, Error> {
   if config.http_status_as_error() && (400..600).contains(&raw.status_code) {
     let response = raw_to_response_for_test(raw, method);
-    return Err(Error::HttpStatus(response.status_code(), response));
+    return Err(Error::HttpStatus(
+      response.status_code(),
+      alloc::boxed::Box::new(response),
+    ));
   }
   let uri = Uri::parse(current_url).unwrap();
   let response = raw_to_response_for_test(raw, method);
@@ -134,7 +137,7 @@ fn policy_drops_body_for_head_requests() {
     reason: String::from("OK"),
     headers,
     version: Version::HTTP_11,
-    body_bytes: b"1234567890".to_vec(),
+    body_bytes: bytes::Bytes::from_static(b"1234567890"),
   };
   let resp = raw_to_response_for_test(raw, Method::Head);
   assert_eq!(resp.status_code(), 200);
@@ -237,7 +240,7 @@ fn non_followable_3xx_is_returned() {
       reason: String::from("x"),
       headers,
       version: Version::HTTP_11,
-      body_bytes: Vec::new(),
+      body_bytes: bytes::Bytes::new(),
     };
     assert!(
       process(
@@ -318,7 +321,7 @@ fn status_error_when_configured() {
       reason: String::from("err"),
       headers,
       version: Version::HTTP_11,
-      body_bytes: b"fail".to_vec(),
+      body_bytes: bytes::Bytes::from_static(b"fail"),
     };
     let err = process(
       &config,
@@ -352,7 +355,7 @@ fn status_4xx_is_ok_when_configured_as_response() {
     reason: String::from("Not Found"),
     headers: Headers::new(),
     version: Version::HTTP_11,
-    body_bytes: Vec::new(),
+    body_bytes: bytes::Bytes::new(),
   };
   assert!(
     process(
@@ -519,7 +522,7 @@ fn chunked_trailers_reach_response() {
     reason: String::from("OK"),
     headers,
     version: Version::HTTP_11,
-    body_bytes: b"5\r\nhello\r\n0\r\nX-Trailer: value\r\n\r\n".to_vec(),
+    body_bytes: bytes::Bytes::from_static(b"5\r\nhello\r\n0\r\nX-Trailer: value\r\n\r\n"),
   };
   let resp = raw_to_response_for_test(raw, Method::Get);
   assert_eq!(resp.body(), b"hello");

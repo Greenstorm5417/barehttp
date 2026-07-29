@@ -1,8 +1,8 @@
 extern crate alloc;
 use crate::error::ParseError;
-use crate::headers::Headers;
+use crate::headers::{Headers, WellKnownHeader, well_known_header};
 use crate::parser::headers::is_token_char;
-use alloc::vec::Vec;
+use bytes::{Bytes, BytesMut};
 
 /// Serialize an HTTP/1.1 request to wire bytes.
 ///
@@ -13,29 +13,84 @@ pub fn serialize_request(
   path: &str,
   headers: &Headers,
   body: Option<&[u8]>,
-) -> Result<Vec<u8>, ParseError> {
-  // RFC 9112 Section 3.2: Client MUST send Host in every HTTP/1.1 request
-  if !headers.contains(Headers::HOST) {
-    return Err(ParseError::MissingHostHeader);
+) -> Result<Bytes, ParseError> {
+  let mut host_value: Option<&str> = None;
+  let mut host_count = 0usize;
+  let mut has_te = false;
+  let mut has_cl = false;
+  let mut cl_value: Option<&str> = None;
+  let mut has_te_field = false;
+  let mut te_lists_chunked = false;
+  let mut connection_has_te = false;
+  let mut wire_bytes = method.len().saturating_add(1).saturating_add(11); // " METHOD" + " HTTP/1.1\r\n"
+
+  // Single scan: Host / framing / TE rules / injection checks / size estimate.
+  for (name, value) in headers {
+    if name.is_empty() || !name.bytes().all(is_token_char) {
+      return Err(ParseError::InvalidHeaderName);
+    }
+    if value
+      .bytes()
+      .any(|b| matches!(b, 0..=8 | 0x0A..=0x1F | 0x7F))
+    {
+      return Err(ParseError::InvalidHeaderValue);
+    }
+
+    wire_bytes = wire_bytes
+      .saturating_add(name.len())
+      .saturating_add(value.len())
+      .saturating_add(4); // ": \r\n"
+
+    match well_known_header(name) {
+      Some(WellKnownHeader::Host) => {
+        host_count = host_count.saturating_add(1);
+        host_value = Some(value);
+      },
+      Some(WellKnownHeader::TransferEncoding) => {
+        has_te = true;
+      },
+      Some(WellKnownHeader::ContentLength) => {
+        has_cl = true;
+        cl_value = Some(value);
+      },
+      Some(WellKnownHeader::Te) => {
+        has_te_field = true;
+        for coding in value.split(',') {
+          let coding_name = coding.trim().split(';').next().unwrap_or("").trim();
+          if coding_name.eq_ignore_ascii_case("chunked") {
+            te_lists_chunked = true;
+          }
+        }
+      },
+      Some(WellKnownHeader::Connection)
+        if value
+          .split(',')
+          .any(|t| t.trim().eq_ignore_ascii_case("TE")) =>
+      {
+        connection_has_te = true;
+      },
+      _ => {},
+    }
   }
 
-  // RFC 9112 Section 3.2: Server responds 400 if multiple Host headers present
-  let host_headers = headers.get_all(Headers::HOST);
-  if host_headers.len() > 1 {
+  // RFC 9112 Section 3.2: Client MUST send Host in every HTTP/1.1 request
+  let host = host_value.ok_or(ParseError::MissingHostHeader)?;
+  if host_count > 1 {
     return Err(ParseError::MultipleHostHeaders);
   }
-
-  let host_value = *host_headers.first().ok_or(ParseError::MissingHostHeader)?;
-  if !is_valid_host_field_value(host_value) {
+  if !is_valid_host_field_value(host) {
     return Err(ParseError::InvalidHostHeaderValue);
   }
 
   // RFC 9112 §7.4: TE must not list chunked; sender of TE MUST also send Connection: TE
-  validate_te_header(headers)?;
+  if te_lists_chunked {
+    return Err(ParseError::ChunkedInTeHeader);
+  }
+  if has_te_field && !connection_has_te {
+    return Err(ParseError::TeHeaderMissingConnection);
+  }
 
   // This client frames request bodies with Content-Length only (RFC 9112 §6.3).
-  let has_te = headers.contains(Headers::TRANSFER_ENCODING);
-  let has_cl = headers.contains(Headers::CONTENT_LENGTH);
   if has_te && has_cl {
     return Err(ParseError::ConflictingFraming);
   }
@@ -43,23 +98,9 @@ pub fn serialize_request(
     return Err(ParseError::RequestTransferEncodingUnsupported);
   }
 
-  // Validate all header names/values for RFC 9112 compliance (no injection)
-  for (name, value) in headers {
-    if name.is_empty() || !name.bytes().all(is_token_char) {
-      return Err(ParseError::InvalidHeaderName);
-    }
-    // No CTLs except HTAB; blocks CRLF / LF injection into the wire message
-    if value
-      .bytes()
-      .any(|b| matches!(b, 0..=8 | 0x0A..=0x1F | 0x7F))
-    {
-      return Err(ParseError::InvalidHeaderValue);
-    }
-  }
-
   // Body length is authoritative: reject a mismatched Content-Length.
   if let Some(body_bytes) = body
-    && let Some(cl_val) = headers.get(Headers::CONTENT_LENGTH)
+    && let Some(cl_val) = cl_value
   {
     let parsed = cl_val
       .trim()
@@ -80,18 +121,31 @@ pub fn serialize_request(
   if !is_origin_form_request_target(request_path) {
     return Err(ParseError::InvalidUri);
   }
+  wire_bytes = wire_bytes
+    .saturating_add(request_path.len())
+    .saturating_add(2); // final CRLF
 
-  let mut request = Vec::new();
+  let inject_cl = body.is_some() && !has_cl;
+  if inject_cl {
+    // "Content-Length: " + digits + "\r\n" — digits ≤ 20 for usize.
+    wire_bytes = wire_bytes.saturating_add(32);
+  }
+  if let Some(body_bytes) = body {
+    wire_bytes = wire_bytes.saturating_add(body_bytes.len());
+  }
+
+  let mut request = BytesMut::with_capacity(wire_bytes);
 
   request.extend_from_slice(method.as_bytes());
-  request.push(b' ');
+  request.extend_from_slice(b" ");
   request.extend_from_slice(request_path.as_bytes());
   // RFC 9112: this is an HTTP/1.1 client — request-line version is always 1.1
   request.extend_from_slice(b" HTTP/1.1\r\n");
 
   // RFC 9110 §7.2: user agent SHOULD send Host as the first header field
-  write_header_line(&mut request, Headers::HOST, host_value);
+  write_header_line(&mut request, Headers::HOST, host);
   for (name, value) in headers {
+    // Cheap Host skip (already validated once above); avoid a second PHF probe.
     if name.eq_ignore_ascii_case(Headers::HOST) {
       continue;
     }
@@ -99,11 +153,10 @@ pub fn serialize_request(
   }
 
   if let Some(body_bytes) = body
-    && !headers.contains(Headers::CONTENT_LENGTH)
+    && inject_cl
   {
-    use alloc::string::ToString;
     request.extend_from_slice(b"Content-Length: ");
-    request.extend_from_slice(body_bytes.len().to_string().as_bytes());
+    push_usize_decimal(&mut request, body_bytes.len());
     request.extend_from_slice(b"\r\n");
   }
 
@@ -113,11 +166,11 @@ pub fn serialize_request(
     request.extend_from_slice(body_bytes);
   }
 
-  Ok(request)
+  Ok(request.freeze())
 }
 
 fn write_header_line(
-  out: &mut Vec<u8>,
+  out: &mut BytesMut,
   name: &str,
   value: &str,
 ) {
@@ -125,6 +178,32 @@ fn write_header_line(
   out.extend_from_slice(b": ");
   out.extend_from_slice(value.as_bytes());
   out.extend_from_slice(b"\r\n");
+}
+
+/// Decimal digits of `n` with no heap allocation (`usize` ≤ 20 digits).
+fn push_usize_decimal(
+  out: &mut BytesMut,
+  mut n: usize,
+) {
+  let mut tmp = [0u8; 20];
+  let mut i = tmp.len();
+  if n == 0 {
+    out.extend_from_slice(b"0");
+    return;
+  }
+  while n > 0 {
+    i = i.saturating_sub(1);
+    if let Some(slot) = tmp.get_mut(i) {
+      #[allow(clippy::cast_possible_truncation)] // n % 10 fits in u8
+      {
+        *slot = b'0' + (n % 10) as u8;
+      }
+    }
+    n /= 10;
+  }
+  if let Some(digits) = tmp.get(i..) {
+    out.extend_from_slice(digits);
+  }
 }
 
 /// RFC 9112 §3.2.1 origin-form, or asterisk-form `*` (OPTIONS).
@@ -165,28 +244,4 @@ fn is_valid_host_field_value(value: &str) -> bool {
     return false;
   }
   true
-}
-
-fn validate_te_header(headers: &Headers) -> Result<(), ParseError> {
-  if !headers.contains(Headers::TE) {
-    return Ok(());
-  }
-
-  for value in headers.get_all(Headers::TE) {
-    for coding in value.split(',') {
-      let name = coding.trim().split(';').next().unwrap_or("").trim();
-      if name.eq_ignore_ascii_case("chunked") {
-        return Err(ParseError::ChunkedInTeHeader);
-      }
-    }
-  }
-
-  let connection_has_te = headers
-    .get_all(Headers::CONNECTION)
-    .iter()
-    .any(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case("TE")));
-  if !connection_has_te {
-    return Err(ParseError::TeHeaderMissingConnection);
-  }
-  Ok(())
 }

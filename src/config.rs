@@ -54,7 +54,7 @@ impl Default for Config {
       http_status_as_error: true,
       max_response_header_size: 64 * 1024,
       max_response_body_size: DEFAULT_MAX_RESPONSE_BODY_SIZE,
-      // Non-None so UntilClose / hung peers cannot block forever out of the box.
+      // Non-None so UntilClose / hung peers cannot block forever.
       timeout_connect: Some(Duration::from_secs(10)),
       timeout_read: Some(Duration::from_secs(30)),
       timeout_write: Some(Duration::from_secs(30)),

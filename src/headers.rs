@@ -1,17 +1,41 @@
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use compact_str::CompactString;
+use core::hash::{Hash, Hasher};
 use core::slice;
+use hashbrown::Equivalent;
+use hashbrown::HashMap;
 
 /// Ordered list of `(name, value)` header fields.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+///
+/// Field storage is [`CompactString`] (inline ≤24 bytes on 64-bit).
+/// A lowercase → first-index map, when present, backs [`Self::get`] /
+/// [`Self::contains`]; iteration and multi-value order follow the ordered `Vec`.
+#[derive(Debug, Clone, Default)]
 pub struct Headers {
-  headers: Vec<(String, String)>,
+  headers: Vec<(CompactString, CompactString)>,
+  /// ASCII-lowercased name → index of the first matching field in `headers`.
+  /// Boxed so empty `Headers` stays pointer-sized (keeps `Error::HttpStatus` small).
+  index: Option<Box<HashMap<CompactString, usize>>>,
 }
+
+impl PartialEq for Headers {
+  fn eq(
+    &self,
+    other: &Self,
+  ) -> bool {
+    // Index is a cache; equality is defined by ordered fields only.
+    self.headers == other.headers
+  }
+}
+
+impl Eq for Headers {}
 
 /// Iterator over `(name, value)` pairs in a [`Headers`] map.
 #[derive(Debug, Clone)]
 pub struct Iter<'a> {
-  inner: slice::Iter<'a, (String, String)>,
+  inner: slice::Iter<'a, (CompactString, CompactString)>,
 }
 
 impl<'a> Iterator for Iter<'a> {
@@ -32,17 +56,219 @@ impl ExactSizeIterator for Iter<'_> {
   }
 }
 
+/// Common header names with a compile-time `phf` lookup (lowercase keys).
+///
+/// Framing and wire code match names against this enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum WellKnownHeader {
+  /// `Accept`
+  Accept,
+  /// `Accept-Encoding`
+  AcceptEncoding,
+  /// `Connection`
+  Connection,
+  /// `Content-Encoding`
+  ContentEncoding,
+  /// `Content-Length`
+  ContentLength,
+  /// `Content-Type`
+  ContentType,
+  /// `Cookie`
+  Cookie,
+  /// `Host`
+  Host,
+  /// `Set-Cookie`
+  SetCookie,
+  /// `TE`
+  Te,
+  /// `Transfer-Encoding`
+  TransferEncoding,
+  /// `User-Agent`
+  UserAgent,
+}
+
+impl WellKnownHeader {
+  /// Canonical wire name matching [`Headers`] constants (mixed case).
+  #[must_use]
+  pub const fn as_str(self) -> &'static str {
+    match self {
+      Self::Accept => Headers::ACCEPT,
+      Self::AcceptEncoding => Headers::ACCEPT_ENCODING,
+      Self::Connection => Headers::CONNECTION,
+      Self::ContentEncoding => Headers::CONTENT_ENCODING,
+      Self::ContentLength => Headers::CONTENT_LENGTH,
+      Self::ContentType => Headers::CONTENT_TYPE,
+      Self::Cookie => Headers::COOKIE,
+      Self::Host => Headers::HOST,
+      Self::SetCookie => Headers::SET_COOKIE,
+      Self::Te => Headers::TE,
+      Self::TransferEncoding => Headers::TRANSFER_ENCODING,
+      Self::UserAgent => Headers::USER_AGENT,
+    }
+  }
+}
+
+/// Lowercase well-known names → [`WellKnownHeader`] (compile-time PHF).
+static WELL_KNOWN: phf::Map<&'static str, WellKnownHeader> = phf::phf_map! {
+  "accept" => WellKnownHeader::Accept,
+  "accept-encoding" => WellKnownHeader::AcceptEncoding,
+  "connection" => WellKnownHeader::Connection,
+  "content-encoding" => WellKnownHeader::ContentEncoding,
+  "content-length" => WellKnownHeader::ContentLength,
+  "content-type" => WellKnownHeader::ContentType,
+  "cookie" => WellKnownHeader::Cookie,
+  "host" => WellKnownHeader::Host,
+  "set-cookie" => WellKnownHeader::SetCookie,
+  "te" => WellKnownHeader::Te,
+  "transfer-encoding" => WellKnownHeader::TransferEncoding,
+  "user-agent" => WellKnownHeader::UserAgent,
+};
+
+const WELL_KNOWN_MAX_LEN: usize = 32;
+
+/// Below this field count, skip the side-index (linear scan is cheaper).
+const INDEX_THRESHOLD: usize = 8;
+
+/// Case-insensitive lookup of a well-known header name (`&str`).
+#[must_use]
+pub fn well_known_header(name: &str) -> Option<WellKnownHeader> {
+  well_known_header_bytes(name.as_bytes())
+}
+
+/// Case-insensitive lookup of a well-known header name (raw bytes).
+#[must_use]
+pub fn well_known_header_bytes(name: &[u8]) -> Option<WellKnownHeader> {
+  if name.len() > WELL_KNOWN_MAX_LEN || name.is_empty() {
+    return None;
+  }
+  let mut buf = [0u8; WELL_KNOWN_MAX_LEN];
+  for (i, &b) in name.iter().enumerate() {
+    // Reject non-ASCII early — well-known names are ASCII tokens only.
+    if !b.is_ascii() {
+      return None;
+    }
+    if let Some(slot) = buf.get_mut(i) {
+      *slot = b.to_ascii_lowercase();
+    }
+  }
+  let key_bytes = buf.get(..name.len())?;
+  // SAFETY: every byte was checked `is_ascii` then lowercased.
+  let key = unsafe { core::str::from_utf8_unchecked(key_bytes) };
+  WELL_KNOWN.get(key).copied()
+}
+
+/// ASCII-lowercase `name` into a [`CompactString`] (inline for typical header lengths).
+#[inline]
+fn ascii_lowercase_key(name: &str) -> CompactString {
+  const STACK: usize = 64;
+  let bytes = name.as_bytes();
+  if !bytes.iter().any(u8::is_ascii_uppercase) {
+    return CompactString::new(name);
+  }
+  // Byte-wise build (avoids `push(char)` per octet). Stack for common lengths.
+  if bytes.len() <= STACK {
+    let mut buf = [0u8; STACK];
+    for (i, &b) in bytes.iter().enumerate() {
+      if let Some(slot) = buf.get_mut(i) {
+        *slot = b.to_ascii_lowercase();
+      }
+    }
+    // SAFETY: ASCII in → ASCII out.
+    return CompactString::new(unsafe { core::str::from_utf8_unchecked(buf.get(..bytes.len()).unwrap_or(&[])) });
+  }
+  let mut owned = Vec::with_capacity(bytes.len());
+  for &b in bytes {
+    owned.push(b.to_ascii_lowercase());
+  }
+  // SAFETY: ASCII in → ASCII out.
+  CompactString::new(unsafe { core::str::from_utf8_unchecked(&owned) })
+}
+
+/// Case-insensitive query for the lowercase index keys (no allocation on lookup).
+#[derive(Clone, Copy)]
+struct AsciiLowerQuery<'a>(&'a str);
+
+impl Hash for AsciiLowerQuery<'_> {
+  #[inline]
+  fn hash<H: Hasher>(
+    &self,
+    state: &mut H,
+  ) {
+    const STACK: usize = 64;
+    // Must match `str`/`CompactString` hashing of the lowercased form.
+    let bytes = self.0.as_bytes();
+    if !bytes.iter().any(u8::is_ascii_uppercase) {
+      self.0.hash(state);
+      return;
+    }
+    if bytes.len() <= STACK {
+      let mut buf = [0u8; STACK];
+      for (i, &b) in bytes.iter().enumerate() {
+        if let Some(slot) = buf.get_mut(i) {
+          *slot = b.to_ascii_lowercase();
+        }
+      }
+      // SAFETY: ASCII in → ASCII out.
+      let s = unsafe { core::str::from_utf8_unchecked(buf.get(..bytes.len()).unwrap_or(&[])) };
+      s.hash(state);
+      return;
+    }
+    ascii_lowercase_key(self.0).as_str().hash(state);
+  }
+}
+
+impl Equivalent<CompactString> for AsciiLowerQuery<'_> {
+  #[inline]
+  fn equivalent(
+    &self,
+    key: &CompactString,
+  ) -> bool {
+    self.0.eq_ignore_ascii_case(key.as_str())
+  }
+}
+
 impl Headers {
   /// Empty collection.
   #[must_use]
   pub const fn new() -> Self {
-    Self { headers: Vec::new() }
+    Self {
+      headers: Vec::new(),
+      index: None,
+    }
+  }
+
+  /// Empty collection with room for `capacity` fields.
+  #[must_use]
+  pub fn with_capacity(capacity: usize) -> Self {
+    Self {
+      headers: Vec::with_capacity(capacity),
+      // Index is built once after batch fills (`rebuild_index` / first `insert`).
+      index: None,
+    }
   }
 
   /// Wrap an existing `(name, value)` list.
   #[must_use]
-  pub const fn from_vec(headers: Vec<(String, String)>) -> Self {
-    Self { headers }
+  pub fn from_vec(headers: Vec<(String, String)>) -> Self {
+    let mut out = Self::with_capacity(headers.len());
+    for (name, value) in headers {
+      out
+        .headers
+        .push((CompactString::from(name), CompactString::from(value)));
+    }
+    out.rebuild_index();
+    out
+  }
+
+  /// Consume into the underlying `(name, value)` list.
+  #[must_use]
+  pub fn into_vec(self) -> Vec<(String, String)> {
+    self
+      .headers
+      .into_iter()
+      .map(|(n, v)| (n.into_string(), v.into_string()))
+      .collect()
   }
 
   /// Append a field; keeps any existing values for the same name.
@@ -51,7 +277,60 @@ impl Headers {
     name: impl Into<String>,
     value: impl Into<String>,
   ) {
-    self.headers.push((name.into(), value.into()));
+    self.push_compact(CompactString::from(name.into()), CompactString::from(value.into()));
+  }
+
+  /// Append an already-owned field without touching the side-index.
+  ///
+  /// Hot path for wire materialize: caller must [`Self::rebuild_index`] once
+  /// after the batch (avoids per-field [`HashMap`] inserts during parse).
+  #[inline]
+  pub(crate) fn push_owned(
+    &mut self,
+    name: CompactString,
+    value: CompactString,
+  ) {
+    self.headers.push((name, value));
+  }
+
+  /// Rebuild the lowercase → first-index map from `headers` (source of truth).
+  ///
+  /// With few fields, leaves the map unset: a linear scan costs less than building
+  /// a [`HashMap`] for the usual 2–4 header response.
+  pub(crate) fn rebuild_index(&mut self) {
+    if self.headers.len() < INDEX_THRESHOLD {
+      self.index = None;
+      return;
+    }
+    let map = self
+      .index
+      .get_or_insert_with(|| Box::new(HashMap::with_capacity(self.headers.len())));
+    map.clear();
+    map.reserve(self.headers.len());
+    for (i, (name, _)) in self.headers.iter().enumerate() {
+      let key = ascii_lowercase_key(name.as_str());
+      map.entry(key).or_insert(i);
+    }
+  }
+
+  #[inline]
+  fn push_compact(
+    &mut self,
+    name: CompactString,
+    value: CompactString,
+  ) {
+    let idx = self.headers.len();
+    if let Some(map) = self.index.as_mut() {
+      let key = ascii_lowercase_key(name.as_str());
+      map.entry(key).or_insert(idx);
+      self.headers.push((name, value));
+    } else {
+      // No index yet (small / deferred). Keep linear until we cross the threshold.
+      self.headers.push((name, value));
+      if self.headers.len() >= INDEX_THRESHOLD {
+        self.rebuild_index();
+      }
+    }
   }
 
   /// Replace every value for `name` (case-insensitive) with a single value.
@@ -60,9 +339,47 @@ impl Headers {
     name: impl Into<String>,
     value: impl Into<String>,
   ) {
-    let owned_name = name.into();
-    self.remove(&owned_name);
-    self.headers.push((owned_name, value.into()));
+    let owned_name = CompactString::from(name.into());
+    let owned_value = CompactString::from(value.into());
+    let mut first: Option<usize> = None;
+    let mut removed = false;
+    let mut i = 0usize;
+    while i < self.headers.len() {
+      let is_match = self
+        .headers
+        .get(i)
+        .is_some_and(|(n, _)| n.eq_ignore_ascii_case(owned_name.as_str()));
+      if is_match {
+        if first.is_none() {
+          first = Some(i);
+          i = i.saturating_add(1);
+        } else {
+          self.headers.remove(i);
+          removed = true;
+        }
+      } else {
+        i = i.saturating_add(1);
+      }
+    }
+    if let Some(idx) = first {
+      if let Some(slot) = self.headers.get_mut(idx) {
+        *slot = (owned_name, owned_value);
+      }
+      if removed {
+        // Indices after removals shifted — rebuild.
+        self.rebuild_index();
+      }
+      // else: same first-index slot; lowercase key unchanged.
+    } else {
+      let idx = self.headers.len();
+      let key = ascii_lowercase_key(owned_name.as_str());
+      self.headers.push((owned_name, owned_value));
+      if let Some(map) = self.index.as_mut() {
+        map.entry(key).or_insert(idx);
+      } else if self.headers.len() >= INDEX_THRESHOLD {
+        self.rebuild_index();
+      }
+    }
   }
 
   /// First value for `name`, if any (case-insensitive).
@@ -71,6 +388,10 @@ impl Headers {
     &self,
     name: &str,
   ) -> Option<&str> {
+    if let Some(map) = self.index.as_ref() {
+      let idx = *map.get(&AsciiLowerQuery(name))?;
+      return self.headers.get(idx).map(|(_, v)| v.as_str());
+    }
     self
       .headers
       .iter()
@@ -99,6 +420,9 @@ impl Headers {
     &self,
     name: &str,
   ) -> bool {
+    if let Some(map) = self.index.as_ref() {
+      return map.contains_key(&AsciiLowerQuery(name));
+    }
     self
       .headers
       .iter()
@@ -110,7 +434,11 @@ impl Headers {
     &mut self,
     name: &str,
   ) {
+    let before = self.headers.len();
     self.headers.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+    if self.headers.len() != before {
+      self.rebuild_index();
+    }
   }
 
   /// Append to `Cookie` (`; `-joined), or insert if absent. No-op when `value` is empty.
@@ -121,10 +449,13 @@ impl Headers {
     if value.is_empty() {
       return;
     }
-    if let Some(existing) = self.get(Self::COOKIE) {
-      let combined = alloc::format!("{existing}; {value}");
-      self.remove(Self::COOKIE);
-      self.insert(Self::COOKIE, combined);
+    if let Some((_, existing)) = self
+      .headers
+      .iter_mut()
+      .find(|(n, _)| n.eq_ignore_ascii_case(Self::COOKIE))
+    {
+      existing.push_str("; ");
+      existing.push_str(value);
     } else {
       self.insert(Self::COOKIE, value);
     }
@@ -157,6 +488,8 @@ impl Headers {
   pub const ACCEPT_ENCODING: &'static str = "Accept-Encoding";
   /// `Connection`
   pub const CONNECTION: &'static str = "Connection";
+  /// `Content-Encoding`
+  pub const CONTENT_ENCODING: &'static str = "Content-Encoding";
   /// `Content-Length`
   pub const CONTENT_LENGTH: &'static str = "Content-Length";
   /// `Content-Type`
@@ -183,9 +516,16 @@ impl From<Vec<(String, String)>> for Headers {
 
 impl FromIterator<(String, String)> for Headers {
   fn from_iter<T: IntoIterator<Item = (String, String)>>(iter: T) -> Self {
-    Self {
-      headers: iter.into_iter().collect(),
+    let pairs = iter.into_iter();
+    let (lower, upper) = pairs.size_hint();
+    let mut out = Self::with_capacity(upper.unwrap_or(lower));
+    for (name, value) in pairs {
+      out
+        .headers
+        .push((CompactString::from(name), CompactString::from(value)));
     }
+    out.rebuild_index();
+    out
   }
 }
 
@@ -194,7 +534,9 @@ impl Extend<(String, String)> for Headers {
     &mut self,
     iter: T,
   ) {
-    self.headers.extend(iter);
+    for (name, value) in iter {
+      self.push_compact(CompactString::from(name), CompactString::from(value));
+    }
   }
 }
 
@@ -263,6 +605,62 @@ mod tests {
     let mut h2 = Headers::new();
     h2.extend([(String::from("C"), String::from("3"))]);
     assert_eq!(h2.get("c"), Some("3"));
+  }
+
+  #[test]
+  fn into_vec_returns_string_pairs() {
+    let mut h = Headers::new();
+    h.insert("Host", "example.com");
+    let v = h.into_vec();
+    assert_eq!(v, alloc::vec![(String::from("Host"), String::from("example.com"))]);
+  }
+
+  #[test]
+  fn index_survives_set_and_remove() {
+    let mut h = Headers::new();
+    h.insert("A", "1");
+    h.insert("B", "2");
+    h.insert("a", "3");
+    assert_eq!(h.get("A"), Some("1"));
+    h.set("a", "9");
+    assert_eq!(h.get("A"), Some("9"));
+    assert_eq!(h.get("B"), Some("2"));
+    h.remove("B");
+    assert!(!h.contains("b"));
+    assert_eq!(h.get("a"), Some("9"));
+  }
+
+  #[test]
+  fn insert_after_small_materialize_keeps_lookups() {
+    // Rebuild skips the side-index below the threshold; insert must not leave a
+    // partial map that shadows earlier fields.
+    let mut h = Headers::with_capacity(4);
+    h.push_owned(CompactString::from("Host"), CompactString::from("a"));
+    h.push_owned(CompactString::from("X-A"), CompactString::from("1"));
+    h.rebuild_index();
+    assert_eq!(h.get("host"), Some("a"));
+    h.insert("X-B", "2");
+    assert_eq!(h.get("host"), Some("a"));
+    assert_eq!(h.get("x-a"), Some("1"));
+    assert_eq!(h.get("x-b"), Some("2"));
+  }
+
+  #[test]
+  fn well_known_lookup_is_case_insensitive() {
+    assert_eq!(
+      well_known_header("Transfer-Encoding"),
+      Some(WellKnownHeader::TransferEncoding)
+    );
+    assert_eq!(
+      well_known_header("CONTENT-LENGTH"),
+      Some(WellKnownHeader::ContentLength)
+    );
+    assert_eq!(
+      well_known_header_bytes(b"content-encoding"),
+      Some(WellKnownHeader::ContentEncoding)
+    );
+    assert_eq!(well_known_header("X-Custom"), None);
+    assert_eq!(WellKnownHeader::Host.as_str(), Headers::HOST);
   }
 
   #[test]

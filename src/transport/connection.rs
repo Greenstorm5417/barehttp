@@ -1,16 +1,18 @@
 use crate::config::Config;
 use crate::dns::DnsResolver;
 use crate::error::{Error, SocketError};
-use crate::headers::Headers;
+use crate::headers::{Headers, WellKnownHeader, well_known_header_bytes};
 use crate::parser::chunked::{ChunkedDecoder, FeedResult};
 use crate::parser::has_complete_headers;
 use crate::parser::uri::{Host, Uri};
 use crate::parser::version::Version;
 use crate::parser::{BodyReadStrategy, Response};
 use crate::socket::BlockingSocket;
+use crate::transport::pool::PooledBuffers;
 use crate::util::IpAddr;
 use alloc::string::String;
 use alloc::vec::Vec;
+use bytes::{Bytes, BytesMut};
 use core::net::SocketAddr;
 use core::time::Duration;
 
@@ -21,7 +23,7 @@ pub struct RawResponse {
   pub reason: String,
   pub headers: Headers,
   pub version: Version,
-  pub body_bytes: Vec<u8>,
+  pub body_bytes: Bytes,
 }
 
 /// Live HTTP connection for raw send and receive.
@@ -30,19 +32,49 @@ pub struct Connection<'a, S> {
   max_header_size: usize,
   max_body_size: usize,
   reusable: bool,
+  /// Response assemble buffer. Reused across reads on this connection when still
+  /// uniquely owned (e.g. HEAD / empty body). After `freeze` into a body `Bytes`,
+  /// the remnant may be shared — the next extend then reallocates (safe).
+  buf: BytesMut,
+  /// Socket `read` scratch; never frozen into `Bytes`, always reusable.
+  scratch: Vec<u8>,
 }
 
 impl<'a, S: BlockingSocket> Connection<'a, S> {
-  pub const fn new(
+  /// Fresh buffers (tests / non-pooled paths). Production hops use [`Self::with_buffers`].
+  #[cfg_attr(not(test), allow(dead_code))]
+  pub fn new(
     socket: &'a mut S,
     max_header_size: usize,
     max_body_size: usize,
+  ) -> Self {
+    Self::with_buffers(socket, max_header_size, max_body_size, PooledBuffers::default())
+  }
+
+  /// Like [`new`](Self::new), but reuses buffers taken from the connection pool.
+  pub fn with_buffers(
+    socket: &'a mut S,
+    max_header_size: usize,
+    max_body_size: usize,
+    buffers: PooledBuffers,
   ) -> Self {
     Self {
       socket,
       max_header_size,
       max_body_size,
       reusable: true,
+      buf: buffers.buf,
+      scratch: buffers.scratch,
+    }
+  }
+
+  /// Take receive buffers for return to the pool (lengths cleared; capacity kept).
+  #[must_use]
+  pub fn take_buffers(&mut self) -> PooledBuffers {
+    self.buf.clear();
+    PooledBuffers {
+      buf: core::mem::replace(&mut self.buf, BytesMut::new()),
+      scratch: core::mem::take(&mut self.scratch),
     }
   }
 
@@ -81,58 +113,77 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
     expect_body: bool,
   ) -> Result<RawResponse, Error> {
     let max_header_size = self.max_header_size;
-    let mut buffer = alloc::vec![0u8; max_header_size.min(8192)];
-    let mut header_buffer = Vec::new();
+    let scratch_cap = max_header_size.min(8192);
+    self.ensure_scratch(scratch_cap);
+    // Start of a message: drop any leftover (should be empty on a reusable conn).
+    self.buf.clear();
+    if self.buf.capacity() < scratch_cap {
+      self
+        .buf
+        .reserve(scratch_cap.saturating_sub(self.buf.capacity()));
+    }
 
     loop {
-      while !has_complete_headers(&header_buffer) {
-        if header_buffer.len() > max_header_size {
+      while !has_complete_headers(&self.buf) {
+        if self.buf.len() > max_header_size {
           return Err(Error::ResponseHeaderTooLarge);
         }
-        let n = self.read_socket(&mut buffer)?;
+        let n = self.read_socket_scratch()?;
         if n == 0 {
           break;
         }
-        if let Some(slice) = buffer.get(..n) {
-          header_buffer.extend_from_slice(slice);
+        if let Some(slice) = self.scratch.get(..n) {
+          self.buf.extend_from_slice(slice);
         }
         // Check after append even when this read completed headers (header section only —
         // body bytes past `\r\n\r\n` do not count toward the limit).
-        if headers_section_len(&header_buffer).is_some_and(|hdr_len| hdr_len > max_header_size)
-          || (!has_complete_headers(&header_buffer) && header_buffer.len() > max_header_size)
+        if headers_section_len(&self.buf).is_some_and(|hdr_len| hdr_len > max_header_size)
+          || (!has_complete_headers(&self.buf) && self.buf.len() > max_header_size)
         {
           return Err(Error::ResponseHeaderTooLarge);
         }
       }
 
-      let (status_code, reason, headers, version, remaining_after_headers) =
-        Response::parse_headers_only(&header_buffer).map_err(Error::Parse)?;
+      // Zero-copy scan: framing from borrowed refs, then materialize for RawResponse.
+      let (status_code, reason_bytes, header_refs, version, remaining_after_headers) =
+        Response::scan_headers_only(&self.buf).map_err(Error::Parse)?;
+      let consumed = self.buf.len().saturating_sub(remaining_after_headers.len());
 
       // RFC 9112: discard 1xx and keep reading the final response
       if (100..200).contains(&status_code) {
-        header_buffer = remaining_after_headers.to_vec();
+        let _ = self.buf.split_to(consumed);
         continue;
       }
 
-      let body_bytes = if expect_body {
-        let body_strategy = match Response::body_read_strategy(&headers, status_code, version) {
-          Ok(s) => s,
+      let body_strategy = if expect_body {
+        match Response::body_read_strategy_refs(&header_refs, status_code, version) {
+          Ok(s) => Some(s),
           Err(e) => {
             self.reusable = false;
             return Err(Error::Parse(e));
           },
-        };
-        if matches!(body_strategy, BodyReadStrategy::UntilClose) {
+        }
+      } else {
+        None
+      };
+
+      let headers = Response::headers_from_refs(&header_refs);
+      let reason = Response::reason_owned(reason_bytes);
+      let _ = self.buf.split_to(consumed);
+
+      let body_bytes = if let Some(strategy) = body_strategy {
+        if matches!(strategy, BodyReadStrategy::UntilClose) {
           // UntilClose ends the connection; never pool it.
           self.reusable = false;
         }
-        self.read_body(body_strategy, remaining_after_headers)?
+        self.read_body(strategy)?
       } else {
         // HEAD / no-body: no entity body on the wire (RFC 9112); leftover = desync.
-        if !remaining_after_headers.is_empty() {
+        if !self.buf.is_empty() {
           self.reusable = false;
+          self.buf.clear();
         }
-        Vec::new()
+        Bytes::new()
       };
 
       // RFC 9112 §9.3 / §9.6: persistence from version + all Connection field lines
@@ -155,16 +206,43 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
     }
   }
 
-  fn read_socket(
+  fn ensure_scratch(
     &mut self,
-    buf: &mut [u8],
-  ) -> Result<usize, Error> {
-    match self.socket.read(buf) {
+    cap: usize,
+  ) {
+    if self.scratch.len() < cap {
+      self.scratch.resize(cap, 0);
+    }
+  }
+
+  fn read_socket_scratch(&mut self) -> Result<usize, Error> {
+    // Split borrows: `socket` + `scratch` are distinct fields.
+    let Self { socket, scratch, .. } = self;
+    match socket.read(scratch.as_mut_slice()) {
       Ok(n) => Ok(n),
       Err(e) => {
         // RFC 9112 Section 9.5: If timing out, implementation SHOULD issue a graceful close
         if e == SocketError::TimedOut {
-          let _ = self.socket.shutdown();
+          let _ = socket.shutdown();
+        }
+        Err(Error::Socket(e))
+      },
+    }
+  }
+
+  fn read_socket_into_scratch(
+    &mut self,
+    to_read: usize,
+  ) -> Result<usize, Error> {
+    let Self { socket, scratch, .. } = self;
+    let Some(buf_slice) = scratch.get_mut(..to_read) else {
+      return Ok(0);
+    };
+    match socket.read(buf_slice) {
+      Ok(n) => Ok(n),
+      Err(e) => {
+        if e == SocketError::TimedOut {
+          let _ = socket.shutdown();
         }
         Err(Error::Socket(e))
       },
@@ -174,65 +252,65 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
   fn read_body(
     &mut self,
     strategy: BodyReadStrategy,
-    initial_bytes: &[u8],
-  ) -> Result<Vec<u8>, Error> {
+  ) -> Result<Bytes, Error> {
     let max_body = self.max_body_size;
     match strategy {
       BodyReadStrategy::NoBody => {
-        if !initial_bytes.is_empty() {
+        if !self.buf.is_empty() {
           self.reusable = false;
+          self.buf.clear();
         }
-        Ok(Vec::new())
+        Ok(Bytes::new())
       },
       BodyReadStrategy::ContentLength(len) => {
         if len > max_body {
           self.reusable = false;
           return Err(Error::BodyExceedsLimit(max_body));
         }
-        let mut body_bytes = if initial_bytes.len() > len {
+        if self.buf.len() > len {
           // Extra bytes past CL are a framing desync — do not reuse the connection.
           self.reusable = false;
-          Vec::from(initial_bytes.get(..len).unwrap_or(&[]))
-        } else {
-          Vec::from(initial_bytes)
-        };
-        let bytes_needed = len.saturating_sub(body_bytes.len());
+        }
+        let bytes_needed = len.saturating_sub(self.buf.len().min(len));
+        if self.buf.len() > len {
+          self.buf.truncate(len);
+        }
 
         if bytes_needed > 0 {
-          let mut read_buffer = alloc::vec![0u8; bytes_needed.min(8192)];
+          self.buf.reserve(bytes_needed);
+          self.ensure_scratch(bytes_needed.min(8192));
           let mut bytes_read = 0usize;
 
           while bytes_read < bytes_needed {
-            let to_read = (bytes_needed - bytes_read).min(read_buffer.len());
-            if let Some(buf_slice) = read_buffer.get_mut(..to_read) {
-              let n = self.read_socket(buf_slice)?;
-              if n == 0 {
-                return Err(Error::Socket(SocketError::NotConnected));
-              }
-              if let Some(slice) = read_buffer.get(..n) {
-                body_bytes.extend_from_slice(slice);
-              }
-              bytes_read += n;
+            let to_read = (bytes_needed - bytes_read).min(self.scratch.len());
+            let n = self.read_socket_into_scratch(to_read)?;
+            if n == 0 {
+              return Err(Error::Socket(SocketError::NotConnected));
             }
+            if let Some(slice) = self.scratch.get(..n) {
+              self.buf.extend_from_slice(slice);
+            }
+            bytes_read += n;
           }
         }
 
-        Ok(body_bytes)
+        // split_to + freeze: body `Bytes` may share the allocation; leftover `self.buf`
+        // stays empty (and possibly shared). Next request reallocates if still shared.
+        Ok(self.buf.split_to(len).freeze())
       },
       BodyReadStrategy::Chunked => {
         // Stateful feed + cursor: each wire byte is framed once (O(n)), no full-buffer
         // re-parse. Framing-only (`output: None`) — payload decode happens in the parser.
-        let mut raw_bytes = Vec::from(initial_bytes);
-        if raw_bytes.len() > max_body {
+        if self.buf.len() > max_body {
           self.reusable = false;
           return Err(Error::BodyExceedsLimit(max_body));
         }
         let mut decoder = ChunkedDecoder::new();
         let mut cursor = 0usize;
-        let mut chunk_buffer = alloc::vec![0u8; 8192];
+        self.ensure_scratch(8192);
 
         let consumed = loop {
-          let unread = raw_bytes.get(cursor..).unwrap_or(&[]);
+          let unread = self.buf.get(cursor..).unwrap_or(&[]);
           match decoder.feed(unread, None) {
             Ok(FeedResult::Done { rest }) => {
               let framed = unread.len().saturating_sub(rest.len());
@@ -247,49 +325,47 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
             },
           }
 
-          let n = self.read_socket(&mut chunk_buffer)?;
+          let n = self.read_socket_scratch()?;
           if n == 0 {
             return Err(Error::Socket(SocketError::NotConnected));
           }
-          if let Some(slice) = chunk_buffer.get(..n) {
-            raw_bytes.extend_from_slice(slice);
+          if let Some(slice) = self.scratch.get(..n) {
+            self.buf.extend_from_slice(slice);
           }
-          if raw_bytes.len() > max_body {
+          if self.buf.len() > max_body {
             self.reusable = false;
             return Err(Error::BodyExceedsLimit(max_body));
           }
         };
 
-        if consumed < raw_bytes.len() {
+        if consumed < self.buf.len() {
           // Bytes past the chunked message cannot be unread; do not pool.
           self.reusable = false;
         }
-        raw_bytes.truncate(consumed);
-        Ok(raw_bytes)
+        Ok(self.buf.split_to(consumed).freeze())
       },
       BodyReadStrategy::UntilClose => {
-        let mut body_bytes = Vec::from(initial_bytes);
-        if body_bytes.len() > max_body {
+        if self.buf.len() > max_body {
           self.reusable = false;
           return Err(Error::BodyExceedsLimit(max_body));
         }
-        let mut read_buffer = alloc::vec![0u8; 8192];
+        self.ensure_scratch(8192);
 
         loop {
-          let n = self.read_socket(&mut read_buffer)?;
+          let n = self.read_socket_scratch()?;
           if n == 0 {
             break;
           }
-          if let Some(slice) = read_buffer.get(..n) {
-            body_bytes.extend_from_slice(slice);
+          if let Some(slice) = self.scratch.get(..n) {
+            self.buf.extend_from_slice(slice);
           }
-          if body_bytes.len() > max_body {
+          if self.buf.len() > max_body {
             self.reusable = false;
             return Err(Error::BodyExceedsLimit(max_body));
           }
         }
 
-        Ok(body_bytes)
+        Ok(self.buf.split().freeze())
       },
     }
   }
@@ -304,16 +380,37 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
 
 /// Connect to `uri`, or wrap a pooled already-connected socket.
 ///
-/// When `reused` is true, skips DNS and connect.
+/// When `reused` is true, skips DNS and connect. Prefer [`connect_with_buffers`]
+/// when returning sockets to the idle pool.
 ///
 /// # Errors
 /// [`Error::InvalidUrl`], [`Error::Dns`], or [`Error::Socket`].
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn connect<'a, S, D>(
   socket: &'a mut S,
   dns: &D,
   uri: &Uri,
   config: &Config,
   reused: bool,
+) -> Result<Connection<'a, S>, Error>
+where
+  S: BlockingSocket,
+  D: DnsResolver,
+{
+  connect_with_buffers(socket, dns, uri, config, reused, PooledBuffers::default())
+}
+
+/// Like [`connect`], with receive buffers from the idle pool.
+///
+/// # Errors
+/// [`Error::InvalidUrl`], [`Error::Dns`], or [`Error::Socket`].
+pub fn connect_with_buffers<'a, S, D>(
+  socket: &'a mut S,
+  dns: &D,
+  uri: &Uri,
+  config: &Config,
+  reused: bool,
+  buffers: PooledBuffers,
 ) -> Result<Connection<'a, S>, Error>
 where
   S: BlockingSocket,
@@ -357,10 +454,11 @@ where
   }
 
   apply_io_timeouts(socket, config)?;
-  Ok(Connection::new(
+  Ok(Connection::with_buffers(
     socket,
     config.max_response_header_size(),
     config.max_response_body_size(),
+    buffers,
   ))
 }
 
@@ -417,7 +515,7 @@ fn request_has_connection_close(request_bytes: &[u8]) -> bool {
       continue;
     };
     let name = line.get(..colon).unwrap_or(&[]);
-    if !name.eq_ignore_ascii_case(b"connection") {
+    if well_known_header_bytes(name) != Some(WellKnownHeader::Connection) {
       continue;
     }
     let value_bytes = line.get(colon + 1..).unwrap_or(&[]);

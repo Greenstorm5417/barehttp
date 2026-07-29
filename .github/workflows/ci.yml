@@ -234,6 +234,64 @@ jobs:
       - name: Build examples
         run: cargo build --locked --examples --all-features
 
+  # Compile all benches; run Callgrind with soft limits vs previous baseline in cache.
+  # First run on a cold cache always passes; later runs fail on >5% Ir / >10% cycles.
+  benches:
+    name: Benches
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Install gungraun-runner
+        uses: taiki-e/install-action@v2
+        with:
+          tool: gungraun-runner@0.19.4
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: benches
+          cache-targets: true
+
+      - name: Cache Gungraun baselines
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/gungraun
+            .gungraun
+          key: gungraun-${{ runner.os }}-${{ hashFiles('benches/**', 'src/**', 'Cargo.lock') }}
+          restore-keys: |
+            gungraun-${{ runner.os }}-
+
+      - name: Compile all benches
+        run: cargo bench --locked --no-run --all-features
+
+      - name: Callgrind regression (soft limits)
+        run: cargo bench --locked --bench gungraun_callgrind --all-features
+
+      - name: Criterion smoke (compile + short run)
+        run: |
+          cargo bench --locked --bench criterion_hot_paths --all-features -- \
+            --warm-up-time 0.2 --measurement-time 0.5 --sample-size 10
+          cargo bench --locked --bench criterion_e2e --all-features -- \
+            --warm-up-time 0.2 --measurement-time 0.5 --sample-size 10
+
+      - name: dhat allocation smoke
+        env:
+          BAREHTTP_DHAT_ITERS: "5"
+        run: |
+          cargo bench --locked --bench dhat_parser --all-features
+          cargo bench --locked --bench dhat_gzip --features gzip
+          cargo bench --locked --bench dhat_e2e --all-features
+
   msrv:
     name: MSRV (1.97)
     runs-on: ubuntu-latest

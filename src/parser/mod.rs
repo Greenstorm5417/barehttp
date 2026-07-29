@@ -18,7 +18,25 @@ pub mod tests;
 /// Buffer already contains a complete header section (`\r\n\r\n` or LF-only `\n\n`).
 #[inline]
 pub fn has_complete_headers(data: &[u8]) -> bool {
-  data.windows(4).any(|w| w == b"\r\n\r\n") || data.windows(2).any(|w| w == b"\n\n")
+  // Single forward scan (avoids `windows().any` iterator overhead on every recv).
+  let mut i = 0usize;
+  while i < data.len() {
+    match data.get(i).copied() {
+      Some(b'\r')
+        if data.get(i.saturating_add(1)).copied() == Some(b'\n')
+          && data.get(i.saturating_add(2)).copied() == Some(b'\r')
+          && data.get(i.saturating_add(3)).copied() == Some(b'\n') =>
+      {
+        return true;
+      },
+      Some(b'\n') if data.get(i.saturating_add(1)).copied() == Some(b'\n') => {
+        return true;
+      },
+      _ => {},
+    }
+    i = i.saturating_add(1);
+  }
+  false
 }
 
 pub use response::BodyReadStrategy;

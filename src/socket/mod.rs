@@ -9,8 +9,8 @@ use crate::error::SocketError;
 
 /// Blocking byte-stream socket (object-safe).
 ///
-/// I/O methods only; usable as `dyn BlockingSocket`. Create OS sockets with
-/// [`OsBlockingSocket::new`]. Custom adapters for [`crate::HttpClient`] implement
+/// Object-safe I/O only (`dyn BlockingSocket`). Build OS sockets via
+/// [`OsBlockingSocket::new`]; custom [`crate::HttpClient`] adapters implement
 /// [`BlockingSocketFactory`].
 ///
 /// # Examples
@@ -82,9 +82,9 @@ pub trait BlockingSocket {
 
   /// Connect deadline in milliseconds (`0` = block until connected / OS default).
   ///
-  /// OS adapters use nonblocking connect plus `poll`/`select`. The default is a no-op
-  /// so custom adapters may ignore it. Do not use [`Self::set_write_timeout`] as a
-  /// connect deadline.
+  /// On OS adapters this is nonblocking connect plus `poll`/`select`; the trait default
+  /// is a no-op so custom adapters can ignore it. Do not use [`Self::set_write_timeout`]
+  /// as a connect deadline.
   ///
   /// # Errors
   /// [`SocketError::Unsupported`] if connect timeouts are unavailable; otherwise OS failures.

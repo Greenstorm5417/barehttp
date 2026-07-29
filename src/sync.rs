@@ -1,7 +1,7 @@
 //! Busy-wait mutex for `no_std` + `alloc` shared state.
 //!
-//! Spins until free; no thread parking (`no_std`). Used for cookie-jar and pool
-//! critical sections that stay short. Does not poison; acquisition is unfair.
+//! Spins until free; no parking under `no_std`. Cookie-jar and pool critical
+//! sections stay short enough for that. Unfair acquisition; no poison bit.
 
 use core::cell::UnsafeCell;
 use core::fmt;

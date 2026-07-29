@@ -4,10 +4,11 @@ extern crate alloc;
 use crate::error::ParseError;
 use crate::headers::Headers;
 use crate::parser::chunked::ChunkedDecoder;
-use crate::parser::headers::parse_header_fields;
+use crate::parser::headers::{HeaderRef, materialize_headers, parse_header_fields, scan_header_fields};
 use crate::parser::version::{Version, parse_status_line};
 use alloc::string::String;
 use alloc::vec::Vec;
+use bytes::Bytes;
 
 #[cfg(feature = "zstd")]
 use ruzstd::decoding::StreamingDecoder;
@@ -31,25 +32,25 @@ pub struct Response {
   status_code: u16,
   reason: String,
   headers: Headers,
-  body: Vec<u8>,
+  body: Bytes,
   trailers: Vec<(String, String)>,
 }
 
 impl Response {
   /// Build a response from parts (crate-internal / tests).
   #[must_use]
-  pub(crate) const fn from_parts(
+  pub(crate) fn from_parts(
     status_code: u16,
     reason: String,
     headers: Headers,
-    body: Vec<u8>,
+    body: impl Into<Bytes>,
     trailers: Vec<(String, String)>,
   ) -> Self {
     Self {
       status_code,
       reason,
       headers,
-      body,
+      body: body.into(),
       trailers,
     }
   }
@@ -102,54 +103,76 @@ impl Response {
 
   fn decompress_body_if_needed(
     headers: &mut Headers,
-    body_bytes: Vec<u8>,
+    body_bytes: Bytes,
     max_body: usize,
-  ) -> Result<Vec<u8>, ParseError> {
+  ) -> Result<Bytes, ParseError> {
     if body_bytes.len() > max_body {
       return Err(ParseError::BodyExceedsLimit(max_body));
     }
 
-    let encodings_empty = !headers
-      .iter()
-      .any(|(n, _)| n.eq_ignore_ascii_case("content-encoding"));
-    if encodings_empty {
-      return Ok(body_bytes);
-    }
-
     // RFC 9110: comma-separated codings, applied in listed order → decompress reverse.
-    let mut tokens = Vec::new();
+    // Typical responses have a single coding — avoid heap for that case.
+    // One pass: detect Content-Encoding and collect codings (no empty pre-scan).
+    let mut single: Option<&str> = None;
+    let mut multi: Vec<&str> = Vec::new();
+    let mut saw_ce = false;
     for (name, value) in &*headers {
-      if !name.eq_ignore_ascii_case("content-encoding") {
+      if !name.eq_ignore_ascii_case(Headers::CONTENT_ENCODING) {
         continue;
       }
+      saw_ce = true;
       for part in value.split(',') {
         let t = part.trim();
-        if !t.is_empty() && !t.eq_ignore_ascii_case("identity") {
-          tokens.push(String::from(t));
+        if t.is_empty() || t.eq_ignore_ascii_case("identity") {
+          continue;
+        }
+        if multi.is_empty() {
+          if let Some(first) = single {
+            multi.push(first);
+            multi.push(t);
+            single = None;
+          } else {
+            single = Some(t);
+          }
+        } else {
+          multi.push(t);
         }
       }
     }
-
-    if tokens.is_empty() {
+    if !saw_ce {
       return Ok(body_bytes);
     }
 
+    let unsupported = if let Some(c) = single {
+      !coding_is_supported(c)
+    } else if multi.is_empty() {
+      return Ok(body_bytes);
+    } else {
+      multi.iter().any(|c| !coding_is_supported(c))
+    };
     // Unknown / unsupported coding: leave body compressed (do not fail the response).
-    if tokens.iter().any(|c| !coding_is_supported(c)) {
+    if unsupported {
       return Ok(body_bytes);
     }
 
-    let mut decoded = body_bytes;
-    for coding in tokens.iter().rev() {
+    let mut decoded: Vec<u8> = body_bytes.into();
+    if let Some(coding) = single {
       decoded = decompress_coding(coding, decoded, max_body)?;
       if decoded.len() > max_body {
         return Err(ParseError::BodyExceedsLimit(max_body));
       }
+    } else {
+      for coding in multi.iter().rev() {
+        decoded = decompress_coding(coding, decoded, max_body)?;
+        if decoded.len() > max_body {
+          return Err(ParseError::BodyExceedsLimit(max_body));
+        }
+      }
     }
 
-    headers.remove("content-encoding");
+    headers.remove(Headers::CONTENT_ENCODING);
     headers.remove(Headers::CONTENT_LENGTH);
-    Ok(decoded)
+    Ok(Bytes::from(decoded))
   }
 
   /// Look up a header by name (case-insensitive).
@@ -161,6 +184,18 @@ impl Response {
     self.headers.get(name)
   }
 
+  /// Promote borrowed header refs to owned [`Headers`].
+  #[must_use]
+  pub(crate) fn headers_from_refs(refs: &[HeaderRef<'_>]) -> Headers {
+    materialize_headers(refs)
+  }
+
+  /// Own a reason-phrase byte slice.
+  #[must_use]
+  pub(crate) fn reason_owned(reason_bytes: &[u8]) -> String {
+    reason_to_string(reason_bytes)
+  }
+
   /// Parse the status line and headers only (two-phase reading).
   ///
   /// Returns `(status_code, reason, headers, version, remainder_after_headers)`.
@@ -168,38 +203,24 @@ impl Response {
   /// # Errors
   /// [`ParseError`] when the status line or header section is illegal.
   pub(crate) fn parse_headers_only(input: &[u8]) -> Result<(u16, String, Headers, Version, &[u8]), ParseError> {
-    // Skip leading CRLF (RFC 9112 Section 2.2 robustness)
-    let mut data = input;
-    loop {
-      if data.len() >= 2 && data.first().copied() == Some(b'\r') && data.get(1).copied() == Some(b'\n') {
-        data = data.get(2..).unwrap_or(&[]);
-        continue;
-      }
-      if data.first().copied() == Some(b'\n') {
-        data = data.get(1..).unwrap_or(&[]);
-        continue;
-      }
-      break;
-    }
+    // One-pass owned headers (no intermediate `HeaderRef` vec).
+    let data = skip_leading_crlf(input);
+    let (version, status, reason_bytes, after_status) = parse_status_line(data)?;
+    let (headers, remaining) = parse_header_fields(after_status)?;
+    Ok((status, reason_to_string(reason_bytes), headers, version, remaining))
+  }
 
-    let (version, status, reason, after_status) = parse_status_line(data)?;
-    let (headers_bytes, remaining) = parse_header_fields(after_status)?;
-
-    let mut headers = Headers::new();
-    for (name_bytes, value_bytes) in &headers_bytes {
-      headers.insert(
-        String::from_utf8_lossy(name_bytes).into_owned(),
-        String::from_utf8_lossy(value_bytes).into_owned(),
-      );
-    }
-
-    Ok((
-      status,
-      String::from_utf8_lossy(reason).into_owned(),
-      headers,
-      version,
-      remaining,
-    ))
+  /// Zero-copy status line + header scan (no name/value `String`s yet).
+  ///
+  /// # Errors
+  /// [`ParseError`] when the status line or header section is illegal.
+  pub(crate) fn scan_headers_only(
+    input: &[u8]
+  ) -> Result<(u16, &[u8], Vec<HeaderRef<'_>>, Version, &[u8]), ParseError> {
+    let data = skip_leading_crlf(input);
+    let (version, status, reason_bytes, after_status) = parse_status_line(data)?;
+    let (headers, remaining) = scan_header_fields(after_status)?;
+    Ok((status, reason_bytes, headers, version, remaining))
   }
 
   /// Choose how to read the entity body from framing headers.
@@ -211,56 +232,86 @@ impl Response {
     status_code: u16,
     version: Version,
   ) -> Result<BodyReadStrategy, ParseError> {
-    let has_transfer_encoding = headers
-      .iter()
-      .any(|(name, _)| name.eq_ignore_ascii_case(Headers::TRANSFER_ENCODING));
+    Self::body_read_strategy_pairs(
+      headers.iter().map(|(n, v)| (n.as_bytes(), v.as_bytes())),
+      status_code,
+      version,
+    )
+  }
 
-    if has_transfer_encoding && version != Version::HTTP_11 {
-      return Err(ParseError::TransferEncodingRequiresHttp11);
-    }
+  /// Framing strategy from borrowed header refs (before materializing [`Headers`]).
+  ///
+  /// # Errors
+  /// Framing [`ParseError`]s when headers conflict or are illegal for the status/version.
+  pub(crate) fn body_read_strategy_refs(
+    headers: &[HeaderRef<'_>],
+    status_code: u16,
+    version: Version,
+  ) -> Result<BodyReadStrategy, ParseError> {
+    Self::body_read_strategy_pairs(headers.iter().map(|h| (h.name, h.value)), status_code, version)
+  }
 
-    // RFC 9112 §6.1: MUST NOT send TE on 1xx/204; reject 304 TE too (desync risk).
-    if has_transfer_encoding && ((100..200).contains(&status_code) || status_code == 204 || status_code == 304) {
-      return Err(ParseError::InvalidTransferEncodingForStatus);
-    }
-
+  fn body_read_strategy_pairs<'a, I>(
+    headers: I,
+    status_code: u16,
+    version: Version,
+  ) -> Result<BodyReadStrategy, ParseError>
+  where
+    I: IntoIterator<Item = (&'a [u8], &'a [u8])>,
+  {
     if (100..200).contains(&status_code) || status_code == 204 || status_code == 304 {
+      // Still reject illegal TE on these statuses (desync risk).
+      for (name, _) in headers {
+        if name.eq_ignore_ascii_case(b"transfer-encoding") {
+          return Err(ParseError::InvalidTransferEncodingForStatus);
+        }
+      }
       return Ok(BodyReadStrategy::NoBody);
     }
 
-    // RFC 9112: Transfer-Encoding overrides Content-Length — both present is an error
-    if has_transfer_encoding {
-      if headers
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case(Headers::CONTENT_LENGTH))
-      {
-        return Err(ParseError::ConflictingFraming);
-      }
+    let mut has_transfer_encoding = false;
+    let mut chunked_count = 0usize;
+    let mut last_is_chunked = false;
+    let mut resolved_cl: Option<usize> = None;
+    let mut seen_cl = false;
 
-      let mut chunked_count = 0usize;
-      let mut last_is_chunked = false;
-      for (name, value) in headers {
-        if !name.eq_ignore_ascii_case(Headers::TRANSFER_ENCODING) {
-          continue;
-        }
-        for part in value.split(',') {
-          let token = part.split(';').next().unwrap_or(part).trim();
+    // Framing only needs TE / Content-Length; byte-compare each field (no PHF).
+    for (name, value) in headers {
+      if name.eq_ignore_ascii_case(b"transfer-encoding") {
+        has_transfer_encoding = true;
+        for part in value.split(|&b| b == b',') {
+          let token = te_coding_token(part);
           if token.is_empty() {
             continue;
           }
-          let is_chunked = token.eq_ignore_ascii_case("chunked");
+          let is_chunked = token.eq_ignore_ascii_case(b"chunked");
           if is_chunked {
             chunked_count = chunked_count.saturating_add(1);
           }
           last_is_chunked = is_chunked;
         }
+      } else if name.eq_ignore_ascii_case(b"content-length") {
+        seen_cl = true;
+        let len = parse_content_length_bytes(value).ok_or(ParseError::InvalidContentLength)?;
+        match resolved_cl {
+          None => resolved_cl = Some(len),
+          Some(prev) if prev != len => return Err(ParseError::InvalidContentLength),
+          _ => {},
+        }
       }
+    }
 
-      // RFC 9112 §6.1: MUST NOT apply chunked more than once
+    if has_transfer_encoding && version != Version::HTTP_11 {
+      return Err(ParseError::TransferEncodingRequiresHttp11);
+    }
+
+    if has_transfer_encoding {
+      if seen_cl {
+        return Err(ParseError::ConflictingFraming);
+      }
       if chunked_count > 1 {
         return Err(ParseError::ChunkedAppliedMultipleTimes);
       }
-
       if last_is_chunked {
         return Ok(BodyReadStrategy::Chunked);
       }
@@ -270,8 +321,10 @@ impl Response {
       return Ok(BodyReadStrategy::UntilClose);
     }
 
-    if let Some(len) = resolve_content_length(headers)? {
-      return Ok(BodyReadStrategy::ContentLength(len));
+    if seen_cl {
+      return Ok(BodyReadStrategy::ContentLength(
+        resolved_cl.ok_or(ParseError::InvalidContentLength)?,
+      ));
     }
 
     Ok(BodyReadStrategy::UntilClose)
@@ -290,7 +343,7 @@ impl Response {
     status_code: u16,
     version: Version,
     max_body: usize,
-  ) -> Result<(Vec<u8>, Vec<(String, String)>), ParseError> {
+  ) -> Result<(Bytes, Vec<(String, String)>), ParseError> {
     let strategy = Self::body_read_strategy(headers, status_code, version)?;
     let (body_vec, trailer_bytes) = decode_body_bytes(body_bytes, strategy)?;
     finish_body(headers, body_vec, trailer_bytes, max_body)
@@ -302,12 +355,12 @@ impl Response {
   /// # Errors
   /// [`ParseError`] when framing is illegal or the body cannot be decoded / decompressed.
   pub(crate) fn parse_body_from_owned(
-    body_bytes: Vec<u8>,
+    body_bytes: Bytes,
     headers: &mut Headers,
     status_code: u16,
     version: Version,
     max_body: usize,
-  ) -> Result<(Vec<u8>, Vec<(String, String)>), ParseError> {
+  ) -> Result<(Bytes, Vec<(String, String)>), ParseError> {
     let strategy = Self::body_read_strategy(headers, status_code, version)?;
     let (body_vec, trailer_bytes) = decode_body_owned(body_bytes, strategy)?;
     finish_body(headers, body_vec, trailer_bytes, max_body)
@@ -355,7 +408,7 @@ impl Response {
   /// # Errors
   /// [`crate::Error::Utf8Error`] if the body is not valid UTF-8.
   pub fn to_text(&self) -> Result<String, crate::Error> {
-    String::from_utf8(self.body.clone()).map_err(Into::into)
+    String::from_utf8(self.body.to_vec()).map_err(Into::into)
   }
 
   /// Consume the response; return the body as UTF-8.
@@ -363,12 +416,15 @@ impl Response {
   /// # Errors
   /// [`crate::Error::Utf8Error`] if the body is not valid UTF-8.
   pub fn into_string(self) -> Result<String, crate::Error> {
-    String::from_utf8(self.body).map_err(Into::into)
+    String::from_utf8(self.body.into()).map_err(Into::into)
   }
 
   /// Consume the response; return body bytes.
+  ///
+  /// Returns owned [`Bytes`]. Prefer [`Self::body`] / [`Self::as_bytes`] when a
+  /// borrowed slice is enough.
   #[must_use]
-  pub fn into_bytes(self) -> Vec<u8> {
+  pub fn into_bytes(self) -> Bytes {
     self.body
   }
 }
@@ -456,17 +512,26 @@ fn decompress_coding(
   Err(ParseError::DecompressionFailed)
 }
 
-fn parse_content_length_str(value: &str) -> Option<usize> {
-  let trimmed = value.trim();
+/// Transfer-coding token: OWS-trimmed, parameter suffix (`;…`) stripped.
+fn te_coding_token(part: &[u8]) -> &[u8] {
+  let mut t = trim_ows(part);
+  if let Some(semi) = t.iter().position(|&b| b == b';') {
+    t = trim_ows(t.get(..semi).unwrap_or(&[]));
+  }
+  t
+}
+
+/// Parse a `Content-Length` field value from raw bytes (OWS / duplicate-list rules).
+fn parse_content_length_bytes(value: &[u8]) -> Option<usize> {
+  let trimmed = trim_ows(value);
   if trimmed.is_empty() {
     return None;
   }
 
-  if trimmed.contains(',') {
+  if trimmed.contains(&b',') {
     let mut first: Option<usize> = None;
-    for part in trimmed.split(',') {
-      let p = part.trim();
-      let n = p.parse::<usize>().ok()?;
+    for part in trimmed.split(|&b| b == b',') {
+      let n = parse_decimal_usize(trim_ows(part))?;
       match first {
         None => first = Some(n),
         Some(prev) if prev != n => return None,
@@ -476,61 +541,75 @@ fn parse_content_length_str(value: &str) -> Option<usize> {
     return first;
   }
 
-  if !trimmed.bytes().all(|b| b.is_ascii_digit()) {
-    return None;
-  }
-
-  trimmed.parse().ok()
+  parse_decimal_usize(trimmed)
 }
 
-fn resolve_content_length(headers: &Headers) -> Result<Option<usize>, ParseError> {
-  let mut resolved: Option<usize> = None;
-  let mut seen = false;
-  for (name, value) in headers {
-    if !name.eq_ignore_ascii_case(Headers::CONTENT_LENGTH) {
+fn trim_ows(value: &[u8]) -> &[u8] {
+  let mut s = value;
+  while matches!(s.first().copied(), Some(b' ' | b'\t')) {
+    s = s.get(1..).unwrap_or(&[]);
+  }
+  while matches!(s.last().copied(), Some(b' ' | b'\t')) {
+    s = s.get(..s.len().saturating_sub(1)).unwrap_or(&[]);
+  }
+  s
+}
+
+fn parse_decimal_usize(digits: &[u8]) -> Option<usize> {
+  if digits.is_empty() {
+    return None;
+  }
+  let mut n = 0usize;
+  for &b in digits {
+    if !b.is_ascii_digit() {
+      return None;
+    }
+    n = n.checked_mul(10)?.checked_add(usize::from(b - b'0'))?;
+  }
+  Some(n)
+}
+
+fn skip_leading_crlf(input: &[u8]) -> &[u8] {
+  // Skip leading CRLF (RFC 9112 Section 2.2 robustness)
+  let mut data = input;
+  loop {
+    if data.len() >= 2 && data.first().copied() == Some(b'\r') && data.get(1).copied() == Some(b'\n') {
+      data = data.get(2..).unwrap_or(&[]);
       continue;
     }
-    seen = true;
-    let len = parse_content_length_str(value).ok_or(ParseError::InvalidContentLength)?;
-    match resolved {
-      None => resolved = Some(len),
-      Some(prev) if prev != len => return Err(ParseError::InvalidContentLength),
-      _ => {},
+    if data.first().copied() == Some(b'\n') {
+      data = data.get(1..).unwrap_or(&[]);
+      continue;
     }
+    break;
   }
-  if seen {
-    Ok(resolved)
-  } else {
-    Ok(None)
+  data
+}
+
+fn reason_to_string(reason_bytes: &[u8]) -> String {
+  if reason_bytes.is_ascii() {
+    // SAFETY: `is_ascii` guarantees valid UTF-8.
+    return String::from(unsafe { core::str::from_utf8_unchecked(reason_bytes) });
   }
+  String::from_utf8_lossy(reason_bytes).into_owned()
 }
 
 fn finish_body(
   headers: &mut Headers,
-  body_vec: Vec<u8>,
-  trailer_bytes: Vec<(Vec<u8>, Vec<u8>)>,
+  body_vec: Bytes,
+  trailer_bytes: Vec<(String, String)>,
   max_body: usize,
-) -> Result<(Vec<u8>, Vec<(String, String)>), ParseError> {
-  let trailers = trailer_bytes
-    .into_iter()
-    .map(|(name, value)| {
-      (
-        String::from_utf8_lossy(&name).into_owned(),
-        String::from_utf8_lossy(&value).into_owned(),
-      )
-    })
-    .collect();
-
+) -> Result<(Bytes, Vec<(String, String)>), ParseError> {
   let decompressed_body = Response::decompress_body_if_needed(headers, body_vec, max_body)?;
-  Ok((decompressed_body, trailers))
+  Ok((decompressed_body, trailer_bytes))
 }
 
 fn decode_body_bytes(
   input: &[u8],
   strategy: BodyReadStrategy,
-) -> Result<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>), ParseError> {
+) -> Result<(Bytes, Vec<(String, String)>), ParseError> {
   match strategy {
-    BodyReadStrategy::NoBody => Ok((Vec::new(), Vec::new())),
+    BodyReadStrategy::NoBody => Ok((Bytes::new(), Vec::new())),
     BodyReadStrategy::ContentLength(len) => {
       if input.len() < len {
         return Err(ParseError::UnexpectedEndOfInput);
@@ -539,19 +618,19 @@ fn decode_body_bytes(
       if input.len() > len {
         return Err(ParseError::ExtraDataAfterResponse);
       }
-      Ok((body_data.to_vec(), Vec::new()))
+      Ok((Bytes::copy_from_slice(body_data), Vec::new()))
     },
     BodyReadStrategy::Chunked => decode_chunked(input),
-    BodyReadStrategy::UntilClose => Ok((input.to_vec(), Vec::new())),
+    BodyReadStrategy::UntilClose => Ok((Bytes::copy_from_slice(input), Vec::new())),
   }
 }
 
 fn decode_body_owned(
-  input: Vec<u8>,
+  input: Bytes,
   strategy: BodyReadStrategy,
-) -> Result<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>), ParseError> {
+) -> Result<(Bytes, Vec<(String, String)>), ParseError> {
   match strategy {
-    BodyReadStrategy::NoBody => Ok((Vec::new(), Vec::new())),
+    BodyReadStrategy::NoBody => Ok((Bytes::new(), Vec::new())),
     BodyReadStrategy::ContentLength(len) => {
       if input.len() < len {
         return Err(ParseError::UnexpectedEndOfInput);
@@ -570,14 +649,14 @@ fn decode_body_owned(
   }
 }
 
-fn decode_chunked(input: &[u8]) -> Result<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>), ParseError> {
+fn decode_chunked(input: &[u8]) -> Result<(Bytes, Vec<(String, String)>), ParseError> {
   let mut decoder = ChunkedDecoder::new();
   let mut output = Vec::new();
   let remaining = decoder.decode_chunk(input, &mut output)?;
   if !remaining.is_empty() {
     return Err(ParseError::ExtraDataAfterResponse);
   }
-  Ok((output, decoder.take_trailers()))
+  Ok((Bytes::from(output), decoder.take_trailers()))
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ fn content_length_body_one_byte_reads() {
 
   let raw = conn.read_raw_response(true).unwrap();
   assert_eq!(raw.status_code, 200);
-  assert_eq!(raw.body_bytes, b"Hello World");
+  assert_eq!(&raw.body_bytes[..], b"Hello World");
 }
 
 #[test]
@@ -27,7 +27,7 @@ fn chunked_body_split_across_reads() {
 
   let raw = conn.read_raw_response(true).unwrap();
   assert_eq!(raw.status_code, 200);
-  assert_eq!(raw.body_bytes, b"5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n");
+  assert_eq!(&raw.body_bytes[..], b"5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n");
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn headers_incomplete_until_final_crlf() {
   let mut socket = MockSocket::with_max_read(response, 2);
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
   let raw = conn.read_raw_response(true).unwrap();
-  assert_eq!(raw.body_bytes, b"ping");
+  assert_eq!(&raw.body_bytes[..], b"ping");
 }
 
 #[test]

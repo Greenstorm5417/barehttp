@@ -11,7 +11,7 @@ use crate::parser::serialize_request;
 use crate::parser::uri::{Host, Uri};
 use crate::request_builder::ClientRequestBuilder;
 use crate::socket::{BlockingSocket, BlockingSocketFactory};
-use crate::transport::{ConnectionPool, PoolKey, RawResponse};
+use crate::transport::{ConnectionPool, PoolKey, PooledBuffers, RawResponse};
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -269,7 +269,10 @@ where
       let response = raw_to_response(raw, current_method, config.max_response_body_size())?;
 
       if config.http_status_as_error() && (400..600).contains(&response.status_code()) {
-        return Err(Error::HttpStatus(response.status_code(), response));
+        return Err(Error::HttpStatus(
+          response.status_code(),
+          alloc::boxed::Box::new(response),
+        ));
       }
 
       let Some((next_url, next_method, next_body)) = follow_redirect(
@@ -312,7 +315,7 @@ fn raw_to_response(
   } = raw;
 
   let (response_body, trailers) = if method == Method::Head {
-    (Vec::new(), Vec::new())
+    (bytes::Bytes::new(), Vec::new())
   } else {
     Response::parse_body_from_owned(body_bytes, &mut headers, status_code, version, max_body).map_err(|e| match e {
       crate::error::ParseError::BodyExceedsLimit(n) => Error::BodyExceedsLimit(n),
@@ -343,9 +346,9 @@ pub const fn validate_protocol(
   Ok(())
 }
 
-/// Strip hop-by-hop headers plus Authorization and Cookie on every redirect hop
-/// (`RedirectAuthHeaders::Never`). Always strip Content-Length and Host (rebuilt
-/// for the next hop). When `drop_body`, also strip Content-Type (body is empty).
+/// On every redirect hop, strip hop-by-hop headers plus Authorization and Cookie
+/// (`RedirectAuthHeaders::Never`). Content-Length and Host always go too (rebuilt
+/// for the next hop); with `drop_body`, strip Content-Type because the body is empty.
 pub fn sanitize_redirect_headers(
   headers: &mut Headers,
   drop_body: bool,
@@ -363,11 +366,11 @@ pub fn sanitize_redirect_headers(
     headers.remove(name);
   }
   headers.remove("Authorization");
-  headers.remove("Cookie");
-  headers.remove("Content-Length");
+  headers.remove(Headers::COOKIE);
+  headers.remove(Headers::CONTENT_LENGTH);
   headers.remove(Headers::HOST);
   if drop_body {
-    headers.remove("Content-Type");
+    headers.remove(Headers::CONTENT_TYPE);
   }
 }
 
@@ -465,7 +468,7 @@ where
   let port = uri.port_or_default();
   let pool_key = PoolKey::new(uri.scheme().to_ascii_lowercase(), &host_str, port);
 
-  let (mut socket, reused) = get_or_create_socket(pool, config, &pool_key)?;
+  let (mut socket, reused, pooled_bufs) = get_or_create_socket(pool, config, &pool_key)?;
   match try_one_hop(
     dns,
     config,
@@ -477,17 +480,18 @@ where
     port,
     &mut socket,
     reused,
+    pooled_bufs,
   ) {
-    Ok((raw, reusable)) => {
+    Ok((raw, reusable, returned_bufs)) => {
       if pooling_enabled(config) && reusable {
-        pool.return_connection(pool_key, socket);
+        pool.return_connection(pool_key, socket, returned_bufs);
       }
       Ok(raw)
     },
     Err(e) if reused && matches!(e, Error::Socket(_)) => {
       drop(socket);
       let mut fresh = S::new().map_err(Error::Socket)?;
-      let (raw, reusable) = try_one_hop(
+      let (raw, reusable, returned_bufs) = try_one_hop(
         dns,
         config,
         uri,
@@ -498,9 +502,10 @@ where
         port,
         &mut fresh,
         false,
+        PooledBuffers::default(),
       )?;
       if pooling_enabled(config) && reusable {
-        pool.return_connection(pool_key, fresh);
+        pool.return_connection(pool_key, fresh, returned_bufs);
       }
       Ok(raw)
     },
@@ -519,17 +524,19 @@ fn try_one_hop<S, D>(
   port: u16,
   socket: &mut S,
   reused: bool,
-) -> Result<(RawResponse, bool), Error>
+  buffers: PooledBuffers,
+) -> Result<(RawResponse, bool, PooledBuffers), Error>
 where
   S: BlockingSocket + BlockingSocketFactory,
   D: DnsResolver,
 {
-  let mut conn = crate::transport::connection::connect(socket, dns, uri, config, reused)?;
+  let mut conn = crate::transport::connection::connect_with_buffers(socket, dns, uri, config, reused, buffers)?;
   let request_bytes = build_request(uri, method, host_str, port, custom_headers, body, config)?;
   conn.send_request(&request_bytes)?;
   let raw = conn.read_raw_response(method != Method::Head)?;
   let reusable = conn.is_reusable();
-  Ok((raw, reusable))
+  let returned_bufs = conn.take_buffers();
+  Ok((raw, reusable, returned_bufs))
 }
 
 fn host_from_uri(uri: &Uri) -> String {
@@ -546,16 +553,18 @@ fn get_or_create_socket<S>(
   pool: &Arc<ConnectionPool<S>>,
   config: &Config,
   pool_key: &PoolKey,
-) -> Result<(S, bool), Error>
+) -> Result<(S, bool, PooledBuffers), Error>
 where
   S: BlockingSocket + BlockingSocketFactory,
 {
   if pooling_enabled(config)
-    && let Some(s) = pool.get(pool_key)
+    && let Some((s, buffers)) = pool.get(pool_key)
   {
-    return Ok((s, true));
+    return Ok((s, true, buffers));
   }
-  S::new().map(|s| (s, false)).map_err(Error::Socket)
+  S::new()
+    .map(|s| (s, false, PooledBuffers::default()))
+    .map_err(Error::Socket)
 }
 
 /// Build wire request bytes (HTTP/1.1 + Host + origin-form target).
@@ -569,7 +578,7 @@ pub fn build_request(
   custom_headers: &Headers,
   body: Option<&[u8]>,
   config: &Config,
-) -> Result<Vec<u8>, Error> {
+) -> Result<bytes::Bytes, Error> {
   // Userinfo rejected at Uri::parse for HTTP client use.
 
   let host_header = if (uri.scheme().eq_ignore_ascii_case("http") && port == 80)

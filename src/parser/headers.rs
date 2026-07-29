@@ -1,19 +1,87 @@
-//! Header-section parser (RFC 9112 §5). Obs-fold is rejected.
+//! Header-section scanner (RFC 9112 §5). Obs-fold is rejected.
+//!
+//! Zero-copy: field names/values are `&[u8]` views into the input until
+//! [`materialize_headers`] (or [`parse_header_fields`]) builds owned [`Headers`].
 
 use crate::error::ParseError;
+use crate::headers::Headers;
+use alloc::vec::Vec;
+use compact_str::CompactString;
 
-/// Parse header fields; obs-fold is rejected (`ObsoleteFoldInHeader`).
+/// Borrowed header field (views into the input buffer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeaderRef<'a> {
+  /// Field name bytes (token charset; not necessarily lowercase).
+  pub name: &'a [u8],
+  /// Field value bytes (OWS already trimmed).
+  pub value: &'a [u8],
+}
+
+/// Scan header fields as borrowed views; obs-fold is rejected (`ObsoleteFoldInHeader`).
 ///
-/// Returns owned name/value pairs and the remainder after the blank line.
+/// Returns header refs and the remainder after the blank line. No name/value
+/// `String` allocations.
 ///
 /// # Errors
 /// Malformed fields, obs-fold, or whitespace before the first field.
-pub fn parse_header_fields(
-  input: &[u8]
-) -> Result<(alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)>, &[u8]), ParseError> {
-  use alloc::vec::Vec;
+pub fn scan_header_fields(input: &[u8]) -> Result<(Vec<HeaderRef<'_>>, &[u8]), ParseError> {
+  let mut headers = Vec::with_capacity(8);
+  let remaining = for_each_header_field(input, |h| {
+    headers.push(h);
+    Ok(())
+  })?;
+  Ok((headers, remaining))
+}
 
-  let mut headers = Vec::new();
+/// Promote borrowed header refs into owned [`Headers`].
+#[must_use]
+pub fn materialize_headers(refs: &[HeaderRef<'_>]) -> Headers {
+  let mut headers = Headers::with_capacity(refs.len());
+  for &h in refs {
+    push_materialized(&mut headers, h);
+  }
+  headers.rebuild_index();
+  headers
+}
+
+/// One-pass scan + materialize (buffered `Response::parse` / trailers).
+///
+/// Avoids an intermediate [`HeaderRef`] `Vec` when owned [`Headers`] are required
+/// immediately.
+///
+/// # Errors
+/// Malformed fields, obs-fold, or whitespace before the first field.
+pub fn parse_header_fields(input: &[u8]) -> Result<(Headers, &[u8]), ParseError> {
+  let mut headers = Headers::with_capacity(8);
+  let remaining = for_each_header_field(input, |h| {
+    push_materialized(&mut headers, h);
+    Ok(())
+  })?;
+  headers.rebuild_index();
+  Ok((headers, remaining))
+}
+
+#[inline]
+fn push_materialized(
+  headers: &mut Headers,
+  h: HeaderRef<'_>,
+) {
+  // Token charset was validated in [`for_each_header_field`] → ASCII UTF-8.
+  // SAFETY: every name byte is an RFC 9110 token char (ASCII).
+  let name = CompactString::new(unsafe { core::str::from_utf8_unchecked(h.name) });
+  // `from_utf8_lossy` fast-paths valid UTF-8; no intermediate `String`.
+  let value = CompactString::from_utf8_lossy(h.value);
+  headers.push_owned(name, value);
+}
+
+/// Shared field-line scanner. `on_field` runs once per header before the blank line.
+fn for_each_header_field<'a, F>(
+  input: &'a [u8],
+  mut on_field: F,
+) -> Result<&'a [u8], ParseError>
+where
+  F: FnMut(HeaderRef<'a>) -> Result<(), ParseError>,
+{
   let mut remaining = input;
 
   // RFC 9112 Section 2.2: reject whitespace between start-line and first header
@@ -46,21 +114,17 @@ pub fn parse_header_fields(
       return Err(ParseError::InvalidHeaderName);
     }
 
-    let name = remaining
+    let name_bytes = remaining
       .get(..colon_pos)
       .ok_or(ParseError::InvalidHeaderName)?;
 
-    if name.iter().any(|&b| b == b' ' || b == b'\t') {
-      return Err(ParseError::InvalidHeaderName);
-    }
-
-    for &b in name {
+    // Token charset excludes SP/HTAB; one pass covers whitespace + RFC 9110 token.
+    for &b in name_bytes {
       if !is_token_char(b) {
         return Err(ParseError::InvalidHeaderName);
       }
     }
 
-    let mut value_bytes = Vec::new();
     remaining = remaining
       .get(colon_pos + 1..)
       .ok_or(ParseError::InvalidHeaderValue)?;
@@ -74,20 +138,20 @@ pub fn parse_header_fields(
       }
     }
 
-    let mut line_end = 0;
-    while line_end < remaining.len() {
-      let byte_at_end = remaining.get(line_end).copied();
-      if byte_at_end == Some(b'\r') || byte_at_end == Some(b'\n') {
+    let line_end = remaining
+      .iter()
+      .position(|&b| b == b'\r' || b == b'\n')
+      .unwrap_or(remaining.len());
+
+    let mut value_slice = remaining
+      .get(..line_end)
+      .ok_or(ParseError::InvalidHeaderValue)?;
+    while let Some((&last, rest)) = value_slice.split_last() {
+      if last == b' ' || last == b'\t' {
+        value_slice = rest;
+      } else {
         break;
       }
-      line_end += 1;
-    }
-
-    if line_end > 0 {
-      let line_value = remaining
-        .get(..line_end)
-        .ok_or(ParseError::InvalidHeaderValue)?;
-      value_bytes.extend_from_slice(line_value);
     }
 
     remaining = remaining.get(line_end..).ok_or(ParseError::MissingCrlf)?;
@@ -116,20 +180,13 @@ pub fn parse_header_fields(
       return Err(ParseError::MissingCrlf);
     }
 
-    while !value_bytes.is_empty() {
-      let len = value_bytes.len();
-      let last_byte = value_bytes.get(len - 1).copied();
-      if last_byte == Some(b' ') || last_byte == Some(b'\t') {
-        value_bytes.pop();
-      } else {
-        break;
-      }
-    }
-
-    headers.push((name.to_vec(), value_bytes));
+    on_field(HeaderRef {
+      name: name_bytes,
+      value: value_slice,
+    })?;
   }
 
-  Ok((headers, remaining))
+  Ok(remaining)
 }
 
 /// RFC 9110 token character (header names).

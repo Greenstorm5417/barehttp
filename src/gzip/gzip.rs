@@ -90,36 +90,28 @@ pub(super) fn decompress_member(
   let trailer_off = i
     .checked_add(consumed)
     .ok_or(DecompressError::InvalidInput)?;
-  let b0 = *data.get(trailer_off).ok_or(DecompressError::InvalidInput)?;
-  let b1 = *data
-    .get(trailer_off.saturating_add(1))
+  let trailer = data
+    .get(trailer_off..trailer_off.saturating_add(8))
     .ok_or(DecompressError::InvalidInput)?;
-  let b2 = *data
-    .get(trailer_off.saturating_add(2))
-    .ok_or(DecompressError::InvalidInput)?;
-  let b3 = *data
-    .get(trailer_off.saturating_add(3))
-    .ok_or(DecompressError::InvalidInput)?;
-  let crc_got = u32::from_le_bytes([b0, b1, b2, b3]);
-  let i0 = *data
-    .get(trailer_off.saturating_add(4))
-    .ok_or(DecompressError::InvalidInput)?;
-  let i1 = *data
-    .get(trailer_off.saturating_add(5))
-    .ok_or(DecompressError::InvalidInput)?;
-  let i2 = *data
-    .get(trailer_off.saturating_add(6))
-    .ok_or(DecompressError::InvalidInput)?;
-  let i3 = *data
-    .get(trailer_off.saturating_add(7))
-    .ok_or(DecompressError::InvalidInput)?;
-  let isize = u32::from_le_bytes([i0, i1, i2, i3]);
+  let crc_got = u32::from_le_bytes([
+    *trailer.first().ok_or(DecompressError::InvalidInput)?,
+    *trailer.get(1).ok_or(DecompressError::InvalidInput)?,
+    *trailer.get(2).ok_or(DecompressError::InvalidInput)?,
+    *trailer.get(3).ok_or(DecompressError::InvalidInput)?,
+  ]);
+  let isize = u32::from_le_bytes([
+    *trailer.get(4).ok_or(DecompressError::InvalidInput)?,
+    *trailer.get(5).ok_or(DecompressError::InvalidInput)?,
+    *trailer.get(6).ok_or(DecompressError::InvalidInput)?,
+    *trailer.get(7).ok_or(DecompressError::InvalidInput)?,
+  ]);
 
   let crc_expect = update_crc(0, &out);
   if crc_got != crc_expect {
     return Err(DecompressError::InvalidInput);
   }
-  let isize_expect = u32::try_from(out.len() & 0xffff_ffff).map_err(|_| DecompressError::InvalidInput)?;
+  #[allow(clippy::cast_possible_truncation)] // ISIZE is defined as len mod 2^32
+  let isize_expect = out.len() as u32;
   if isize != isize_expect {
     return Err(DecompressError::InvalidInput);
   }

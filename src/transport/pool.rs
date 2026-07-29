@@ -1,11 +1,12 @@
 use crate::socket::BlockingSocket;
 use crate::sync::Mutex;
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+use bytes::BytesMut;
 use core::time::Duration;
+use hashbrown::HashMap;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PoolKey {
   scheme: String,
   host: String,
@@ -28,26 +29,36 @@ impl PoolKey {
   }
 }
 
+/// Receive buffers returned with a pooled socket (capacity reuse; lengths cleared).
+#[derive(Debug, Default)]
+pub struct PooledBuffers {
+  /// Assemble buffer for the next response (`BytesMut` capacity, empty length).
+  pub buf: BytesMut,
+  /// Socket `read` scratch; never frozen into [`bytes::Bytes`].
+  pub scratch: Vec<u8>,
+}
+
 struct IdleConn<S> {
   socket: S,
   /// Unix seconds when returned to the pool.
   idle_since: u64,
+  buffers: PooledBuffers,
 }
 
 pub struct ConnectionPool<S> {
-  connections: Mutex<BTreeMap<PoolKey, Vec<IdleConn<S>>>>,
+  connections: Mutex<HashMap<PoolKey, Vec<IdleConn<S>>>>,
   max_idle_per_host: usize,
   max_idle_age: Duration,
 }
 
 impl<S: BlockingSocket> ConnectionPool<S> {
   #[must_use]
-  pub const fn new(
+  pub fn new(
     max_idle_per_host: usize,
     max_idle_age: Duration,
   ) -> Self {
     Self {
-      connections: Mutex::new(BTreeMap::new()),
+      connections: Mutex::new(HashMap::new()),
       max_idle_per_host,
       max_idle_age,
     }
@@ -56,14 +67,14 @@ impl<S: BlockingSocket> ConnectionPool<S> {
   pub fn get(
     &self,
     key: &PoolKey,
-  ) -> Option<S> {
+  ) -> Option<(S, PooledBuffers)> {
     let mut connections = self.connections.lock();
     let sockets = connections.get_mut(key)?;
     let now = crate::util::now_unix_secs();
     let max_age = self.max_idle_age.as_secs();
     while let Some(idle) = sockets.pop() {
       if now.saturating_sub(idle.idle_since) <= max_age {
-        return Some(idle.socket);
+        return Some((idle.socket, idle.buffers));
       }
       // too old — drop
     }
@@ -74,7 +85,10 @@ impl<S: BlockingSocket> ConnectionPool<S> {
     &self,
     key: PoolKey,
     socket: S,
+    mut buffers: PooledBuffers,
   ) {
+    // Drop any leftover bytes (desync / unread); keep capacity for the next hop.
+    buffers.buf.clear();
     let mut connections = self.connections.lock();
     let sockets = connections.entry(key).or_default();
     if sockets.len() >= self.max_idle_per_host {
@@ -83,6 +97,7 @@ impl<S: BlockingSocket> ConnectionPool<S> {
     sockets.push(IdleConn {
       socket,
       idle_since: crate::util::now_unix_secs(),
+      buffers,
     });
   }
 }

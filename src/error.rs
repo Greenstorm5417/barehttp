@@ -244,7 +244,8 @@ pub enum Error {
   /// 4xx/5xx when [`crate::config::Config::http_status_as_error`] is set.
   ///
   /// `(status, response)`, same shape as ureq 2.x `Status(code, Response)`.
-  HttpStatus(u16, crate::parser::Response),
+  /// Response is boxed so `Error` stays small enough for `Result` in call sites.
+  HttpStatus(u16, alloc::boxed::Box<crate::parser::Response>),
   /// Non-HTTPS URL rejected by [`crate::config::Config::https_only`].
   HttpsOnly,
   /// `https://` without TLS, or `assume_tls_socket` with cleartext [`crate::OsBlockingSocket`].

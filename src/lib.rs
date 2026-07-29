@@ -35,7 +35,7 @@
   // Agent 1 privacy: private modules keep `pub(crate)` items for intent clarity.
   clippy::redundant_pub_crate,
   // Builder type is `#[must_use]`; free/method helpers also annotate.
-  clippy::double_must_use
+  clippy::double_must_use,
 )]
 
 extern crate alloc;
@@ -53,7 +53,8 @@ pub use socket::{BlockingSocket, BlockingSocketFactory};
 pub use socket::{OsBlockingSocket, SocketAddr};
 pub use util::IpAddr;
 
-pub use headers::{Headers, Iter as HeaderIter};
+pub use bytes::Bytes;
+pub use headers::{Headers, Iter as HeaderIter, WellKnownHeader, well_known_header};
 pub use method::{Method, ParseMethodError};
 pub use parser::Response;
 pub use parser::uri::{Authority, Host, Uri};

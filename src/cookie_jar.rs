@@ -540,7 +540,7 @@ mod tests {
   fn test_secure_cookie_rejected_over_http() {
     let store = CookieStore::new();
     store.store_response_cookies("http://example.com/", &alloc::vec!["token=secret; Secure".to_string()]);
-    // Must not store — later HTTPS must not see a Secure cookie set over cleartext.
+    // Must not store. Later HTTPS must not see a Secure cookie set over cleartext.
     assert_eq!(store.request_cookie_header("https://example.com/", true), "");
     assert!(store.iter().next().is_none());
   }
@@ -561,7 +561,7 @@ mod tests {
   #[test]
   fn cookie_send_order_longer_path_first_then_creation() {
     let store = CookieStore::new();
-    // Shorter path first in time, then longer path — wire order must be longer path first.
+    // Shorter path first in time, then longer path. Wire order must be longer path first.
     store.store_response_cookies("http://example.com/a/b", &alloc::vec!["a=1; Path=/".to_string()]);
     store.store_response_cookies("http://example.com/a/b", &alloc::vec!["b=2; Path=/a".to_string()]);
     store.store_response_cookies("http://example.com/a/b", &alloc::vec!["c=3; Path=/a/b".to_string()]);

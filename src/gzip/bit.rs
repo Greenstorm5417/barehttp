@@ -1,13 +1,18 @@
 //! LSB-first bit reader (RFC 1951 §3.1.1).
 
+#![allow(clippy::cast_possible_truncation, clippy::cast_lossless)] // bitbuf low bits → u32/u8 by construction after masks
+
 use super::DecompressError;
+use alloc::vec::Vec;
 
 /// Pulls bits from a byte slice; data elements packed LSB-first within each byte.
+///
+/// Uses a `u64` hold buffer so the inflate loop refills far less often than a `u32` buffer.
 pub(super) struct BitReader<'a> {
   data: &'a [u8],
   /// Next unread byte index into `data`.
   pos: usize,
-  bitbuf: u32,
+  bitbuf: u64,
   bitcnt: u8,
 }
 
@@ -21,39 +26,58 @@ impl<'a> BitReader<'a> {
     }
   }
 
+  /// Bits currently buffered (for Huffman fast-path decisions).
+  #[inline(always)]
+  pub(super) const fn bitcnt(&self) -> u8 {
+    self.bitcnt
+  }
+
   /// Byte offset of the next unread input bit (after accounting for buffered bits).
   pub(super) fn byte_pos(&self) -> usize {
     let buffered = usize::from(self.bitcnt >> 3);
     self.pos.saturating_sub(buffered)
   }
 
-  /// Pull in bytes until `need` bits are buffered, or input ends.
-  fn fill_available(
-    &mut self,
-    need: u8,
-  ) {
-    while self.bitcnt < need {
-      let Some(byte) = self.data.get(self.pos).copied() else {
+  /// Pull bytes until the hold has as many bits as possible (up to 56+).
+  #[inline(always)]
+  #[allow(clippy::indexing_slicing, clippy::cast_possible_truncation)]
+  fn refill(&mut self) {
+    // Bulk LE word loads when plenty of input remains.
+    while self.bitcnt <= 32 {
+      let Some(chunk) = self.data.get(self.pos..self.pos + 4) else {
         break;
       };
-      self.pos = self.pos.saturating_add(1);
-      self.bitbuf |= u32::from(byte) << self.bitcnt;
-      self.bitcnt = self.bitcnt.saturating_add(8);
+      let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+      self.bitbuf |= u64::from(word) << self.bitcnt;
+      self.bitcnt += 32;
+      self.pos += 4;
+    }
+    while self.bitcnt <= 56 {
+      let Some(&byte) = self.data.get(self.pos) else {
+        break;
+      };
+      self.pos += 1;
+      self.bitbuf |= u64::from(byte) << self.bitcnt;
+      self.bitcnt += 8;
     }
   }
 
-  fn fill(
+  #[inline(always)]
+  fn ensure(
     &mut self,
     need: u8,
   ) -> Result<(), DecompressError> {
-    self.fill_available(need);
     if self.bitcnt < need {
-      return Err(DecompressError::InvalidInput);
+      self.refill();
+      if self.bitcnt < need {
+        return Err(DecompressError::InvalidInput);
+      }
     }
     Ok(())
   }
 
   /// Read `n` bits as an integer (LSB of the value = first bit in the stream).
+  #[inline(always)]
   pub(super) fn get_bits(
     &mut self,
     n: u8,
@@ -64,12 +88,22 @@ impl<'a> BitReader<'a> {
     if n > 24 {
       return Err(DecompressError::InvalidInput);
     }
-    self.fill(n)?;
+    self.ensure(n)?;
     let mask = (1u32 << n) - 1;
-    let v = self.bitbuf & mask;
+    let v = (self.bitbuf as u32) & mask;
     self.bitbuf >>= n;
-    self.bitcnt = self.bitcnt.saturating_sub(n);
+    self.bitcnt -= n;
     Ok(v)
+  }
+
+  /// Peek the low `n` bits without consuming (caller must have ensured availability).
+  #[inline(always)]
+  pub(super) const fn peek_bits(
+    &self,
+    n: u8,
+  ) -> u32 {
+    let mask = (1u32 << n) - 1;
+    (self.bitbuf as u32) & mask
   }
 
   /// Peek up to `n` bits (or fewer at EOF). Returns `(value, bits_available)`.
@@ -83,7 +117,9 @@ impl<'a> BitReader<'a> {
     if n > 24 {
       return Err(DecompressError::InvalidInput);
     }
-    self.fill_available(n);
+    if self.bitcnt < n {
+      self.refill();
+    }
     if self.bitcnt == 0 {
       return Err(DecompressError::InvalidInput);
     }
@@ -93,10 +129,11 @@ impl<'a> BitReader<'a> {
       n
     };
     let mask = (1u32 << have) - 1;
-    Ok((self.bitbuf & mask, have))
+    Ok(((self.bitbuf as u32) & mask, have))
   }
 
   /// Drop `n` bits previously peeked (must have been filled).
+  #[inline(always)]
   pub(super) const fn drop_bits(
     &mut self,
     n: u8,
@@ -105,7 +142,7 @@ impl<'a> BitReader<'a> {
       return;
     }
     self.bitbuf >>= n;
-    self.bitcnt = self.bitcnt.saturating_sub(n);
+    self.bitcnt -= n;
   }
 
   /// Discard bits up to the next byte boundary (RFC 1951 §3.2.4).
@@ -113,7 +150,7 @@ impl<'a> BitReader<'a> {
     let rem = self.bitcnt & 7;
     if rem != 0 {
       self.bitbuf >>= rem;
-      self.bitcnt = self.bitcnt.saturating_sub(rem);
+      self.bitcnt -= rem;
     }
   }
 
@@ -121,9 +158,9 @@ impl<'a> BitReader<'a> {
   pub(super) fn get_aligned_byte(&mut self) -> Result<u8, DecompressError> {
     self.align_to_byte();
     if self.bitcnt >= 8 {
-      let b = u8::try_from(self.bitbuf & 0xff).map_err(|_| DecompressError::InvalidInput)?;
+      let b = self.bitbuf as u8;
       self.bitbuf >>= 8;
-      self.bitcnt = self.bitcnt.saturating_sub(8);
+      self.bitcnt -= 8;
       return Ok(b);
     }
     let b = self
@@ -131,7 +168,42 @@ impl<'a> BitReader<'a> {
       .get(self.pos)
       .copied()
       .ok_or(DecompressError::InvalidInput)?;
-    self.pos = self.pos.saturating_add(1);
+    self.pos += 1;
     Ok(b)
+  }
+
+  /// Append `len` aligned bytes into `out` (stored blocks). One limit check up front.
+  pub(super) fn copy_aligned_bytes(
+    &mut self,
+    out: &mut Vec<u8>,
+    len: usize,
+    max_out: usize,
+  ) -> Result<(), DecompressError> {
+    self.align_to_byte();
+    if out.len().saturating_add(len) > max_out {
+      return Err(DecompressError::LimitExceeded);
+    }
+    out.reserve(len);
+    let mut left = len;
+    while left > 0 && self.bitcnt >= 8 {
+      out.push(self.bitbuf as u8);
+      self.bitbuf >>= 8;
+      self.bitcnt -= 8;
+      left -= 1;
+    }
+    if left == 0 {
+      return Ok(());
+    }
+    let end = self
+      .pos
+      .checked_add(left)
+      .ok_or(DecompressError::InvalidInput)?;
+    let slice = self
+      .data
+      .get(self.pos..end)
+      .ok_or(DecompressError::InvalidInput)?;
+    out.extend_from_slice(slice);
+    self.pos = end;
+    Ok(())
   }
 }

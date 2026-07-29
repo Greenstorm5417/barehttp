@@ -2,7 +2,7 @@
 
 use crate::error::Error;
 use crate::transport::connection::Connection;
-use crate::transport::pool::{ConnectionPool, PoolKey};
+use crate::transport::pool::{ConnectionPool, PoolKey, PooledBuffers};
 use crate::transport::tests::mock_socket::MockSocket;
 use alloc::format;
 use alloc::string::String;
@@ -44,8 +44,8 @@ fn connection_pool_respects_max_idle_per_host() {
   let pool = ConnectionPool::<MockSocket>::new(1, Duration::from_mins(1));
   let key = PoolKey::new(String::from("http"), "example.com", 80);
 
-  pool.return_connection(key.clone(), MockSocket::empty());
-  pool.return_connection(key.clone(), MockSocket::empty());
+  pool.return_connection(key.clone(), MockSocket::empty(), PooledBuffers::default());
+  pool.return_connection(key.clone(), MockSocket::empty(), PooledBuffers::default());
 
   assert!(pool.get(&key).is_some());
   assert!(
@@ -58,6 +58,6 @@ fn connection_pool_respects_max_idle_per_host() {
 fn connection_pool_zero_disables_storage() {
   let pool = ConnectionPool::<MockSocket>::new(0, Duration::from_mins(1));
   let key = PoolKey::new(String::from("http"), "example.com", 80);
-  pool.return_connection(key.clone(), MockSocket::empty());
+  pool.return_connection(key.clone(), MockSocket::empty(), PooledBuffers::default());
   assert!(pool.get(&key).is_none());
 }

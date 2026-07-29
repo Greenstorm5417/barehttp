@@ -17,22 +17,28 @@ fn encode(
   space_as_plus: bool,
 ) -> alloc::string::String {
   use alloc::string::String;
-  use core::fmt::Write;
+  use alloc::vec::Vec;
 
-  let mut result = String::new();
+  const HEX: &[u8; 16] = b"0123456789ABCDEF";
+  // Worst case: every byte → `%XX` (3 chars).
+  let mut buf = Vec::with_capacity(input.len().saturating_mul(3));
   for &byte in input {
     match byte {
       b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-        result.push(byte as char);
+        buf.push(byte);
       },
-      b' ' if space_as_plus => result.push('+'),
+      b' ' if space_as_plus => buf.push(b'+'),
       _ => {
-        result.push('%');
-        let _ = write!(result, "{byte:02X}");
+        buf.push(b'%');
+        buf.push(HEX.get((byte >> 4) as usize).copied().unwrap_or(b'?'));
+        buf.push(HEX.get((byte & 0xf) as usize).copied().unwrap_or(b'?'));
       },
     }
   }
-  result
+  // HEX digits and unreserved/input path bytes are always ASCII.
+  debug_assert!(buf.iter().all(u8::is_ascii));
+  // SAFETY: encoder only emits ASCII unreserved / `+` / `%XX`.
+  unsafe { String::from_utf8_unchecked(buf) }
 }
 
 pub use core::net::IpAddr;

@@ -4,7 +4,7 @@ barehttp is a blocking HTTP/1.1 client for `no_std` + `alloc`. Minimize `.text` 
 
 ## Goals
 
-- Default features pull no compression crate. Optional `gzip` is local RFC 1951/1952 code; `zstd` is the only optional runtime dep (`ruzstd`). Platform sockets use `libc` / `windows-sys`.
+- Default features pull no compression crate. Optional `gzip` is local RFC 1951/1952 code; `zstd` is the only optional compression runtime dep (`ruzstd`). Always-on: `bytes` + `phf` + `compact_str` + `hashbrown` (no_std). Platform sockets use `libc` / `windows-sys`.
 - Targets `no_std` + `alloc` with sync, blocking I/O.
 - Typed errors (`core::error::Error`), private fields with accessors, `#[non_exhaustive]` where the set can grow. API Guidelines-shaped.
 - Connect timeouts and chunked framing are required. Response bodies are size-capped.
