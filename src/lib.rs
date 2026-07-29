@@ -6,8 +6,8 @@
 //! # Ok::<(), barehttp::Error>(())
 //! ```
 //!
-//! Use [`HttpClient`] when you need headers, redirects, or a custom [`config::Config`].
-//! Response helpers (`text`, `is_success`, …) are inherent methods on [`Response`].
+//! [`HttpClient`] takes custom headers, follows redirects, and accepts [`config::Config`].
+//! `text` and `is_success` are methods on [`Response`].
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -47,27 +47,23 @@
 extern crate alloc;
 
 #[cfg(feature = "cookie-jar")]
-/// RFC 6265 cookie jar for request/response cookie handling.
+/// RFC 6265 cookie store.
 pub mod cookie_jar;
 
 pub use client::HttpClient;
 pub use error::Error;
-pub use request_builder::IntoBody;
 
 pub use dns::adapter::DnsResolver;
 pub use dns::resolver::OsDnsResolver;
-pub use error::{DnsError, SocketError};
-pub use socket::adapter::{BlockingSocket, SocketAddr};
-pub use socket::blocking::OsBlockingSocket;
-pub use socket::flags::SocketFlags;
+pub use error::{DnsError, ParseError, SocketError};
+pub use socket::adapter::BlockingSocket;
+pub use socket::{OsBlockingSocket, SocketAddr};
 pub use util::IpAddr;
 
-pub use body::Body;
 pub use headers::Headers;
 pub use method::Method;
-pub use parser::status::{StatusClass, StatusCode};
-pub use parser::version::Version;
 pub use parser::Response;
+pub use parser::version::Version;
 
 /// GET with default OS adapters.
 ///
@@ -81,48 +77,18 @@ pub fn get(url: &str) -> Result<Response, Error> {
 ///
 /// # Errors
 /// URL parse, DNS, connect, or HTTP failure.
-pub fn post(url: &str, body: impl IntoBody) -> Result<Response, Error> {
+pub fn post(
+  url: &str,
+  body: impl AsRef<[u8]>,
+) -> Result<Response, Error> {
   HttpClient::new().post(url).send(body)
-}
-
-/// PUT with default OS adapters.
-///
-/// # Errors
-/// URL parse, DNS, connect, or HTTP failure.
-pub fn put(url: &str, body: impl IntoBody) -> Result<Response, Error> {
-  HttpClient::new().put(url).send(body)
-}
-
-/// DELETE with default OS adapters.
-///
-/// # Errors
-/// URL parse, DNS, connect, or HTTP failure.
-pub fn delete(url: &str) -> Result<Response, Error> {
-  HttpClient::new().delete(url).call()
-}
-
-/// HEAD with default OS adapters.
-///
-/// # Errors
-/// URL parse, DNS, connect, or HTTP failure.
-pub fn head(url: &str) -> Result<Response, Error> {
-  HttpClient::new().head(url).call()
-}
-
-/// PATCH with default OS adapters.
-///
-/// # Errors
-/// URL parse, DNS, connect, or HTTP failure.
-pub fn patch(url: &str, body: impl IntoBody) -> Result<Response, Error> {
-  HttpClient::new().patch(url).send(body)
 }
 
 /// Client configuration.
 pub mod config;
-/// Typestate request builder.
+/// Request builder.
 pub mod request_builder;
 
-mod body;
 mod client;
 mod dns;
 mod error;

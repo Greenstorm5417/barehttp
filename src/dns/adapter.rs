@@ -1,6 +1,5 @@
-//! DNS resolver trait for pluggable name lookup.
+//! DNS resolver trait (hostname → addresses).
 
-extern crate alloc;
 use crate::error::DnsError;
 use crate::util::IpAddr;
 use alloc::vec::Vec;

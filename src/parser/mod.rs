@@ -1,22 +1,20 @@
 //! HTTP/1.1 parse + wire serialize (`pub(crate)`).
 //!
-//! Crate-root re-exports: [`Response`], [`status::StatusCode`], [`version::Version`].
-//! Internal: [`WireRequest`], [`BodyReadStrategy`], [`uri::Uri`], [`framing`].
+//! Crate-root re-exports: [`Response`], [`version::Version`].
+//! Internal: [`serialize_request`], [`BodyReadStrategy`], [`uri::Uri`], [`framing`].
 
 mod chunked;
-mod headers;
-mod status_line;
-mod response;
-mod wire_request;
-pub mod framing;
-pub mod status;
-pub mod uri;
-pub mod version;
 #[cfg(feature = "cookie-jar")]
 pub mod cookie;
+pub mod framing;
+mod headers;
+mod response;
+pub mod uri;
+pub mod version;
+mod wire_request;
 
 #[cfg(test)]
 pub mod tests;
 
 pub use response::{BodyReadStrategy, Response};
-pub use wire_request::WireRequest;
+pub use wire_request::serialize_request;

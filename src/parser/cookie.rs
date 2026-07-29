@@ -24,6 +24,62 @@ pub struct CookieDate {
   pub second: u8,
 }
 
+impl CookieDate {
+  /// Convert to Unix seconds (UTC). Pre-1970 dates clamp to `0`.
+  #[must_use]
+  pub fn to_unix_secs(self) -> Option<u64> {
+    if !(1..=12).contains(&self.month) || !(1..=31).contains(&self.day) {
+      return None;
+    }
+    if self.hour > 23 || self.minute > 59 || self.second > 59 {
+      return None;
+    }
+    let days = days_from_civil(i64::from(self.year), self.month, self.day)?;
+    let secs = days
+      .checked_mul(86_400)?
+      .checked_add(i64::from(self.hour) * 3_600)?
+      .checked_add(i64::from(self.minute) * 60)?
+      .checked_add(i64::from(self.second))?;
+    if secs < 0 {
+      Some(0)
+    } else {
+      u64::try_from(secs).ok()
+    }
+  }
+}
+
+/// Civil date → days since Unix epoch (Howard Hinnant). Returns `None` if out of range.
+#[allow(clippy::integer_division)] // calendar arithmetic is exact integer division
+fn days_from_civil(
+  mut y: i64,
+  month: u8,
+  day: u8,
+) -> Option<i64> {
+  let month_u = u32::from(month);
+  let day_u = u32::from(day);
+  if month_u <= 2 {
+    y = y.checked_sub(1)?;
+  }
+  let era = if y >= 0 {
+    y
+  } else {
+    y.checked_sub(399)?
+  }
+  .div_euclid(400);
+  let yoe = u32::try_from(y.checked_sub(era.checked_mul(400)?)?).ok()?;
+  let mp = if month_u > 2 {
+    month_u - 3
+  } else {
+    month_u + 9
+  };
+  let doy = (153 * mp + 2) / 5 + day_u - 1;
+  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  era
+    .checked_mul(146_097)?
+    .checked_add(i64::from(doe))?
+    .checked_sub(719_468)
+}
+
 impl SetCookie {
   pub fn parse(input: &str) -> Option<Self> {
     let input_bytes = input.as_bytes();
@@ -74,51 +130,54 @@ struct CookieAttributes {
   http_only: bool,
 }
 
-struct AttrIter<'a> {
-  input: &'a [u8],
-}
+fn parse_cookie_attributes(mut input: &[u8]) -> CookieAttributes {
+  let mut attrs = CookieAttributes::default();
 
-impl<'a> AttrIter<'a> {
-  const fn new(input: &'a [u8]) -> Self {
-    Self { input }
-  }
-}
-
-impl<'a> Iterator for AttrIter<'a> {
-  type Item = (&'a [u8], &'a [u8]);
-
-  fn next(&mut self) -> Option<Self::Item> {
-    while self.input.first() == Some(&b';') {
-      self.input = self.input.get(1..).unwrap_or(&[]);
+  while !input.is_empty() {
+    while input.first() == Some(&b';') {
+      input = input.get(1..).unwrap_or(&[]);
+    }
+    if input.is_empty() {
+      break;
     }
 
-    if self.input.is_empty() {
-      return None;
+    let end = input.iter().position(|&b| b == b';').unwrap_or(input.len());
+    let av = input.get(..end).unwrap_or(&[]);
+    input = input.get(end..).unwrap_or(&[]);
+
+    let (name, value) = av.iter().position(|&b| b == b'=').map_or_else(
+      || (av, &[][..]),
+      |i| {
+        (
+          av.get(..i).unwrap_or(&[]),
+          av.get(i.checked_add(1).unwrap_or(i)..).unwrap_or(&[]),
+        )
+      },
+    );
+
+    let name_trimmed = trim_wsp(name);
+    let value_trimmed = trim_wsp(value);
+
+    if name_trimmed.eq_ignore_ascii_case(b"secure") {
+      attrs.secure = true;
+    } else if name_trimmed.eq_ignore_ascii_case(b"httponly") {
+      attrs.http_only = true;
+    } else if name_trimmed.eq_ignore_ascii_case(b"expires") {
+      if let Ok(s) = core::str::from_utf8(value_trimmed) {
+        attrs.expires = parse_cookie_date(s);
+      }
+    } else if name_trimmed.eq_ignore_ascii_case(b"max-age") {
+      if let Ok(s) = core::str::from_utf8(value_trimmed) {
+        attrs.max_age = parse_max_age(s);
+      }
+    } else if name_trimmed.eq_ignore_ascii_case(b"domain") {
+      attrs.domain = parse_domain(value_trimmed);
+    } else if name_trimmed.eq_ignore_ascii_case(b"path") {
+      attrs.path = parse_path(value_trimmed);
     }
-
-    let end = self
-      .input
-      .iter()
-      .position(|&b| b == b';')
-      .unwrap_or(self.input.len());
-
-    let av = self.input.get(..end)?;
-    self.input = self.input.get(end..).unwrap_or(&[]);
-
-    let eq = av.iter().position(|&b| b == b'=');
-    Some(eq.map_or((av, &[]), |i| {
-      let name = av.get(..i).unwrap_or(&[]);
-      let value = av.get(i.checked_add(1).unwrap_or(i)..).unwrap_or(&[]);
-      (name, value)
-    }))
   }
-}
 
-fn eq_ignore_ascii(
-  a: &[u8],
-  b: &[u8],
-) -> bool {
-  a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_ascii_lowercase() == *y)
+  attrs
 }
 
 fn parse_domain(value: &[u8]) -> Option<String> {
@@ -143,39 +202,6 @@ fn parse_path(value: &[u8]) -> Option<String> {
   Some(String::from_utf8_lossy(value).into_owned())
 }
 
-fn parse_cookie_attributes(input: &[u8]) -> CookieAttributes {
-  let mut attrs = CookieAttributes::default();
-
-  for (name, value) in AttrIter::new(input) {
-    let name_trimmed = trim_wsp(name);
-    let value_trimmed = trim_wsp(value);
-
-    match name_trimmed {
-      _ if eq_ignore_ascii(name_trimmed, b"secure") => attrs.secure = true,
-      _ if eq_ignore_ascii(name_trimmed, b"httponly") => attrs.http_only = true,
-      _ if eq_ignore_ascii(name_trimmed, b"expires") => {
-        if let Ok(s) = core::str::from_utf8(value_trimmed) {
-          attrs.expires = parse_cookie_date(s);
-        }
-      },
-      _ if eq_ignore_ascii(name_trimmed, b"max-age") => {
-        if let Ok(s) = core::str::from_utf8(value_trimmed) {
-          attrs.max_age = parse_max_age(s);
-        }
-      },
-      _ if eq_ignore_ascii(name_trimmed, b"domain") => {
-        attrs.domain = parse_domain(value_trimmed);
-      },
-      _ if eq_ignore_ascii(name_trimmed, b"path") => {
-        attrs.path = parse_path(value_trimmed);
-      },
-      _ => {},
-    }
-  }
-
-  attrs
-}
-
 fn parse_max_age(value: &str) -> Option<i64> {
   let bytes = value.as_bytes();
 
@@ -189,14 +215,8 @@ fn parse_max_age(value: &str) -> Option<i64> {
     (false, bytes)
   };
 
-  if digits.is_empty() {
+  if digits.is_empty() || digits.iter().any(|b| !b.is_ascii_digit()) {
     return None;
-  }
-
-  for &b in digits {
-    if !b.is_ascii_digit() {
-      return None;
-    }
   }
 
   let digits_str = core::str::from_utf8(digits).ok()?;
@@ -273,23 +293,7 @@ pub fn parse_cookie_date(input: &str) -> Option<CookieDate> {
     year += 2000;
   }
 
-  if !(1..=31).contains(&day) {
-    return None;
-  }
-
-  if year < 1601 {
-    return None;
-  }
-
-  if hour > 23 {
-    return None;
-  }
-
-  if minute > 59 {
-    return None;
-  }
-
-  if second > 59 {
+  if !(1..=31).contains(&day) || year < 1601 || hour > 23 || minute > 59 || second > 59 {
     return None;
   }
 
@@ -354,49 +358,32 @@ fn parse_time_token(token: &str) -> Option<(u8, u8, u8)> {
     token.get(parts.first().copied().unwrap_or(0).checked_add(1)?..parts.get(1).copied().unwrap_or(0))?;
   let second_str = token.get(parts.get(1).copied().unwrap_or(0).checked_add(1)?..)?;
 
-  if hour_str.is_empty() || hour_str.len() > 2 {
-    return None;
-  }
-  if minute_str.is_empty() || minute_str.len() > 2 {
-    return None;
-  }
-  if second_str.is_empty() || second_str.len() > 2 {
+  if !(1..=2).contains(&hour_str.len()) || !(1..=2).contains(&minute_str.len()) || !(1..=2).contains(&second_str.len())
+  {
     return None;
   }
 
-  let hour: u8 = hour_str.parse().ok()?;
-  let minute: u8 = minute_str.parse().ok()?;
-  let second: u8 = second_str.parse().ok()?;
-
-  Some((hour, minute, second))
+  Some((
+    hour_str.parse().ok()?,
+    minute_str.parse().ok()?,
+    second_str.parse().ok()?,
+  ))
 }
 
 fn parse_day_of_month(token: &str) -> Option<u8> {
   let bytes = token.as_bytes();
-
-  if bytes.is_empty() || bytes.len() > 2 {
+  if bytes.is_empty() || bytes.len() > 2 || bytes.iter().any(|b| !b.is_ascii_digit()) {
     return None;
   }
-
-  for &b in bytes {
-    if !b.is_ascii_digit() {
-      return None;
-    }
-  }
-
   token.parse().ok()
 }
 
 fn parse_month(token: &str) -> Option<u8> {
   let lower = token.to_ascii_lowercase();
-
   if lower.len() < 3 {
     return None;
   }
-
-  let prefix = &lower[..3];
-
-  match prefix {
+  match &lower[..3] {
     "jan" => Some(1),
     "feb" => Some(2),
     "mar" => Some(3),
@@ -415,7 +402,6 @@ fn parse_month(token: &str) -> Option<u8> {
 
 fn parse_year(token: &str) -> Option<u16> {
   let bytes = token.as_bytes();
-
   if bytes.len() < 2 || bytes.len() > 4 {
     return None;
   }
@@ -466,20 +452,4 @@ fn trim_wsp(input: &[u8]) -> &[u8] {
   }
 
   input.get(start..end).unwrap_or(&[])
-}
-
-#[allow(dead_code)]
-pub fn serialize_cookie_header(cookies: &[(String, String)]) -> String {
-  let mut result = String::new();
-
-  for (i, (name, value)) in cookies.iter().enumerate() {
-    if i > 0 {
-      result.push_str("; ");
-    }
-    result.push_str(name);
-    result.push('=');
-    result.push_str(value);
-  }
-
-  result
 }

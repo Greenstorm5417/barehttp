@@ -1,3 +1,5 @@
+use core::net::{Ipv4Addr, Ipv6Addr};
+
 use crate::error::ParseError;
 use crate::parser::uri::{Host, Uri};
 use crate::util::IpAddr;
@@ -15,49 +17,17 @@ fn test_scheme_https() {
 }
 
 #[test]
-fn test_scheme_ftp() {
-  let uri = Uri::parse("ftp://ftp.example.com").unwrap();
-  assert_eq!(uri.scheme(), "ftp");
-}
-
-#[test]
-fn test_scheme_with_plus() {
-  let uri = Uri::parse("git+ssh://example.com").unwrap();
-  assert_eq!(uri.scheme(), "git+ssh");
-}
-
-#[test]
-fn test_scheme_with_dash() {
-  let uri = Uri::parse("my-scheme://example.com").unwrap();
-  assert_eq!(uri.scheme(), "my-scheme");
-}
-
-#[test]
-fn test_scheme_with_dot() {
-  let uri = Uri::parse("my.scheme://example.com").unwrap();
-  assert_eq!(uri.scheme(), "my.scheme");
-}
-
-#[test]
-fn test_scheme_with_numbers() {
-  let uri = Uri::parse("h2c://example.com").unwrap();
-  assert_eq!(uri.scheme(), "h2c");
-}
-
-#[test]
 fn test_scheme_case_insensitive() {
   let uri = Uri::parse("HTTP://example.com").unwrap();
   assert_eq!(uri.scheme(), "HTTP");
 }
 
 #[test]
-fn test_scheme_urn() {
-  let uri = Uri::parse("urn:example:animal:ferret:nose").unwrap();
-  assert_eq!(uri.scheme(), "urn");
-}
-
-#[test]
-fn test_scheme_must_start_with_letter() {
+fn test_scheme_rejects_non_http() {
+  assert!(Uri::parse("ftp://ftp.example.com").is_err());
+  assert!(Uri::parse("git+ssh://example.com").is_err());
+  assert!(Uri::parse("urn:example:animal:ferret:nose").is_err());
+  assert!(Uri::parse("mailto:John.Doe@example.com").is_err());
   assert!(Uri::parse("123://example.com").is_err());
 }
 
@@ -84,12 +54,6 @@ fn test_authority_empty_port() {
 }
 
 #[test]
-fn test_authority_no_authority() {
-  let uri = Uri::parse("urn:example:animal").unwrap();
-  assert!(uri.authority().is_none());
-}
-
-#[test]
 fn test_authority_localhost() {
   let uri = Uri::parse("http://localhost").unwrap();
   let auth = uri.authority().unwrap();
@@ -97,11 +61,23 @@ fn test_authority_localhost() {
 }
 
 #[test]
+fn test_rejects_userinfo() {
+  assert!(matches!(
+    Uri::parse("http://user:pass@example.com"),
+    Err(ParseError::InvalidUri)
+  ));
+  assert!(matches!(
+    Uri::parse("https://user@example.com/path"),
+    Err(ParseError::InvalidUri)
+  ));
+}
+
+#[test]
 fn test_host_ipv4_basic() {
   let uri = Uri::parse("http://192.168.1.1").unwrap();
   let auth = uri.authority().unwrap();
   if let Host::IpAddr(IpAddr::V4(addr)) = auth.host() {
-    assert_eq!(addr, &[192, 168, 1, 1]);
+    assert_eq!(*addr, Ipv4Addr::new(192, 168, 1, 1));
   } else {
     panic!("Expected IPv4 address");
   }
@@ -112,7 +88,7 @@ fn test_host_ipv4_with_port() {
   let uri = Uri::parse("http://10.0.0.1:80").unwrap();
   let auth = uri.authority().unwrap();
   if let Host::IpAddr(IpAddr::V4(addr)) = auth.host() {
-    assert_eq!(addr, &[10, 0, 0, 1]);
+    assert_eq!(*addr, Ipv4Addr::new(10, 0, 0, 1));
   } else {
     panic!("Expected IPv4 address");
   }
@@ -124,7 +100,7 @@ fn test_host_ipv4_zeros() {
   let uri = Uri::parse("http://0.0.0.0").unwrap();
   let auth = uri.authority().unwrap();
   if let Host::IpAddr(IpAddr::V4(addr)) = auth.host() {
-    assert_eq!(addr, &[0, 0, 0, 0]);
+    assert_eq!(*addr, Ipv4Addr::UNSPECIFIED);
   } else {
     panic!("Expected IPv4 address");
   }
@@ -135,7 +111,7 @@ fn test_host_ipv4_max() {
   let uri = Uri::parse("http://255.255.255.255").unwrap();
   let auth = uri.authority().unwrap();
   if let Host::IpAddr(IpAddr::V4(addr)) = auth.host() {
-    assert_eq!(addr, &[255, 255, 255, 255]);
+    assert_eq!(*addr, Ipv4Addr::BROADCAST);
   } else {
     panic!("Expected IPv4 address");
   }
@@ -146,7 +122,7 @@ fn test_host_ipv6_loopback() {
   let uri = Uri::parse("http://[::1]").unwrap();
   let auth = uri.authority().unwrap();
   if let Host::IpAddr(IpAddr::V6(addr)) = auth.host() {
-    assert_eq!(addr, &[0, 0, 0, 0, 0, 0, 0, 1]);
+    assert_eq!(*addr, Ipv6Addr::LOCALHOST);
   } else {
     panic!("Expected IPv6 address");
   }
@@ -299,18 +275,6 @@ fn test_path_with_percent_encoding() {
 }
 
 #[test]
-fn test_path_absolute_no_authority() {
-  let uri = Uri::parse("file:///path/to/file").unwrap();
-  assert_eq!(uri.path(), "/path/to/file");
-}
-
-#[test]
-fn test_path_rootless() {
-  let uri = Uri::parse("urn:example:animal:ferret:nose").unwrap();
-  assert_eq!(uri.path(), "example:animal:ferret:nose");
-}
-
-#[test]
 fn test_path_with_dot_segments() {
   let uri = Uri::parse("http://example.com/a/b/c/./../../g").unwrap();
   assert_eq!(uri.path(), "/a/b/c/./../../g");
@@ -329,80 +293,25 @@ fn test_path_special_chars() {
 }
 
 #[test]
-fn test_rfc3986_example_ftp() {
-  let uri = Uri::parse("ftp://ftp.is.co.za/rfc/rfc1808.txt").unwrap();
-  assert_eq!(uri.scheme(), "ftp");
-  assert_eq!(uri.path(), "/rfc/rfc1808.txt");
+fn test_query() {
+  let uri = Uri::parse("http://example.com/path?name=ferret&x=1").unwrap();
+  assert_eq!(uri.path(), "/path");
+  assert_eq!(uri.query(), Some("name=ferret&x=1"));
 }
 
 #[test]
-fn test_rfc3986_example_http() {
+fn test_http_example_with_path() {
   let uri = Uri::parse("http://www.ietf.org/rfc/rfc2396.txt").unwrap();
   assert_eq!(uri.scheme(), "http");
   assert_eq!(uri.path(), "/rfc/rfc2396.txt");
 }
 
 #[test]
-fn test_rfc3986_example_ldap() {
-  let uri = Uri::parse("ldap://[2001:db8::7]/c=GB?objectClass?one").unwrap();
-  assert_eq!(uri.scheme(), "ldap");
-  assert_eq!(uri.path(), "/c=GB");
-}
-
-#[test]
-fn test_rfc3986_example_mailto() {
-  let uri = Uri::parse("mailto:John.Doe@example.com").unwrap();
-  assert_eq!(uri.scheme(), "mailto");
-  assert_eq!(uri.path(), "John.Doe@example.com");
-}
-
-#[test]
-fn test_rfc3986_example_news() {
-  let uri = Uri::parse("news:comp.infosystems.www.servers.unix").unwrap();
-  assert_eq!(uri.scheme(), "news");
-  assert_eq!(uri.path(), "comp.infosystems.www.servers.unix");
-}
-
-#[test]
-fn test_rfc3986_example_tel() {
-  let uri = Uri::parse("tel:+1-816-555-1212").unwrap();
-  assert_eq!(uri.scheme(), "tel");
-  assert_eq!(uri.path(), "+1-816-555-1212");
-}
-
-#[test]
-fn test_rfc3986_example_telnet() {
-  let uri = Uri::parse("telnet://192.0.2.16:80/").unwrap();
-  assert_eq!(uri.scheme(), "telnet");
-  let auth = uri.authority().unwrap();
-  assert_eq!(auth.port(), Some(80));
-  assert_eq!(uri.path(), "/");
-}
-
-#[test]
-fn test_rfc3986_example_urn() {
-  let uri = Uri::parse("urn:oasis:names:specification:docbook:dtd:xml:4.1.2").unwrap();
-  assert_eq!(uri.scheme(), "urn");
-  assert_eq!(uri.path(), "oasis:names:specification:docbook:dtd:xml:4.1.2");
-}
-
-#[test]
-fn test_rfc3986_example_with_fragment() {
-  let uri = Uri::parse("http://www.ics.uci.edu/pub/ietf/uri/#Related").unwrap();
-  assert_eq!(uri.scheme(), "http");
-  assert_eq!(uri.path(), "/pub/ietf/uri/");
-}
-
-#[test]
-fn test_rfc3986_complex_example() {
-  let uri = Uri::parse("foo://example.com:8042/over/there?name=ferret#nose").unwrap();
-  assert_eq!(uri.scheme(), "foo");
-  let auth = uri.authority().unwrap();
-  if let Host::RegName(name) = auth.host() {
-    assert_eq!(name, &"example.com");
-  }
-  assert_eq!(auth.port(), Some(8042));
-  assert_eq!(uri.path(), "/over/there");
+fn test_rejects_fragment() {
+  assert!(matches!(
+    Uri::parse("http://www.ics.uci.edu/pub/ietf/uri/#Related"),
+    Err(ParseError::InvalidUri)
+  ));
 }
 
 #[test]
@@ -489,15 +398,13 @@ fn test_resolve_path_relative_location() {
 fn test_path_and_query_empty_path_with_query() {
   let uri = Uri::parse("http://example.com?a=1").unwrap();
   assert_eq!(uri.path_and_query(), "/?a=1");
+  assert_eq!(uri.query(), Some("a=1"));
 }
 
 #[test]
 fn test_resolve_network_path_and_query_only() {
   let base = Uri::parse("http://example.com/dir/page.html").unwrap();
-  assert_eq!(
-    base.resolve_relative("//other.com/x").unwrap(),
-    "http://other.com/x"
-  );
+  assert_eq!(base.resolve_relative("//other.com/x").unwrap(), "http://other.com/x");
   assert_eq!(
     base.resolve_relative("?next=1").unwrap(),
     "http://example.com/dir/page.html?next=1"

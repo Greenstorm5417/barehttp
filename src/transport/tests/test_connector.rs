@@ -1,132 +1,14 @@
 use crate::config::Config;
 use crate::dns::DnsResolver;
-use crate::error::{DnsError, Error, SocketError};
+use crate::error::{DnsError, Error};
 use crate::parser::uri::Uri;
-use crate::socket::{BlockingSocket, SocketAddr, SocketFlags};
-use crate::transport::connector::Connector;
+use crate::transport::connection;
+use crate::transport::tests::mock_socket::MockSocket;
 use crate::util::IpAddr;
-use alloc::format;
-use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::net::Ipv6Addr;
 use core::time::Duration;
-
-struct MockSocket {
-  connected_addr: Option<String>,
-  read_timeout: Option<u32>,
-  write_timeout: Option<u32>,
-  should_fail_connect: bool,
-  /// Fail this many connect attempts, then succeed.
-  fail_connects_remaining: usize,
-}
-
-impl MockSocket {
-  fn new() -> Self {
-    Self {
-      connected_addr: None,
-      read_timeout: None,
-      write_timeout: None,
-      should_fail_connect: false,
-      fail_connects_remaining: 0,
-    }
-  }
-
-  fn with_connect_failure() -> Self {
-    Self {
-      connected_addr: None,
-      read_timeout: None,
-      write_timeout: None,
-      should_fail_connect: true,
-      fail_connects_remaining: 0,
-    }
-  }
-
-  fn with_fail_first_n(n: usize) -> Self {
-    Self {
-      connected_addr: None,
-      read_timeout: None,
-      write_timeout: None,
-      should_fail_connect: false,
-      fail_connects_remaining: n,
-    }
-  }
-}
-
-impl BlockingSocket for MockSocket {
-  fn new() -> Result<Self, SocketError> {
-    Ok(Self {
-      connected_addr: None,
-      read_timeout: None,
-      write_timeout: None,
-      should_fail_connect: false,
-      fail_connects_remaining: 0,
-    })
-  }
-
-  fn connect(
-    &mut self,
-    addr: &SocketAddr<'_>,
-  ) -> Result<(), SocketError> {
-    if self.should_fail_connect {
-      return Err(SocketError::NotConnected);
-    }
-    if self.fail_connects_remaining > 0 {
-      self.fail_connects_remaining -= 1;
-      return Err(SocketError::ConnectionRefused);
-    }
-    match addr {
-      SocketAddr::Ip { addr: ip_addr, port } => {
-        self.connected_addr = Some(format!("{ip_addr}:{port}"));
-      },
-      SocketAddr::Hostname { host, port } => {
-        let host_str = core::str::from_utf8(host).unwrap_or("invalid");
-        self.connected_addr = Some(format!("{host_str}:{port}"));
-      },
-    }
-    Ok(())
-  }
-
-  fn read(
-    &mut self,
-    _buf: &mut [u8],
-  ) -> Result<usize, SocketError> {
-    Ok(0)
-  }
-
-  fn write(
-    &mut self,
-    _buf: &[u8],
-  ) -> Result<usize, SocketError> {
-    Ok(0)
-  }
-
-  fn shutdown(&mut self) -> Result<(), SocketError> {
-    Ok(())
-  }
-
-  fn set_flags(
-    &mut self,
-    _flags: SocketFlags,
-  ) -> Result<(), SocketError> {
-    Ok(())
-  }
-
-  fn set_read_timeout(
-    &mut self,
-    timeout_ms: u32,
-  ) -> Result<(), SocketError> {
-    self.read_timeout = Some(timeout_ms);
-    Ok(())
-  }
-
-  fn set_write_timeout(
-    &mut self,
-    timeout_ms: u32,
-  ) -> Result<(), SocketError> {
-    self.write_timeout = Some(timeout_ms);
-    Ok(())
-  }
-}
 
 struct MockDns {
   addresses: Vec<IpAddr>,
@@ -156,12 +38,11 @@ impl DnsResolver for MockDns {
 
 #[test]
 fn connector_resolves_dns_and_connects() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let result = connector.connect(&uri, &Config::default());
+  let result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
   assert!(result.is_ok());
   assert!(socket.connected_addr.is_some());
@@ -169,12 +50,11 @@ fn connector_resolves_dns_and_connects() {
 
 #[test]
 fn connector_uses_default_http_port_80() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let _result = connector.connect(&uri, &Config::default());
+  let _result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
   let addr = socket.connected_addr.unwrap();
   assert!(addr.contains(":80"), "Should use port 80 for HTTP");
@@ -182,12 +62,11 @@ fn connector_uses_default_http_port_80() {
 
 #[test]
 fn connector_uses_default_https_port_443() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   let uri = Uri::parse("https://example.com").unwrap();
-  let _result = connector.connect(&uri, &Config::default());
+  let _result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
   let addr = socket.connected_addr.unwrap();
   assert!(addr.contains(":443"), "Should use port 443 for HTTPS");
@@ -195,12 +74,11 @@ fn connector_uses_default_https_port_443() {
 
 #[test]
 fn connector_uses_explicit_port() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   let uri = Uri::parse("http://example.com:8080").unwrap();
-  let _result = connector.connect(&uri, &Config::default());
+  let _result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
   let addr = socket.connected_addr.unwrap();
   assert!(addr.contains(":8080"), "Should use explicit port 8080");
@@ -208,25 +86,20 @@ fn connector_uses_explicit_port() {
 
 #[test]
 fn connector_connects_literal_ipv4() {
-  let mut socket = MockSocket::new();
+  let mut socket = MockSocket::empty();
   let dns = MockDns::new(vec![]); // must not be consulted for literal IP
-  let connector = Connector::new(&mut socket, &dns);
 
   let uri = Uri::parse("http://192.168.1.1").unwrap();
-  let result = connector.connect(&uri, &Config::default());
+  let result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
   assert!(result.is_ok());
-  assert_eq!(
-    socket.connected_addr.as_deref(),
-    Some("192.168.1.1:80")
-  );
+  assert_eq!(socket.connected_addr.as_deref(), Some("192.168.1.1:80"));
 }
 
 #[test]
 fn connector_sets_read_timeout() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   let config = Config {
     timeout_read: Some(Duration::from_secs(5)),
@@ -234,16 +107,15 @@ fn connector_sets_read_timeout() {
   };
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let _result = connector.connect(&uri, &config);
+  let _result = connection::connect(&mut socket, &dns, &uri, &config, false);
 
   assert_eq!(socket.read_timeout, Some(5000));
 }
 
 #[test]
 fn connector_sets_write_timeout_on_connect() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   let config = Config {
     timeout_connect: Some(Duration::from_secs(3)),
@@ -251,59 +123,37 @@ fn connector_sets_write_timeout_on_connect() {
   };
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let _result = connector.connect(&uri, &config);
+  let _result = connection::connect(&mut socket, &dns, &uri, &config, false);
 
-  assert_eq!(socket.write_timeout, Some(3000));
+  // Connect timeout must not bleed into post-connect writes.
+  assert_eq!(socket.write_timeout, Some(0));
 }
 
 #[test]
-fn connector_sets_both_timeouts_from_general_timeout() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+fn connector_sets_read_and_write_timeouts() {
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   let config = Config {
-    timeout: Some(Duration::from_secs(10)),
+    timeout_read: Some(Duration::from_secs(10)),
+    timeout_write: Some(Duration::from_secs(10)),
     ..Default::default()
   };
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let _result = connector.connect(&uri, &config);
+  let _result = connection::connect(&mut socket, &dns, &uri, &config, false);
 
   assert_eq!(socket.read_timeout, Some(10000));
   assert_eq!(socket.write_timeout, Some(10000));
 }
 
 #[test]
-fn connector_prioritizes_specific_timeout_over_general() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
-
-  let config = Config {
-    timeout: Some(Duration::from_secs(10)),
-    timeout_read: Some(Duration::from_secs(5)),
-    ..Default::default()
-  };
-
-  let uri = Uri::parse("http://example.com").unwrap();
-  let _result = connector.connect(&uri, &config);
-
-  assert_eq!(
-    socket.read_timeout,
-    Some(5000),
-    "Specific read timeout should override general timeout"
-  );
-}
-
-#[test]
 fn connector_returns_error_on_dns_failure() {
-  let mut socket = MockSocket::new();
+  let mut socket = MockSocket::empty();
   let dns = MockDns::empty();
-  let connector = Connector::new(&mut socket, &dns);
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let result = connector.connect(&uri, &Config::default());
+  let result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
   assert!(result.is_err());
   if let Err(err) = result {
@@ -314,11 +164,10 @@ fn connector_returns_error_on_dns_failure() {
 #[test]
 fn connector_returns_error_on_socket_connect_failure() {
   let mut socket = MockSocket::with_connect_failure();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let result = connector.connect(&uri, &Config::default());
+  let result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
   assert!(result.is_err());
   if let Err(err) = result {
@@ -328,24 +177,22 @@ fn connector_returns_error_on_socket_connect_failure() {
 
 #[test]
 fn connector_returns_error_on_no_addresses() {
-  let mut socket = MockSocket::new();
+  let mut socket = MockSocket::empty();
   let dns = MockDns::new(vec![]);
-  let connector = Connector::new(&mut socket, &dns);
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let result = connector.connect(&uri, &Config::default());
+  let result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
   assert!(result.is_err());
 }
 
 #[test]
 fn connector_uses_first_resolved_address() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1]), IpAddr::V4([192, 168, 1, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1]), IpAddr::from([192, 168, 1, 1])]);
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let _result = connector.connect(&uri, &Config::default());
+  let _result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
   let addr = socket.connected_addr.unwrap();
   assert!(addr.contains("127.0.0.1"), "Should use first resolved address");
@@ -354,24 +201,19 @@ fn connector_uses_first_resolved_address() {
 #[test]
 fn connector_tries_next_address_on_connect_failure() {
   let mut socket = MockSocket::with_fail_first_n(1);
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1]), IpAddr::V4([192, 168, 1, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1]), IpAddr::from([192, 168, 1, 1])]);
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let result = connector.connect(&uri, &Config::default());
+  let result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
   assert!(result.is_ok());
-  assert_eq!(
-    socket.connected_addr.as_deref(),
-    Some("192.168.1.1:80")
-  );
+  assert_eq!(socket.connected_addr.as_deref(), Some("192.168.1.1:80"));
 }
 
 #[test]
 fn connector_creates_connection_with_config() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   let config = Config {
     max_response_header_size: 16384,
@@ -379,36 +221,35 @@ fn connector_creates_connection_with_config() {
   };
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let result = connector.connect(&uri, &config);
+  let result = connection::connect(&mut socket, &dns, &uri, &config, false);
 
   assert!(result.is_ok());
 }
 
 #[test]
 fn connector_handles_ipv6_addresses() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V6([0, 0, 0, 0, 0, 0, 0, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::V6(Ipv6Addr::LOCALHOST)]);
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let result = connector.connect(&uri, &Config::default());
+  let result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
   assert!(result.is_ok());
 }
 
 #[test]
 fn connector_timeout_conversion_handles_large_values() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   let config = Config {
-    timeout: Some(Duration::from_secs(100)),
+    timeout_read: Some(Duration::from_secs(100)),
+    timeout_write: Some(Duration::from_secs(100)),
     ..Default::default()
   };
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let result = connector.connect(&uri, &config);
+  let result = connection::connect(&mut socket, &dns, &uri, &config, false);
 
   assert!(result.is_ok());
   assert_eq!(socket.read_timeout, Some(100_000));
@@ -416,12 +257,11 @@ fn connector_timeout_conversion_handles_large_values() {
 
 #[test]
 fn connector_no_timeouts_when_not_configured() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1])]);
-  let connector = Connector::new(&mut socket, &dns);
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   let uri = Uri::parse("http://example.com").unwrap();
-  let _result = connector.connect(&uri, &Config::default());
+  let _result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
 
   assert_eq!(socket.read_timeout, None);
   assert_eq!(socket.write_timeout, None);
@@ -429,14 +269,25 @@ fn connector_no_timeouts_when_not_configured() {
 
 #[test]
 fn connector_borrows_socket_and_dns() {
-  let mut socket = MockSocket::new();
-  let dns = MockDns::new(vec![IpAddr::V4([127, 0, 0, 1])]);
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::new(vec![IpAddr::from([127, 0, 0, 1])]);
 
   {
-    let connector = Connector::new(&mut socket, &dns);
     let uri = Uri::parse("http://example.com").unwrap();
-    let _result = connector.connect(&uri, &Config::default());
+    let _result = connection::connect(&mut socket, &dns, &uri, &Config::default(), false);
   }
 
   assert!(socket.connected_addr.is_some());
+}
+
+#[test]
+fn connector_skips_dns_when_reused() {
+  let mut socket = MockSocket::empty();
+  let dns = MockDns::empty(); // would fail if consulted
+
+  let uri = Uri::parse("http://example.com").unwrap();
+  let result = connection::connect(&mut socket, &dns, &uri, &Config::default(), true);
+
+  assert!(result.is_ok());
+  assert!(socket.connected_addr.is_none());
 }

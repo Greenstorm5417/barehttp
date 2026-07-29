@@ -1,18 +1,12 @@
-extern crate alloc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
-#[cfg(feature = "cookie-jar")]
 use crate::parser::cookie::SetCookie;
+use crate::parser::uri::{Host, Uri};
 
-#[cfg(feature = "cookie-jar")]
 #[derive(Debug, Clone)]
-/// Represents a stored HTTP cookie with all RFC 6265 attributes
-///
-/// This struct contains all information needed to store and match cookies
-/// according to RFC 6265 specifications.
+/// One cookie as kept in [`CookieStore`].
 pub struct StoredCookie {
   /// Cookie name
   pub name: String,
@@ -24,61 +18,43 @@ pub struct StoredCookie {
   pub path: String,
   /// Secure flag - cookie only sent over HTTPS
   pub secure: bool,
-  /// `HttpOnly` flag - cookie not accessible via JavaScript
-  pub http_only: bool,
   /// Host-only flag - cookie only matches exact host
   pub host_only: bool,
-  /// Creation time (logical counter)
+  /// Creation time (logical counter for sort order)
   pub creation_time: u64,
-  /// Expiry time (logical counter), None means session cookie
+  /// Expiry as Unix seconds (UTC); `None` means session cookie
   pub expiry_time: Option<u64>,
 }
 
-#[cfg(feature = "cookie-jar")]
 #[derive(Debug)]
-/// Thread-safe RFC 6265 compliant cookie storage
-///
-/// Automatically handles cookie domain/path matching, expiration,
-/// and secure cookie restrictions.
+/// Mutex-backed jar: RFC 6265 domain/path matching, expiry, and `Secure`.
 pub struct CookieStore {
   cookies: Mutex<Vec<StoredCookie>>,
-  counter: AtomicU64,
 }
 
-#[cfg(feature = "cookie-jar")]
 impl CookieStore {
   /// Creates a new empty cookie store
   #[must_use]
   pub const fn new() -> Self {
     Self {
       cookies: Mutex::new(Vec::new()),
-      counter: AtomicU64::new(0),
     }
   }
 
-  /// Stores cookies from Set-Cookie response headers
-  ///
-  /// Parses and stores cookies according to RFC 6265 rules, including
-  /// domain/path matching and cookie replacement.
-  ///
-  /// # Arguments
-  /// * `uri` - Request URI for domain/path context
-  /// * `set_cookie_headers` - Set-Cookie header values from response
+  /// Parse `Set-Cookie` values and insert them (RFC 6265 domain/path match; replace on name+domain+path).
   pub fn store_response_cookies(
     &self,
     uri: &str,
     set_cookie_headers: &[String],
   ) {
-    let mut cookies = self.cookies.lock();
-    let Some(request_host) = extract_host_from_uri(uri) else {
+    let Some((request_host, request_path)) = host_and_path(uri) else {
       return;
     };
 
-    let request_path = extract_path_from_uri(uri);
-
+    let mut cookies = self.cookies.lock();
     for header_value in set_cookie_headers {
       if let Some(parsed) = SetCookie::parse(header_value) {
-        Self::insert_cookie_locked(&mut cookies, parsed, request_host, &request_path, &self.counter);
+        Self::insert_cookie_locked(&mut cookies, parsed, &request_host, &request_path);
       }
     }
   }
@@ -88,9 +64,9 @@ impl CookieStore {
     cookie: SetCookie,
     request_host: &str,
     request_path: &str,
-    counter: &AtomicU64,
   ) {
-    let current = counter.fetch_add(1, Ordering::SeqCst);
+    let creation = u64::try_from(cookies.len()).unwrap_or(u64::MAX);
+    let now = now_unix_secs();
 
     let host_only = cookie.domain.is_none();
 
@@ -105,64 +81,58 @@ impl CookieStore {
 
     let path = cookie.path.unwrap_or_else(|| default_path(request_path));
 
+    // RFC 6265: Max-Age wins over Expires when both are present.
     let expiry_time = if let Some(max_age) = cookie.max_age {
       if max_age <= 0 {
         Some(0)
       } else {
-        Some(current.saturating_add(max_age.unsigned_abs()))
+        Some(now.saturating_add(max_age.unsigned_abs()))
+      }
+    } else if let Some(expires) = cookie.expires {
+      match expires.to_unix_secs() {
+        Some(ts) if ts > now => Some(ts),
+        _ => Some(0),
       }
     } else {
-      cookie.expires.map(|_| current.saturating_add(31_536_000))
+      None
     };
 
     cookies.retain(|c| !(c.name == cookie.name && c.domain == domain && c.path == path));
 
     if expiry_time != Some(0) {
-      let stored = StoredCookie {
+      cookies.push(StoredCookie {
         name: cookie.name,
         value: cookie.value,
         domain,
         path,
         secure: cookie.secure,
-        http_only: cookie.http_only,
         host_only,
-        creation_time: current,
+        creation_time: creation,
         expiry_time,
-      };
-
-      cookies.push(stored);
+      });
     }
   }
 
-  /// Gets cookies to send in Cookie request header
+  /// Cookie header value for `uri` (RFC 6265 path-length / creation-time sort).
   ///
-  /// Returns matching cookies formatted as a Cookie header value,
-  /// sorted by path length and creation time per RFC 6265.
-  ///
-  /// # Arguments
-  /// * `uri` - Request URI to match against
-  /// * `is_secure` - Whether the request is over HTTPS
-  ///
-  /// # Returns
-  /// Cookie header value (empty string if no matches)
+  /// Empty when nothing matches. Skips `Secure` cookies unless `is_secure`.
   pub fn get_request_cookies(
     &self,
     uri: &str,
     is_secure: bool,
   ) -> String {
-    let Some(request_host) = extract_host_from_uri(uri) else {
+    let Some((request_host, request_path)) = host_and_path(uri) else {
       return String::new();
     };
 
-    let request_path = extract_path_from_uri(uri);
-    let current = self.counter.fetch_add(1, Ordering::SeqCst);
+    let now = now_unix_secs();
 
     let cookies = self.cookies.lock();
     let mut matching_cookies = Vec::new();
 
     for cookie in cookies.iter() {
       if let Some(expiry) = cookie.expiry_time
-        && expiry <= current
+        && expiry <= now
       {
         continue;
       }
@@ -174,7 +144,7 @@ impl CookieStore {
       let domain_match = if cookie.host_only {
         request_host.eq_ignore_ascii_case(&cookie.domain)
       } else {
-        domain_matches(request_host, &cookie.domain)
+        domain_matches(&request_host, &cookie.domain)
       };
 
       if !domain_match {
@@ -207,71 +177,62 @@ impl CookieStore {
 
     result
   }
-
-  /// Clears all stored cookies
-  pub fn clear(&self) {
-    self.cookies.lock().clear();
-  }
-
-  /// Returns unexpired cookies as a Vec
-  ///
-  /// Filters out cookies that have passed their expiration time.
-  pub fn get_unexpired(&self) -> Vec<StoredCookie> {
-    let current = self.counter.fetch_add(1, Ordering::SeqCst);
-    let cookies = self.cookies.lock();
-    cookies
-      .iter()
-      .filter(|c| c.expiry_time.is_none_or(|expiry| expiry > current))
-      .cloned()
-      .collect()
-  }
 }
 
-#[cfg(feature = "cookie-jar")]
 impl Default for CookieStore {
   fn default() -> Self {
     Self::new()
   }
 }
 
-fn extract_host_from_uri(uri: &str) -> Option<&str> {
-  let after_scheme = uri.find("://").map_or(uri, |pos| &uri[pos + 3..]);
-
-  let host_end = after_scheme
-    .find('/')
-    .or_else(|| after_scheme.find('?'))
-    .or_else(|| after_scheme.find('#'))
-    .unwrap_or(after_scheme.len());
-
-  let host_with_port = &after_scheme[..host_end];
-
-  let host = host_with_port
-    .rfind(':')
-    .map_or(host_with_port, |pos| &host_with_port[..pos]);
-
-  if host.is_empty() {
-    None
-  } else {
-    Some(host)
+/// Wall-clock Unix seconds for cookie expiry (RFC 6265 Absolute Time).
+fn now_unix_secs() -> u64 {
+  #[cfg(unix)]
+  {
+    // SAFETY: time(NULL) is well-defined; negative means error → 0.
+    let t = unsafe { libc::time(core::ptr::null_mut()) };
+    if t < 0 {
+      0
+    } else {
+      u64::try_from(t).unwrap_or(0)
+    }
+  }
+  #[cfg(windows)]
+  {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
+    let mut ft = FILETIME {
+      dwLowDateTime: 0,
+      dwHighDateTime: 0,
+    };
+    // SAFETY: writes into stack FILETIME.
+    unsafe { GetSystemTimeAsFileTime(&mut ft) };
+    let ticks = (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime);
+    // FILETIME: 100ns since 1601-01-01; Unix epoch offset = 11_644_473_600 s
+    ticks
+      .checked_div(10_000_000)
+      .and_then(|s| s.checked_sub(11_644_473_600))
+      .unwrap_or(0)
+  }
+  #[cfg(not(any(unix, windows)))]
+  {
+    0
   }
 }
 
-fn extract_path_from_uri(uri: &str) -> String {
-  let after_scheme = uri.find("://").map_or(uri, |pos| &uri[pos + 3..]);
-
-  after_scheme.find('/').map_or_else(
-    || "/".to_string(),
-    |path_start| {
-      let path_with_query = &after_scheme[path_start..];
-
-      let path_end = path_with_query
-        .find('?')
-        .or_else(|| path_with_query.find('#'))
-        .unwrap_or(path_with_query.len());
-
-      path_with_query[..path_end].to_string()
-    },
-  )
+fn host_and_path(uri: &str) -> Option<(String, String)> {
+  let parsed = Uri::parse(uri).ok()?;
+  let auth = parsed.authority()?;
+  let host = match auth.host() {
+    Host::RegName(name) => String::from(*name),
+    Host::IpAddr(addr) => crate::util::format_ip_for_host(*addr),
+  };
+  let path = if parsed.path().is_empty() {
+    String::from("/")
+  } else {
+    String::from(parsed.path())
+  };
+  Some((host, path))
 }
 
 fn domain_matches(
@@ -333,31 +294,28 @@ fn default_path(request_path: &str) -> String {
   )
 }
 
-#[cfg(all(test, feature = "cookie-jar"))]
+#[cfg(test)]
 mod tests {
   use super::*;
 
   #[test]
-  fn test_extract_host() {
-    assert_eq!(extract_host_from_uri("http://example.com"), Some("example.com"));
-    assert_eq!(extract_host_from_uri("https://example.com/path"), Some("example.com"));
+  fn test_host_and_path() {
     assert_eq!(
-      extract_host_from_uri("http://example.com:8080/path"),
-      Some("example.com")
+      host_and_path("http://example.com"),
+      Some((String::from("example.com"), String::from("/")))
     );
     assert_eq!(
-      extract_host_from_uri("https://sub.example.com"),
-      Some("sub.example.com")
+      host_and_path("https://example.com/path"),
+      Some((String::from("example.com"), String::from("/path")))
     );
-  }
-
-  #[test]
-  fn test_extract_path() {
-    assert_eq!(extract_path_from_uri("http://example.com"), "/");
-    assert_eq!(extract_path_from_uri("http://example.com/"), "/");
-    assert_eq!(extract_path_from_uri("http://example.com/path"), "/path");
-    assert_eq!(extract_path_from_uri("http://example.com/path/sub"), "/path/sub");
-    assert_eq!(extract_path_from_uri("http://example.com/path?query"), "/path");
+    assert_eq!(
+      host_and_path("http://example.com:8080/path"),
+      Some((String::from("example.com"), String::from("/path")))
+    );
+    assert_eq!(
+      host_and_path("http://example.com/path?query"),
+      Some((String::from("example.com"), String::from("/path")))
+    );
   }
 
   #[test]
@@ -462,11 +420,48 @@ mod tests {
 
     store.store_response_cookies(
       "http://example.com/",
-      &alloc::vec!["session=abc".to_string(), "lang=en".to_string(),],
+      &alloc::vec!["session=abc".to_string(), "lang=en".to_string()],
     );
 
     let cookies = store.get_request_cookies("http://example.com/", false);
     assert!(cookies.contains("session=abc"));
     assert!(cookies.contains("lang=en"));
+  }
+
+  #[test]
+  fn expires_in_past_is_not_stored() {
+    let store = CookieStore::new();
+    store.store_response_cookies(
+      "http://example.com/",
+      &alloc::vec!["gone=1; Expires=Thu, 01 Jan 1970 00:00:00 GMT".to_string()],
+    );
+    assert!(
+      store
+        .get_request_cookies("http://example.com/", false)
+        .is_empty()
+    );
+  }
+
+  #[test]
+  fn expires_in_future_is_stored() {
+    let store = CookieStore::new();
+    store.store_response_cookies(
+      "http://example.com/",
+      &alloc::vec!["keep=1; Expires=Wed, 09 Jun 2099 10:18:14 GMT".to_string()],
+    );
+    assert_eq!(store.get_request_cookies("http://example.com/", false), "keep=1");
+  }
+
+  #[test]
+  fn max_age_zero_deletes() {
+    let store = CookieStore::new();
+    store.store_response_cookies("http://example.com/", &alloc::vec!["id=1".to_string()]);
+    assert_eq!(store.get_request_cookies("http://example.com/", false), "id=1");
+    store.store_response_cookies("http://example.com/", &alloc::vec!["id=1; Max-Age=0".to_string()]);
+    assert!(
+      store
+        .get_request_cookies("http://example.com/", false)
+        .is_empty()
+    );
   }
 }

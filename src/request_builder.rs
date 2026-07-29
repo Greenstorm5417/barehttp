@@ -1,5 +1,4 @@
 use crate::client::HttpClient;
-use crate::config::Config;
 use crate::dns::DnsResolver;
 use crate::error::Error;
 use crate::headers::Headers;
@@ -9,70 +8,39 @@ use crate::socket::BlockingSocket;
 use crate::util::percent_encode;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::marker::PhantomData;
 
-/// Trait for types that can be converted into an HTTP body
-pub trait IntoBody {
-  /// Convert this type into a byte vector
-  fn into_body(self) -> Vec<u8>;
-}
-
-impl IntoBody for Vec<u8> {
-  fn into_body(self) -> Vec<u8> {
-    self
-  }
-}
-
-impl IntoBody for String {
-  fn into_body(self) -> Vec<u8> {
-    self.into_bytes()
-  }
-}
-
-impl IntoBody for &str {
-  fn into_body(self) -> Vec<u8> {
-    self.as_bytes().to_vec()
-  }
-}
-
-impl IntoBody for &[u8] {
-  fn into_body(self) -> Vec<u8> {
-    self.to_vec()
-  }
-}
-
-/// Typestate marker indicating a request without a body
-///
-/// Used for HTTP methods like GET, HEAD, DELETE, OPTIONS.
-pub struct WithoutBody;
-
-/// Typestate marker indicating a request with a body
-///
-/// Used for HTTP methods like POST, PUT, PATCH.
-pub struct WithBody;
-
-/// Builder for constructing HTTP requests with compile-time body safety
-///
-/// Uses the typestate pattern to enforce body semantics at compile time.
-/// Methods that require a body (POST, PUT, PATCH) return `ClientRequestBuilder<WithBody>`,
-/// while methods without a body (GET, HEAD, etc.) return `ClientRequestBuilder<WithoutBody>`.
-pub struct ClientRequestBuilder<S, D, B = WithoutBody> {
-  client: HttpClient<S, D>,
+/// Request builder for [`HttpClient`].
+pub struct ClientRequestBuilder<'a, S, D> {
+  client: &'a HttpClient<S, D>,
   method: Method,
   url: String,
   headers: Headers,
   query_params: Vec<(String, String)>,
   form_data: Vec<(String, String)>,
   body: Option<Vec<u8>>,
-  request_config: Option<Config>,
-  _phantom: PhantomData<B>,
 }
 
-impl<S, D, B> ClientRequestBuilder<S, D, B>
+impl<'a, S, D> ClientRequestBuilder<'a, S, D>
 where
   S: BlockingSocket,
   D: DnsResolver,
 {
+  pub(crate) fn new(
+    client: &'a HttpClient<S, D>,
+    method: Method,
+    url: impl Into<String>,
+  ) -> Self {
+    Self {
+      client,
+      method,
+      url: url.into(),
+      headers: Headers::new(),
+      query_params: Vec::new(),
+      form_data: Vec::new(),
+      body: None,
+    }
+  }
+
   /// Add a header to the request
   #[must_use]
   pub fn header(
@@ -95,222 +63,26 @@ where
     self
   }
 
-  /// Add multiple URL-encoded query parameters from an iterator
-  #[must_use]
-  pub fn query_pairs<I, K, V>(
-    mut self,
-    iter: I,
-  ) -> Self
-  where
-    I: IntoIterator<Item = (K, V)>,
-    K: Into<String>,
-    V: Into<String>,
-  {
-    self
-      .query_params
-      .extend(iter.into_iter().map(|(k, v)| (k.into(), v.into())));
-    self
-  }
-
-  /// Set the Content-Type header
-  #[must_use]
-  pub fn content_type(
-    self,
-    content_type: impl Into<String>,
-  ) -> Self {
-    self.header(Headers::CONTENT_TYPE, content_type)
-  }
-
-  /// Add a cookie to the request
+  /// Add a cookie to the request.
   ///
-  /// Cookies are automatically combined into a single Cookie header with semicolon separators.
-  /// Multiple calls to this method will append cookies.
+  /// Appends `name=value` to the Cookie header (`; `-joined).
   ///
-  /// # Example
-  /// ```no_run
-  /// # use barehttp::HttpClient;
-  /// let client = HttpClient::new();
-  /// client.get("http://example.com")
-  ///     .cookie("session", "abc123")
-  ///     .cookie("user", "john")
-  ///     .call()?;
-  /// # Ok::<(), barehttp::Error>(())
-  /// ```
-  #[must_use]
+  /// # Errors
+  /// Returns [`Error::InvalidRequest`] if name or value contains `;` or a control character.
   pub fn cookie(
     mut self,
     name: impl Into<String>,
     value: impl Into<String>,
-  ) -> Self {
-    use alloc::format;
+  ) -> Result<Self, Error> {
     let name_str = name.into();
     let value_str = value.into();
-    let cookie_value = format!("{name_str}={value_str}");
-
-    // Check if Cookie header already exists
-    if let Some(existing) = self.headers.get(Headers::COOKIE) {
-      // Append to existing cookies with semicolon separator
-      let combined = format!("{existing}; {cookie_value}");
-      self.headers.remove(Headers::COOKIE);
-      self.headers.insert(Headers::COOKIE, combined);
-    } else {
-      // Create new Cookie header
-      self.headers.insert(Headers::COOKIE, cookie_value);
+    if !cookie_pair_ok(&name_str) || !cookie_pair_ok(&value_str) {
+      return Err(Error::InvalidRequest);
     }
-
     self
-  }
-
-  /// Override the request URL
-  #[must_use]
-  pub fn uri(
-    mut self,
-    url: impl Into<String>,
-  ) -> Self {
-    self.url = url.into();
-    self
-  }
-
-  /// Get the HTTP method
-  #[must_use]
-  pub const fn method(&self) -> Method {
-    self.method
-  }
-
-  /// Get the request URL
-  #[must_use]
-  pub fn url(&self) -> &str {
-    &self.url
-  }
-
-  /// Get immutable reference to request headers
-  #[must_use]
-  pub const fn headers(&self) -> &Headers {
-    &self.headers
-  }
-
-  /// Get mutable reference to request headers
-  #[must_use]
-  pub const fn headers_mut(&mut self) -> &mut Headers {
-    &mut self.headers
-  }
-
-  /// Override the client configuration for this request
-  #[must_use]
-  pub fn with_config(
-    mut self,
-    config: Config,
-  ) -> Self {
-    self.request_config = Some(config);
-    self
-  }
-
-  /// Get the request-specific configuration if set
-  #[must_use]
-  pub const fn config(&self) -> Option<&Config> {
-    self.request_config.as_ref()
-  }
-
-  fn build_url(&self) -> String {
-    if self.query_params.is_empty() {
-      return self.url.clone();
-    }
-
-    let mut url = self.url.clone();
-    let separator = if url.contains('?') {
-      '&'
-    } else {
-      '?'
-    };
-    url.push(separator);
-
-    for (i, (key, value)) in self.query_params.iter().enumerate() {
-      if i > 0 {
-        url.push('&');
-      }
-      url.push_str(&percent_encode(key));
-      url.push('=');
-      url.push_str(&percent_encode(value));
-    }
-
-    url
-  }
-
-  fn build_form_url_encoded<I, K, V>(iter: I) -> Vec<u8>
-  where
-    I: IntoIterator<Item = (K, V)>,
-    K: AsRef<str>,
-    V: AsRef<str>,
-  {
-    let mut body = String::new();
-    for (i, (key, value)) in iter.into_iter().enumerate() {
-      if i > 0 {
-        body.push('&');
-      }
-      body.push_str(&percent_encode(key.as_ref()));
-      body.push('=');
-      body.push_str(&percent_encode(value.as_ref()));
-    }
-    body.into_bytes()
-  }
-}
-
-impl<S, D> ClientRequestBuilder<S, D, WithoutBody>
-where
-  S: BlockingSocket,
-  D: DnsResolver,
-{
-  /// Create a new request builder for methods without a body
-  pub fn new(
-    client: HttpClient<S, D>,
-    method: Method,
-    url: impl Into<String>,
-  ) -> Self {
-    Self {
-      client,
-      method,
-      url: url.into(),
-      headers: Headers::new(),
-      query_params: Vec::new(),
-      form_data: Vec::new(),
-      body: None,
-      request_config: None,
-      _phantom: PhantomData,
-    }
-  }
-
-  /// # Errors
-  /// Returns an error if the request fails
-  pub fn call(self) -> Result<Response, Error> {
-    let url = self.build_url();
-    self
-      .client
-      .request(self.method, &url, &self.headers, None, self.request_config.as_ref())
-  }
-}
-
-impl<S, D> ClientRequestBuilder<S, D, WithBody>
-where
-  S: BlockingSocket,
-  D: DnsResolver,
-{
-  /// Create a new request builder for methods with a body
-  pub fn new(
-    client: HttpClient<S, D>,
-    method: Method,
-    url: impl Into<String>,
-  ) -> Self {
-    Self {
-      client,
-      method,
-      url: url.into(),
-      headers: Headers::new(),
-      query_params: Vec::new(),
-      form_data: Vec::new(),
-      body: None,
-      request_config: None,
-      _phantom: PhantomData,
-    }
+      .headers
+      .merge_cookie(&alloc::format!("{name_str}={value_str}"));
+    Ok(self)
   }
 
   /// Add a form data field (`application/x-www-form-urlencoded`).
@@ -335,10 +107,20 @@ where
   }
 
   /// # Errors
-  /// Returns an error if the request fails
+  /// [`Error::InvalidRequest`] if form fields and a body are both set; otherwise URL parse,
+  /// DNS, connect, HTTP, or policy failure from the client.
   pub fn call(self) -> Result<Response, Error> {
-    let url = self.build_url();
+    if !self.form_data.is_empty() && self.body.is_some() {
+      return Err(Error::InvalidRequest);
+    }
 
+    let url = append_encoded_pairs(
+      &self.url,
+      self
+        .query_params
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str())),
+    );
     let mut headers = self.headers;
     let body = if self.form_data.is_empty() {
       self.body
@@ -346,48 +128,54 @@ where
       if !headers.contains(Headers::CONTENT_TYPE) {
         headers.insert(Headers::CONTENT_TYPE, "application/x-www-form-urlencoded");
       }
-      Some(Self::build_form_url_encoded(
-        self.form_data.iter().map(|(k, v)| (k.as_str(), v.as_str())),
-      ))
+      Some(encode_pairs(self.form_data.iter().map(|(k, v)| (k.as_str(), v.as_str()))).into_bytes())
     };
 
-    self
-      .client
-      .request(self.method, &url, &headers, body, self.request_config.as_ref())
+    self.client.request(self.method, &url, &headers, body)
   }
 
   /// # Errors
-  /// Returns an error if the request fails
+  /// Same as [`Self::call`].
   pub fn send(
     mut self,
-    body: impl IntoBody,
+    body: impl AsRef<[u8]>,
   ) -> Result<Response, Error> {
-    self.body = Some(body.into_body());
+    self.body = Some(body.as_ref().to_vec());
     self.call()
   }
+}
 
-  /// # Errors
-  /// Returns an error if the request fails
-  pub fn send_form<I, K, V>(
-    mut self,
-    iter: I,
-  ) -> Result<Response, Error>
-  where
-    I: IntoIterator<Item = (K, V)>,
-    K: AsRef<str>,
-    V: AsRef<str>,
-  {
-    let form_body = Self::build_form_url_encoded(iter);
-    self
-      .headers
-      .insert(Headers::CONTENT_TYPE, "application/x-www-form-urlencoded");
-    self.body = Some(form_body);
-    self.call()
+fn encode_pairs<'a>(pairs: impl Iterator<Item = (&'a str, &'a str)>) -> String {
+  let mut out = String::new();
+  for (i, (key, value)) in pairs.enumerate() {
+    if i > 0 {
+      out.push('&');
+    }
+    out.push_str(&percent_encode(key));
+    out.push('=');
+    out.push_str(&percent_encode(value));
   }
+  out
+}
 
-  /// # Errors
-  /// Returns an error if the request fails
-  pub fn send_empty(self) -> Result<Response, Error> {
-    self.call()
+fn append_encoded_pairs<'a>(
+  base: &str,
+  pairs: impl Iterator<Item = (&'a str, &'a str)>,
+) -> String {
+  let encoded = encode_pairs(pairs);
+  if encoded.is_empty() {
+    return String::from(base);
   }
+  let mut url = String::from(base);
+  url.push(if url.contains('?') {
+    '&'
+  } else {
+    '?'
+  });
+  url.push_str(&encoded);
+  url
+}
+
+fn cookie_pair_ok(s: &str) -> bool {
+  !s.bytes().any(|b| b == b';' || b.is_ascii_control())
 }

@@ -1,6 +1,4 @@
-mod http_client;
-mod policy;
-mod request_executor;
+pub mod http_client;
 
 pub use http_client::HttpClient;
 

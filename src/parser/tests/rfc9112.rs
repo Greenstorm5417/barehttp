@@ -1,17 +1,15 @@
-//! Unique RFC 9112 MUST cases not covered by `message_body` / `chunked` / `security` / `status_line`.
+//! Unique RFC 9112 MUST cases not covered by `message_body` / `chunked` / `security`.
 use crate::error::ParseError;
+use crate::parser::version::Version;
 use crate::parser::*;
 extern crate alloc;
+use crate::headers::Headers;
 use alloc::string::String;
 
-// --- Message robustness / obs-fold ---
-
 #[test]
-fn obs_fold_replaced_with_spaces() {
+fn obs_fold_rejected() {
   let input = b"HTTP/1.1 200 OK\r\nX-Long: first\r\n second\r\n\tthird\r\n\r\n";
-  let response = Response::parse(input).unwrap();
-  let value = response.get_header("X-Long").unwrap();
-  assert!(value.contains("first") && value.contains("second") && value.contains("third"));
+  assert_eq!(Response::parse(input).unwrap_err(), ParseError::ObsoleteFoldInHeader);
 }
 
 #[test]
@@ -23,7 +21,7 @@ fn leading_empty_lines_skipped() {
 #[test]
 fn lf_only_line_terminators_accepted() {
   let input = b"HTTP/1.1 200 OK\nContent-Length: 5\n\nHello";
-  assert_eq!(Response::parse(input).unwrap().body.as_bytes(), b"Hello");
+  assert_eq!(Response::parse(input).unwrap().body.as_slice(), b"Hello");
 }
 
 #[test]
@@ -41,43 +39,19 @@ fn invalid_header_name_rejected() {
   assert!(Response::parse(b"HTTP/1.1 200 OK\r\nInvalid@Header: value\r\n\r\n").is_err());
 }
 
-// --- Body framing edge cases ---
-
-#[test]
-fn te_cl_conflict_is_conflicting_framing() {
-  let input =
-    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
-  assert_eq!(Response::parse(input).unwrap_err(), ParseError::ConflictingFraming);
-}
-
 #[test]
 fn identical_comma_separated_content_lengths_accepted() {
   let input = b"HTTP/1.1 200 OK\r\nContent-Length: 5, 5, 5\r\n\r\nHello";
-  assert_eq!(Response::parse(input).unwrap().body.as_bytes(), b"Hello");
+  assert_eq!(Response::parse(input).unwrap().body.as_slice(), b"Hello");
 }
 
 #[test]
 fn trailers_not_merged_into_headers() {
-  let input =
-    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\nX-Trailer: value\r\n\r\n";
+  let input = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\nX-Trailer: value\r\n\r\n";
   let response = Response::parse(input).unwrap();
-  assert_eq!(response.body.as_bytes(), b"Hello");
+  assert_eq!(response.body.as_slice(), b"Hello");
   assert!(response.get_header("X-Trailer").is_none());
-}
-
-#[test]
-fn connect_2xx_ignores_framing() {
-  let input = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nThis should be ignored";
-  let (status_line, after_status) = crate::parser::status_line::StatusLine::parse(input).unwrap();
-  let (headers_bytes, remaining) = crate::parser::headers::HeaderField::parse(after_status).unwrap();
-  let body = Response::parse_body(
-    remaining,
-    &headers_bytes,
-    status_line.status.as_u16(),
-    Some("CONNECT"),
-  )
-  .unwrap();
-  assert!(body.is_empty());
+  assert_eq!(response.trailers.len(), 1);
 }
 
 #[test]
@@ -88,57 +62,69 @@ fn te_rejected_on_http_10() {
 
 #[test]
 fn body_read_strategy_selection() {
-  let empty = crate::headers::Headers::new();
-  assert_eq!(Response::body_read_strategy(&empty, 100).unwrap(), BodyReadStrategy::NoBody);
-  assert_eq!(Response::body_read_strategy(&empty, 204).unwrap(), BodyReadStrategy::NoBody);
-  assert_eq!(Response::body_read_strategy(&empty, 304).unwrap(), BodyReadStrategy::NoBody);
+  let empty = Headers::new();
+  assert_eq!(
+    Response::body_read_strategy(&empty, 100, Version::HTTP_11).unwrap(),
+    BodyReadStrategy::NoBody
+  );
+  assert_eq!(
+    Response::body_read_strategy(&empty, 204, Version::HTTP_11).unwrap(),
+    BodyReadStrategy::NoBody
+  );
+  assert_eq!(
+    Response::body_read_strategy(&empty, 304, Version::HTTP_11).unwrap(),
+    BodyReadStrategy::NoBody
+  );
 
-  let mut cl = crate::headers::Headers::new();
+  let mut cl = Headers::new();
   cl.insert("Content-Length", "100");
   assert_eq!(
-    Response::body_read_strategy(&cl, 200).unwrap(),
+    Response::body_read_strategy(&cl, 200, Version::HTTP_11).unwrap(),
     BodyReadStrategy::ContentLength(100)
   );
 
-  let mut te = crate::headers::Headers::new();
+  let mut te = Headers::new();
   te.insert("Transfer-Encoding", "chunked");
   assert_eq!(
-    Response::body_read_strategy(&te, 200).unwrap(),
+    Response::body_read_strategy(&te, 200, Version::HTTP_11).unwrap(),
     BodyReadStrategy::Chunked
   );
 
-  let mut gzip = crate::headers::Headers::new();
+  let mut gzip = Headers::new();
   gzip.insert("Transfer-Encoding", "gzip");
   assert_eq!(
-    Response::body_read_strategy(&gzip, 200).unwrap(),
+    Response::body_read_strategy(&gzip, 200, Version::HTTP_11).unwrap(),
     BodyReadStrategy::UntilClose
   );
 
-  // no CL/TE → until connection close (RFC 9112 §6.3)
   assert_eq!(
-    Response::body_read_strategy(&empty, 200).unwrap(),
+    Response::body_read_strategy(&empty, 200, Version::HTTP_11).unwrap(),
     BodyReadStrategy::UntilClose
   );
 }
 
-// --- WireRequest ---
+fn serialize_with_headers(
+  method: &str,
+  path: &str,
+  headers: &Headers,
+  body: Option<&[u8]>,
+) -> Result<alloc::vec::Vec<u8>, ParseError> {
+  serialize_request(method, path, headers, body)
+}
 
 #[test]
 fn empty_path_becomes_slash() {
-  let request = WireRequest::new("GET", "")
-    .header("Host", "example.com")
-    .build()
-    .unwrap();
+  let mut headers = Headers::new();
+  headers.insert("Host", "example.com");
+  let request = serialize_with_headers("GET", "", &headers, None).unwrap();
   assert!(String::from_utf8_lossy(&request).starts_with("GET / HTTP/1.1\r\n"));
 }
 
 #[test]
 fn request_no_extra_crlf_around_body() {
-  let request = WireRequest::new("POST", "/")
-    .header("Host", "example.com")
-    .body(b"test body".to_vec())
-    .build()
-    .unwrap();
+  let mut headers = Headers::new();
+  headers.insert("Host", "example.com");
+  let request = serialize_with_headers("POST", "/", &headers, Some(b"test body")).unwrap();
   assert!(request.starts_with(b"POST"));
   assert!(request.ends_with(b"test body"));
   assert!(!request.ends_with(b"test body\r\n"));
@@ -147,84 +133,49 @@ fn request_no_extra_crlf_around_body() {
 #[test]
 fn host_header_required() {
   assert_eq!(
-    WireRequest::new("GET", "/").build().unwrap_err(),
+    serialize_with_headers("GET", "/", &Headers::new(), None).unwrap_err(),
     ParseError::MissingHostHeader
   );
 }
 
 #[test]
 fn multiple_host_headers_rejected() {
-  let result = WireRequest::new("GET", "/")
-    .header("Host", "example.com")
-    .header("host", "another.com")
-    .build();
-  assert_eq!(result.unwrap_err(), ParseError::MultipleHostHeaders);
-}
-
-#[test]
-fn invalid_host_value_rejected() {
-  let result = WireRequest::new("GET", "/")
-    .header("Host", "example .com")
-    .build();
-  assert_eq!(result.unwrap_err(), ParseError::InvalidHostHeaderValue);
-}
-
-#[test]
-fn chunked_applied_twice_rejected() {
-  let result = WireRequest::new("POST", "/")
-    .header("Host", "example.com")
-    .header("Transfer-Encoding", "chunked, chunked")
-    .build();
-  assert_eq!(result.unwrap_err(), ParseError::ChunkedAppliedMultipleTimes);
+  let mut headers = Headers::new();
+  headers.insert("Host", "example.com");
+  headers.insert("host", "another.com");
+  assert_eq!(
+    serialize_with_headers("GET", "/", &headers, None).unwrap_err(),
+    ParseError::MultipleHostHeaders
+  );
 }
 
 #[test]
 fn request_te_and_cl_conflict_rejected() {
-  let result = WireRequest::new("POST", "/")
-    .header("Host", "example.com")
-    .header("Transfer-Encoding", "chunked")
-    .header("Content-Length", "4")
-    .body(b"test".to_vec())
-    .build();
-  assert_eq!(result.unwrap_err(), ParseError::ConflictingFraming);
-}
-
-#[test]
-fn request_rejects_bare_cr_and_obs_fold_in_headers() {
+  let mut headers = Headers::new();
+  headers.insert("Host", "example.com");
+  headers.insert("Transfer-Encoding", "chunked");
+  headers.insert("Content-Length", "4");
   assert_eq!(
-    WireRequest::new("GET", "/")
-      .header("Host", "example.com")
-      .header("X-Bad", "value\rwith\rCR")
-      .build()
-      .unwrap_err(),
-    ParseError::InvalidHeaderValue
-  );
-  assert_eq!(
-    WireRequest::new("GET", "/")
-      .header("Host", "example.com")
-      .header("X-Bad", "line1\r\n line2")
-      .build()
-      .unwrap_err(),
-    ParseError::InvalidHeaderValue
+    serialize_with_headers("POST", "/", &headers, Some(b"test")).unwrap_err(),
+    ParseError::ConflictingFraming
   );
 }
 
 #[test]
-fn te_header_rules() {
+fn request_rejects_ctl_injection_in_headers() {
+  let mut bad_cr = Headers::new();
+  bad_cr.insert("Host", "example.com");
+  bad_cr.insert("X-Bad", "value\rwith\rCR");
   assert_eq!(
-    WireRequest::new("GET", "/")
-      .header("Host", "example.com")
-      .header("TE", "chunked, gzip")
-      .build()
-      .unwrap_err(),
-    ParseError::ChunkedInTeHeader
+    serialize_with_headers("GET", "/", &bad_cr, None).unwrap_err(),
+    ParseError::InvalidHeaderValue
   );
+
+  let mut bad_fold = Headers::new();
+  bad_fold.insert("Host", "example.com");
+  bad_fold.insert("X-Bad", "line1\r\n line2");
   assert_eq!(
-    WireRequest::new("GET", "/")
-      .header("Host", "example.com")
-      .header("TE", "gzip")
-      .build()
-      .unwrap_err(),
-    ParseError::TeHeaderMissingConnection
+    serialize_with_headers("GET", "/", &bad_fold, None).unwrap_err(),
+    ParseError::InvalidHeaderValue
   );
 }

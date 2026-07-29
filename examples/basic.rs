@@ -1,54 +1,48 @@
-//! Basic HTTP client usage example
-//!
-//! Demonstrates simple GET and POST requests using barehttp.
+//! GET/POST, headers, config, and errors with barehttp.
 
+use barehttp::config::Config;
 use barehttp::{Error, HttpClient};
+use core::time::Duration;
 
 fn main() -> Result<(), Error> {
-  println!("=== Basic barehttp Examples ===\n");
-
-  // Simple GET request using convenience function
-  println!("1. Simple GET request:");
+  // Convenience GET
   let response = barehttp::get("http://httpbin.org/get")?;
-  println!("Status: {}", response.status_code);
-  println!("Body preview: {}...\n", &response.text()?[..100]);
+  println!("GET status: {}", response.status_code);
 
-  // Using HttpClient for repeated requests
-  println!("2. Using HttpClient:");
   let client = HttpClient::new();
 
+  // Headers + query
   let response = client
     .get("http://httpbin.org/get")
     .header("User-Agent", "barehttp-example/1.0")
+    .header("X-Custom", "one")
+    .query("foo", "bar")
     .call()?;
+  println!("headers/query status: {}", response.status_code);
 
-  if response.is_success() {
-    println!("✓ Request successful");
-    println!("Status: {}\n", response.status_code);
-  }
-
-  // POST request with JSON body
-  println!("3. POST request with JSON:");
-  let json_body = br#"{"name":"barehttp","type":"http-client"}"#;
-
+  // POST JSON
   let response = client
     .post("http://httpbin.org/post")
     .header("Content-Type", "application/json")
-    .send(json_body.to_vec())?;
+    .send(br#"{"name":"barehttp"}"#)?;
+  println!("POST status: {}", response.status_code);
 
-  println!("Status: {}", response.status_code);
-  println!("✓ POST successful\n");
+  // Custom config
+  let client = HttpClient::with_config(Config {
+    timeout_read: Some(Duration::from_secs(10)),
+    follow_redirects: false,
+    http_status_as_error: false,
+    user_agent: String::from("barehttp-example/1.0"),
+    ..Default::default()
+  });
+  let response = client.get("http://httpbin.org/status/404").call()?;
+  println!("404 as response: {}", response.status_code);
 
-  // GET with query parameters
-  println!("4. GET with query parameters:");
-  let response = client
-    .get("http://httpbin.org/get")
-    .query("foo", "bar")
-    .query("baz", "qux")
-    .call()?;
-
-  println!("Status: {}", response.status_code);
-  println!("✓ Query parameters sent\n");
+  // Error match
+  match HttpClient::new().get("not-a-valid-url").call() {
+    Err(e) => println!("caught: {e:?}"),
+    Ok(_) => println!("unexpected ok"),
+  }
 
   Ok(())
 }

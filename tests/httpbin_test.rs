@@ -2,8 +2,8 @@
 //!
 //! Run manually: `HTTPBIN_URL=http://127.0.0.1 cargo test --test httpbin_test -- --ignored`
 
-use barehttp::config::{Config, HttpStatusHandling, RedirectPolicy};
-use barehttp::{HttpClient, delete, get, post};
+use barehttp::config::Config;
+use barehttp::{HttpClient, get, post};
 
 fn httpbin_url() -> String {
   std::env::var("HTTPBIN_URL").unwrap_or_else(|_| "http://httpbin.org".to_string())
@@ -20,14 +20,17 @@ fn get_ok() {
 #[test]
 #[ignore = "needs network / httpbin"]
 fn post_ok() {
-  let response = post(&format!("{}/post", httpbin_url()), b"test".to_vec()).unwrap();
+  let response = post(&format!("{}/post", httpbin_url()), b"test").unwrap();
   assert_eq!(response.status_code, 200);
 }
 
 #[test]
 #[ignore = "needs network / httpbin"]
 fn delete_ok() {
-  let response = delete(&format!("{}/delete", httpbin_url())).unwrap();
+  let response = HttpClient::new()
+    .delete(format!("{}/delete", httpbin_url()))
+    .call()
+    .unwrap();
   assert_eq!(response.status_code, 200);
 }
 
@@ -51,7 +54,7 @@ fn client_query_and_headers() {
 #[ignore = "needs network / httpbin"]
 fn status_as_response() {
   let config = Config {
-    http_status_handling: HttpStatusHandling::AsResponse,
+    http_status_as_error: false,
     ..Default::default()
   };
   let client = HttpClient::with_config(config);
@@ -67,7 +70,7 @@ fn status_as_response() {
 #[ignore = "needs network / httpbin"]
 fn redirect_no_follow() {
   let config = Config {
-    redirect_policy: RedirectPolicy::NoFollow,
+    follow_redirects: false,
     ..Default::default()
   };
   let client = HttpClient::with_config(config);

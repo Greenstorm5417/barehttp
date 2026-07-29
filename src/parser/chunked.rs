@@ -1,4 +1,5 @@
 use crate::error::ParseError;
+use crate::parser::headers::{expect_crlf, parse_header_fields};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkedDecoder {
@@ -23,8 +24,7 @@ impl ChunkedDecoder {
     }
   }
 
-  /// Get the parsed trailer fields from the chunked response.
-  /// Per RFC 9112 Section 7.1.2: Trailers are optional fields that appear after the last chunk.
+  /// Trailer fields after the last chunk (RFC 9112 §7.1.2).
   #[must_use]
   pub fn trailers(&self) -> &[(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)] {
     &self.trailers
@@ -65,17 +65,14 @@ impl ChunkedDecoder {
           self.state = DecodeState::ChunkDataCrlf;
         },
         DecodeState::ChunkDataCrlf => {
-          remaining = Self::expect_crlf(remaining)?;
+          remaining = expect_crlf(remaining)?;
           self.state = DecodeState::ChunkSize;
         },
         DecodeState::TrailerSection => {
-          let (found_end, rest) = self.parse_trailer_section(remaining)?;
-          remaining = rest;
-
-          if found_end {
-            self.state = DecodeState::Complete;
-            return Ok(remaining);
-          }
+          let (trailers, rest) = parse_header_fields(remaining)?;
+          self.trailers = trailers;
+          self.state = DecodeState::Complete;
+          return Ok(rest);
         },
         DecodeState::Complete => {
           return Ok(remaining);
@@ -126,113 +123,8 @@ impl ChunkedDecoder {
       rest = rest.get(1..).ok_or(ParseError::InvalidChunkSize)?;
     }
 
-    rest = Self::expect_crlf(rest)?;
+    rest = expect_crlf(rest)?;
 
     Ok((size, rest))
-  }
-
-  fn parse_trailer_section<'a>(
-    &mut self,
-    input: &'a [u8],
-  ) -> Result<(bool, &'a [u8]), ParseError> {
-    // Check for end of trailers (empty line)
-    if input.len() >= 2 {
-      let byte0 = input.first().copied();
-      let byte1 = input.get(1).copied();
-
-      if byte0 == Some(b'\r') && byte1 == Some(b'\n') {
-        let rest = input.get(2..).ok_or(ParseError::MissingCrlf)?;
-        return Ok((true, rest));
-      }
-    }
-
-    if !input.is_empty() && input.first().copied() == Some(b'\n') {
-      let rest = input.get(1..).ok_or(ParseError::MissingCrlf)?;
-      return Ok((true, rest));
-    }
-
-    // Parse trailer field: name: value
-    let colon_pos = input.iter().position(|&b| b == b':');
-    if let Some(pos) = colon_pos {
-      let name = input.get(..pos).ok_or(ParseError::InvalidHeaderName)?;
-      let mut value_start = pos + 1;
-
-      // Skip leading whitespace in value
-      while value_start < input.len() {
-        let b = input.get(value_start).copied();
-        if b == Some(b' ') || b == Some(b'\t') {
-          value_start += 1;
-        } else {
-          break;
-        }
-      }
-
-      // Find end of line
-      let mut line_end = value_start;
-      while line_end < input.len() {
-        let b = input.get(line_end).copied();
-        if b == Some(b'\r') || b == Some(b'\n') {
-          break;
-        }
-        line_end += 1;
-      }
-
-      let value = input
-        .get(value_start..line_end)
-        .ok_or(ParseError::InvalidHeaderValue)?;
-
-      // RFC 9112 Section 7.1.2: Store trailer field
-      // Note: Proper merging with headers should only happen if explicitly allowed
-      // by the header definition. For now, we store them separately.
-      self.trailers.push((name.to_vec(), value.to_vec()));
-
-      let after_line = input
-        .get(line_end..)
-        .ok_or(ParseError::UnexpectedEndOfInput)?;
-      let final_rest = Self::expect_crlf(after_line)?;
-      return Ok((false, final_rest));
-    }
-
-    // No colon found - just skip this line
-    let mut i = 0;
-    while i < input.len() {
-      let b = input.get(i).copied();
-      if b == Some(b'\r') || b == Some(b'\n') {
-        break;
-      }
-      i += 1;
-    }
-
-    if i == 0 {
-      return Err(ParseError::UnexpectedEndOfInput);
-    }
-
-    let after_line = input.get(i..).ok_or(ParseError::UnexpectedEndOfInput)?;
-    let final_rest = Self::expect_crlf(after_line)?;
-
-    Ok((false, final_rest))
-  }
-
-  fn expect_crlf(input: &[u8]) -> Result<&[u8], ParseError> {
-    if input.len() < 2 {
-      return Err(ParseError::MissingCrlf);
-    }
-
-    let byte0 = input.first().copied();
-    let byte1 = input.get(1).copied();
-
-    if byte0 == Some(b'\r') && byte1 == Some(b'\n') {
-      return input.get(2..).ok_or(ParseError::MissingCrlf);
-    }
-
-    if byte0 == Some(b'\n') {
-      return input.get(1..).ok_or(ParseError::MissingCrlf);
-    }
-
-    if byte0 == Some(b'\r') {
-      return Err(ParseError::BareCarriageReturn);
-    }
-
-    Err(ParseError::MissingCrlf)
   }
 }

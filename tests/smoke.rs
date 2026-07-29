@@ -1,40 +1,42 @@
-//! Offline public-API smoke. Deep coverage lives in `src/` unit tests.
+//! Offline public-API smoke.
 
-use barehttp::config::{Config, ConfigBuilder, RedirectPolicy};
-use barehttp::{Headers, HttpClient, Method, OsBlockingSocket, OsDnsResolver, StatusCode};
+use barehttp::config::Config;
+use barehttp::{Headers, HttpClient, Method, OsBlockingSocket, OsDnsResolver};
 use core::time::Duration;
 
 #[test]
 fn client_constructors() {
   let _ = HttpClient::new();
 
-  let config = ConfigBuilder::new()
-    .timeout(Duration::from_secs(30))
-    .max_redirects(5)
-    .user_agent("smoke/1.0")
-    .redirect_policy(RedirectPolicy::NoFollow)
-    .build();
+  let config = Config {
+    timeout_read: Some(Duration::from_secs(30)),
+    timeout_write: Some(Duration::from_secs(30)),
+    max_redirects: 5,
+    user_agent: String::from("smoke/1.0"),
+    follow_redirects: false,
+    ..Default::default()
+  };
   let _ = HttpClient::with_config(config);
 
-  let _client: HttpClient<OsBlockingSocket, _> =
-    HttpClient::new_with_adapters(OsDnsResolver::new());
-  let _client: HttpClient<OsBlockingSocket, _> =
-    HttpClient::with_adapters_and_config(OsDnsResolver::new(), Config::default());
+  let _client: HttpClient<OsBlockingSocket, _> = HttpClient::with_adapters(OsDnsResolver, Config::default());
 }
 
 #[test]
-fn config_builder_basics() {
-  let config = ConfigBuilder::new()
-    .timeout(Duration::from_secs(10))
-    .user_agent("app/1.0")
-    .max_redirects(3)
-    .redirect_policy(RedirectPolicy::NoFollow)
-    .build();
+fn config_struct_update() {
+  let config = Config {
+    timeout_read: Some(Duration::from_secs(10)),
+    timeout_write: Some(Duration::from_secs(10)),
+    user_agent: String::from("app/1.0"),
+    max_redirects: 3,
+    follow_redirects: false,
+    ..Default::default()
+  };
 
-  assert_eq!(config.timeout, Some(Duration::from_secs(10)));
-  assert_eq!(config.user_agent.as_deref(), Some("app/1.0"));
+  assert_eq!(config.timeout_read, Some(Duration::from_secs(10)));
+  assert_eq!(config.timeout_write, Some(Duration::from_secs(10)));
+  assert_eq!(config.user_agent, "app/1.0");
   assert_eq!(config.max_redirects, 3);
-  assert_eq!(config.redirect_policy, RedirectPolicy::NoFollow);
+  assert!(!config.follow_redirects);
 }
 
 #[test]
@@ -53,16 +55,8 @@ fn headers_basics() {
 }
 
 #[test]
-fn method_and_status() {
+fn method_basics() {
   assert_eq!(Method::Get.as_str(), "GET");
   assert_eq!(Method::Post.as_str(), "POST");
-  assert!(Method::Post.has_body());
-  assert!(Method::Get.without_body());
-  assert_eq!("DELETE".parse::<Method>().unwrap(), Method::Delete);
-
-  let ok = StatusCode::new(200).unwrap();
-  assert!(ok.is_successful());
-  assert_eq!(ok.as_u16(), 200);
-  assert!(StatusCode::new(404).unwrap().is_client_error());
-  assert!(StatusCode::new(99).is_none());
+  assert_eq!(Method::Delete.as_str(), "DELETE");
 }

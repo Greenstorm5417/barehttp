@@ -2,120 +2,67 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
 
 jobs:
-  test:
-    name: Test Suite
+  check:
+    name: check
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust: [stable, beta]
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-      
-      - name: Cache cargo registry
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-      
-      - name: Cache cargo index
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-      
-      - name: Cache cargo build
-        uses: actions/cache@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-      
-      - name: Run tests
-        run: cargo test --verbose --all-features
-      
-      - name: Run doc tests
-        run: cargo test --doc --verbose
 
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
-      
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+          components: rustfmt, clippy
 
-  fmt:
-    name: Rustfmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      
-      - name: Check formatting
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
         run: cargo fmt --all -- --check
 
-  docs:
-    name: Documentation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      
-      - name: Check documentation
-        run: cargo doc --no-deps --all-features
+      - name: Clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test (default features)
+        run: cargo test
+
+      - name: Test (all features)
+        run: cargo test --all-features
+
+      - name: Doc
         env:
           RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --all-features
+
+      - name: Examples
+        run: cargo build --examples --all-features
 
   build:
-    name: Build
+    name: build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-      
-      - name: Build
-        run: cargo build --verbose --all-features
-      
-      - name: Build examples
-        run: cargo build --examples --verbose
 
-  update-readme:
-    name: README check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
 
-      - name: Note
-        run: |
-          echo "README.md is hand-maintained; do not overwrite from lib.rs crate docs."
-          test -f README.md
+      - name: Test (all features)
+        run: cargo test --all-features

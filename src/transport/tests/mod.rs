@@ -5,7 +5,7 @@
 #![allow(clippy::indexing_slicing)]
 #![allow(clippy::shadow_reuse)]
 #![allow(clippy::shadow_same)]
+mod mock_socket;
 mod test_connection;
-mod test_connection_state;
 mod test_connector;
 mod test_pool;

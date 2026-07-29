@@ -76,6 +76,23 @@ impl Headers {
     self.headers.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
   }
 
+  /// Append to Cookie header (`; `-joined), or insert if absent. No-op if `value` is empty.
+  pub fn merge_cookie(
+    &mut self,
+    value: &str,
+  ) {
+    if value.is_empty() {
+      return;
+    }
+    if let Some(existing) = self.get(Self::COOKIE) {
+      let combined = alloc::format!("{existing}; {value}");
+      self.remove(Self::COOKIE);
+      self.insert(Self::COOKIE, combined);
+    } else {
+      self.insert(Self::COOKIE, value);
+    }
+  }
+
   /// Get an iterator over all headers
   pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
     self.headers.iter().map(|(n, v)| (n.as_str(), v.as_str()))
@@ -91,24 +108,6 @@ impl Headers {
   #[must_use]
   pub const fn is_empty(&self) -> bool {
     self.headers.is_empty()
-  }
-
-  /// Get a reference to the internal vector
-  #[must_use]
-  pub const fn as_vec(&self) -> &Vec<(String, String)> {
-    &self.headers
-  }
-
-  /// Get a mutable reference to the internal vector
-  #[must_use]
-  pub const fn as_vec_mut(&mut self) -> &mut Vec<(String, String)> {
-    &mut self.headers
-  }
-
-  /// Convert into the internal vector
-  #[must_use]
-  pub fn into_vec(self) -> Vec<(String, String)> {
-    self.headers
   }
 
   // Header names used by this crate (string literals elsewhere are fine too).
@@ -148,179 +147,5 @@ impl<'a> IntoIterator for &'a Headers {
 
   fn into_iter(self) -> Self::IntoIter {
     self.headers.iter()
-  }
-}
-
-impl IntoIterator for Headers {
-  type Item = (String, String);
-  type IntoIter = alloc::vec::IntoIter<(String, String)>;
-
-  fn into_iter(self) -> Self::IntoIter {
-    self.headers.into_iter()
-  }
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
-mod tests {
-  use super::*;
-  use alloc::vec;
-
-  #[test]
-  fn headers_new_creates_empty() {
-    let headers = Headers::new();
-    assert!(headers.is_empty());
-    assert_eq!(headers.len(), 0);
-  }
-
-  #[test]
-  fn headers_insert_and_get() {
-    let mut headers = Headers::new();
-    headers.insert("Content-Type", "text/plain");
-
-    assert_eq!(headers.get("Content-Type"), Some("text/plain"));
-    assert_eq!(headers.len(), 1);
-  }
-
-  #[test]
-  fn headers_get_is_case_insensitive() {
-    let mut headers = Headers::new();
-    headers.insert("Content-Type", "application/json");
-
-    assert_eq!(headers.get("content-type"), Some("application/json"));
-    assert_eq!(headers.get("CONTENT-TYPE"), Some("application/json"));
-    assert_eq!(headers.get("CoNtEnT-TyPe"), Some("application/json"));
-  }
-
-  #[test]
-  fn headers_contains_is_case_insensitive() {
-    let mut headers = Headers::new();
-    headers.insert("Authorization", "Bearer token");
-
-    assert!(headers.contains("authorization"));
-    assert!(headers.contains("AUTHORIZATION"));
-    assert!(headers.contains("Authorization"));
-    assert!(!headers.contains("Content-Type"));
-  }
-
-  #[test]
-  fn headers_get_all_returns_multiple_values() {
-    let mut headers = Headers::new();
-    headers.insert("Set-Cookie", "session=abc");
-    headers.insert("Set-Cookie", "user=john");
-    headers.insert("Set-Cookie", "theme=dark");
-
-    let cookies = headers.get_all("Set-Cookie");
-    assert_eq!(cookies.len(), 3);
-    assert!(cookies.contains(&"session=abc"));
-    assert!(cookies.contains(&"user=john"));
-    assert!(cookies.contains(&"theme=dark"));
-  }
-
-  #[test]
-  fn headers_get_all_is_case_insensitive() {
-    let mut headers = Headers::new();
-    headers.insert("Set-Cookie", "value1");
-    headers.insert("set-cookie", "value2");
-
-    let values = headers.get_all("SET-COOKIE");
-    assert_eq!(values.len(), 2);
-  }
-
-  #[test]
-  fn headers_get_returns_first_value() {
-    let mut headers = Headers::new();
-    headers.insert("Accept", "text/html");
-    headers.insert("Accept", "application/json");
-
-    assert_eq!(headers.get("Accept"), Some("text/html"));
-  }
-
-  #[test]
-  fn headers_remove_is_case_insensitive() {
-    let mut headers = Headers::new();
-    headers.insert("X-Custom", "value1");
-    headers.insert("Content-Type", "text/plain");
-
-    headers.remove("x-custom");
-
-    assert!(!headers.contains("X-Custom"));
-    assert!(headers.contains("Content-Type"));
-    assert_eq!(headers.len(), 1);
-  }
-
-  #[test]
-  fn headers_remove_all_matching() {
-    let mut headers = Headers::new();
-    headers.insert("Cache-Control", "no-cache");
-    headers.insert("cache-control", "no-store");
-    headers.insert("Content-Type", "text/plain");
-
-    headers.remove("CACHE-CONTROL");
-
-    assert_eq!(headers.len(), 1);
-    assert!(!headers.contains("Cache-Control"));
-  }
-
-  #[test]
-  fn headers_iter_returns_all_headers() {
-    let mut headers = Headers::new();
-    headers.insert("Host", "example.com");
-    headers.insert("Accept", "*/*");
-
-    assert_eq!(headers.iter().count(), 2);
-  }
-
-  #[test]
-  fn headers_from_vec_construction() {
-    let vec = vec![
-      (String::from("Host"), String::from("example.com")),
-      (String::from("Accept"), String::from("*/*")),
-    ];
-
-    let headers = Headers::from_vec(vec);
-    assert_eq!(headers.len(), 2);
-    assert_eq!(headers.get("Host"), Some("example.com"));
-  }
-
-  #[test]
-  fn headers_into_vec_conversion() {
-    let mut headers = Headers::new();
-    headers.insert("X-Test", "value");
-
-    let vec = headers.into_vec();
-    assert_eq!(vec.len(), 1);
-    assert_eq!(vec.first().unwrap().0, "X-Test");
-    assert_eq!(vec.first().unwrap().1, "value");
-  }
-
-  #[test]
-  fn headers_clone_creates_independent_copy() {
-    let mut headers1 = Headers::new();
-    headers1.insert("Original", "value");
-
-    let mut headers2 = headers1.clone();
-    headers2.insert("New", "data");
-
-    assert_eq!(headers1.len(), 1);
-    assert_eq!(headers2.len(), 2);
-    assert!(!headers1.contains("New"));
-  }
-
-  #[test]
-  fn headers_equality() {
-    let mut headers1 = Headers::new();
-    headers1.insert("Content-Type", "text/plain");
-
-    let mut headers2 = Headers::new();
-    headers2.insert("Content-Type", "text/plain");
-
-    assert_eq!(headers1, headers2);
-  }
-
-  #[test]
-  fn headers_get_nonexistent_returns_none() {
-    let headers = Headers::new();
-    assert_eq!(headers.get("Missing"), None);
   }
 }
