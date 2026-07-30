@@ -633,16 +633,36 @@ jobs:
   kani:
     name: Kani
     runs-on: ubuntu-latest
+    # Install+setup (cargo install + ~140MB toolchain under ~/.kani) dominates wall-clock
+    # for these 15 small harnesses; prove time is secondary.
+    env:
+      # Bump together with the cache key suffix and kani-version input below.
+      KANI_VERSION: "0.67.0"
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
-      # Action installs its own toolchain + kani-verifier; MSRV 1.90 fits Kani 0.67's rustc 1.93.
+      # Cache Kani's bundled toolchain + CLI. Without this, every release run pays a
+      # multi-minute cold install. Key on the pinned version only (not the whole
+      # workflow file) so unrelated YAML edits do not bust the ~1GB cache.
+      - name: Cache Kani toolchain
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.kani
+            ~/.cargo/bin/kani
+            ~/.cargo/bin/cargo-kani
+          # Exact key only — avoid restore-keys pulling a different Kani major/minor.
+          key: kani-toolchain-${{ runner.os }}-${{ env.KANI_VERSION }}
+
+      # Action installs rustc + kani-verifier; MSRV 1.90 fits Kani 0.67's rustc 1.93.
+      # --jobs needs --output-format=terse on Kani 0.67; ubuntu-latest is 4 vCPU.
       - name: Install and run Kani
         uses: model-checking/kani-github-action@v1
         with:
-          args: "--all-features"
+          kani-version: ${{ env.KANI_VERSION }}
+          args: "--all-features --jobs 4 --output-format terse"
 
   interop:
     name: Docker interop
