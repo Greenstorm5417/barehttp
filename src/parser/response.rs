@@ -909,6 +909,7 @@ mod kani_length_proofs {
 
   /// Overflowing digit strings return `None` (checked_mul/add); does not panic.
   #[kani::proof]
+  #[kani::unwind(64)]
   fn overflow_digits_none() {
     // More digits than fit in u64/usize on common targets.
     let digits = b"99999999999999999999999999999999";

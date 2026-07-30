@@ -398,13 +398,20 @@ mod kani_chunk_proofs {
 
   /// Bounded hex length: overflow via checked_mul returns InvalidChunkSize (no panic).
   #[kani::proof]
+  // Concrete 34-byte line; unwind must cover both digit + trailer loops.
+  #[kani::unwind(64)]
   fn long_hex_does_not_panic() {
     // 32 hex digits — may overflow usize on 64-bit; must Err, not panic.
     let input = b"ffffffffffffffffffffffffffffffff\r\n";
     let _ = ChunkedDecoder::parse_chunk_size(input);
   }
 
+  /// Panic-freedom on a fixed 6-byte `HHHH\r\n` line (4 symbolic hex digits).
+  ///
+  /// Explicit unwind: without it, CBMC can unwind `parse_chunk_size`'s loops
+  /// hundreds of times on a 6-byte buffer (observed 700+ iters / 19+ min in GHA).
   #[kani::proof]
+  #[kani::unwind(16)]
   fn symbolic_short_hex() {
     let mut digits = [0u8; 4];
     for d in &mut digits {

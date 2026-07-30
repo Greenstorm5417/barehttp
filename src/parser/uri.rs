@@ -506,6 +506,7 @@ mod kani_uri_proofs {
 
   /// ASCII lowercase idempotence for a bounded host label (pool key invariant).
   #[kani::proof]
+  #[kani::unwind(16)]
   fn ascii_lowercase_idempotent_label() {
     let mut raw = [0u8; 4];
     for b in &mut raw {

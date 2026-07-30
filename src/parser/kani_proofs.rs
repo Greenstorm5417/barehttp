@@ -28,6 +28,7 @@ fn incomplete_status_line_not_complete() {
 /// Symbolic buffer of length ≤ 8: if the scan reports complete, the slice
 /// contains `\r\n\r\n` or `\n\n`.
 #[kani::proof]
+#[kani::unwind(32)]
 fn has_complete_headers_sound_small() {
   let len: usize = kani::any();
   kani::assume(len <= 8);

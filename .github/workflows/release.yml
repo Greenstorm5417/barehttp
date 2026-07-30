@@ -633,8 +633,9 @@ jobs:
   kani:
     name: Kani
     runs-on: ubuntu-latest
-    # Install+setup (cargo install + ~140MB toolchain under ~/.kani) dominates wall-clock
-    # for these 15 small harnesses; prove time is secondary.
+    # Cold install+setup is ~15–40s when network is fine (cache removes most of that).
+    # Prove time is the risk: keep #[kani::unwind] on symbolic harnesses so CBMC
+    # cannot explode loop unwinding (symbolic_short_hex hit 700+ iters / 19+ min).
     env:
       # Bump together with the cache key suffix and kani-version input below.
       KANI_VERSION: "0.67.0"
