@@ -4,8 +4,9 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use windows_sys::Win32::Networking::WinSock::{
   AF_INET, AF_INET6, FD_SET, FIONBIO, INVALID_SOCKET, IPPROTO_TCP, SD_BOTH, SO_ERROR, SO_RCVTIMEO, SO_SNDTIMEO,
-  SOCK_STREAM, SOCKADDR_IN, SOCKADDR_IN6, SOCKET, SOCKET_ERROR, SOL_SOCKET, TIMEVAL, WSADATA, WSAGetLastError,
-  WSAStartup, closesocket, connect, getsockopt, ioctlsocket, recv, select, send, setsockopt, shutdown, socket,
+  SOCK_STREAM, SOCKADDR_IN, SOCKADDR_IN6, SOCKET, SOCKET_ERROR, SOL_SOCKET, TIMEVAL, WSABUF, WSADATA, WSAGetLastError,
+  WSASend, WSAStartup, closesocket, connect, getsockopt, ioctlsocket, recv, select, send, setsockopt, shutdown,
+  socket,
 };
 
 static WSA_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -170,6 +171,74 @@ impl crate::socket::BlockingSocket for OsSocket {
     }
 
     usize::try_from(result).map_err(|_| SocketError::OsError(result))
+  }
+
+  fn write_vectored(
+    &mut self,
+    bufs: &[&[u8]],
+  ) -> Result<usize, SocketError> {
+    if !self.connected {
+      return Err(SocketError::NotConnected);
+    }
+
+    // Request send uses at most head + body (same shape as Unix `writev`).
+    let mut wsabufs = [
+      WSABUF {
+        len: 0,
+        buf: ptr::null_mut(),
+      },
+      WSABUF {
+        len: 0,
+        buf: ptr::null_mut(),
+      },
+    ];
+    let mut count = 0usize;
+    for buf in bufs {
+      if buf.is_empty() {
+        continue;
+      }
+      if count >= wsabufs.len() {
+        break;
+      }
+      // `WSABUF.len` is `u32`; truncate like `send`'s `i32` cap on huge buffers.
+      let chunk_len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+      if let Some(slot) = wsabufs.get_mut(count) {
+        slot.len = chunk_len;
+        // Winsock takes `PSTR` (`*mut u8`) even for send; buffer is not written.
+        slot.buf = buf.as_ptr().cast_mut();
+        count = count.saturating_add(1);
+      }
+    }
+    if count == 0 {
+      return Ok(0);
+    }
+
+    loop {
+      let mut bytes_sent: u32 = 0;
+      // SAFETY: live SOCKET; `wsabufs[..count]` points at caller-borrowed readable
+      // slices for the call; overlapped / completion are null (blocking socket).
+      let result = unsafe {
+        WSASend(
+          self.socket,
+          wsabufs.as_ptr(),
+          u32::try_from(count).unwrap_or(u32::MAX),
+          &raw mut bytes_sent,
+          0,
+          ptr::null_mut(),
+          None,
+        )
+      };
+
+      if result == SOCKET_ERROR {
+        let err = get_last_wsa_error();
+        if matches!(err, SocketError::Interrupted) {
+          continue;
+        }
+        return Err(err);
+      }
+
+      return usize::try_from(bytes_sent).map_err(|_| SocketError::OsError(result));
+    }
   }
 
   fn shutdown(&mut self) -> Result<(), SocketError> {

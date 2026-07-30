@@ -1,3 +1,12 @@
+# Release gate for barehttp. Does NOT publish to crates.io.
+#
+# Maintainer cut (see CONTRIBUTING.md "Packaging / release"):
+#   1. workflow_dispatch this workflow on the exact commit to ship; wait for green.
+#   2. cargo publish --dry-run --locked on that commit.
+#   3. Push the version tag (v*); this workflow re-runs on the tag (expected).
+#   4. cargo publish --locked by hand only after dry-run succeeds.
+#
+# Prefer dispatch-before-tag so a failing gate never leaves a published tag.
 name: Release
 
 on:

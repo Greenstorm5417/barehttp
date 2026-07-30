@@ -24,6 +24,11 @@ pub struct RawResponse {
   pub headers: Headers,
   pub version: Version,
   pub body_bytes: Bytes,
+  /// When `Some`, [`Self::body_bytes`] is already the decoded chunked payload and
+  /// this holds trailer fields (empty if the message had none). When `None`,
+  /// `body_bytes` is still strategy wire form (Content-Length / until-close /
+  /// offline chunked parse via the response parser).
+  pub decoded_chunked_trailers: Option<Headers>,
 }
 
 /// Live HTTP connection for raw send and receive.
@@ -33,11 +38,10 @@ pub struct Connection<'a, S> {
   max_body_size: usize,
   reusable: bool,
   /// Response assemble buffer. Reused across reads on this connection when still
-  /// uniquely owned (e.g. HEAD / empty body). After `freeze` into a body `Bytes`,
-  /// the remnant may be shared; the next extend then reallocates (safe).
+  /// uniquely owned (e.g. HEAD / empty body). After `freeze` into header or body
+  /// `Bytes`, the remnant may be shared; the next reserve then reallocates (safe).
+  /// Socket bytes are read directly into spare capacity (no intermediate copy).
   buf: BytesMut,
-  /// Socket `read` scratch; never frozen into `Bytes`, always reusable.
-  scratch: Vec<u8>,
 }
 
 impl<'a, S: BlockingSocket> Connection<'a, S> {
@@ -64,7 +68,6 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
       max_body_size,
       reusable: true,
       buf: buffers.buf,
-      scratch: buffers.scratch,
     }
   }
 
@@ -74,34 +77,85 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
     self.buf.clear();
     PooledBuffers {
       buf: core::mem::replace(&mut self.buf, BytesMut::new()),
-      scratch: core::mem::take(&mut self.scratch),
     }
   }
 
-  /// Write the request octets to the socket.
+  /// Write request head then body without concatenating into one buffer.
+  ///
+  /// Uses [`BlockingSocket::write_vectored`] when the adapter supports it
+  /// (cleartext OS TCP); adapters that only implement [`BlockingSocket::write`]
+  /// fall back to sequential partial writes (still no head+body copy).
   pub fn send_request(
     &mut self,
-    request_bytes: &[u8],
+    head: &[u8],
+    body: &[u8],
   ) -> Result<(), Error> {
-    let mut offset = 0usize;
-    while offset < request_bytes.len() {
-      let chunk = request_bytes
-        .get(offset..)
-        .ok_or(Error::Socket(SocketError::NotConnected))?;
-      let n = self.socket.write(chunk).map_err(Error::Socket)?;
-      if n == 0 {
-        return Err(Error::Socket(SocketError::NotConnected));
-      }
-      offset = offset.saturating_add(n);
-    }
+    self.write_all_vectored(&[head, body])?;
 
     // RFC 9112 Section 9.6: If the client sends "Connection: close", it MUST NOT
-    // send further requests on that connection.
-    if request_has_connection_close(request_bytes) {
+    // send further requests on that connection. Scan header block only.
+    if request_has_connection_close(head) {
       self.reusable = false;
     }
 
     Ok(())
+  }
+
+  /// Write all of `bufs` in order, advancing across buffers on short writes.
+  fn write_all_vectored(
+    &mut self,
+    bufs: &[&[u8]],
+  ) -> Result<(), Error> {
+    let mut idx = 0usize;
+    let mut off = 0usize;
+    loop {
+      while idx < bufs.len() {
+        let Some(cur) = bufs.get(idx).copied() else {
+          return Ok(());
+        };
+        if off < cur.len() {
+          break;
+        }
+        idx = idx.saturating_add(1);
+        off = 0;
+      }
+      if idx >= bufs.len() {
+        return Ok(());
+      }
+
+      let Some(cur) = bufs.get(idx).copied() else {
+        return Ok(());
+      };
+      let first = cur.get(off..).unwrap_or(&[]);
+      let second = bufs.get(idx.saturating_add(1)).copied().unwrap_or(&[]);
+      let n = if second.is_empty() {
+        self.socket.write(first).map_err(Error::Socket)?
+      } else {
+        self
+          .socket
+          .write_vectored(&[first, second])
+          .map_err(Error::Socket)?
+      };
+      if n == 0 {
+        return Err(Error::Socket(SocketError::NotConnected));
+      }
+
+      let mut remaining = n;
+      while remaining > 0 {
+        let Some(slice) = bufs.get(idx).copied() else {
+          break;
+        };
+        let avail = slice.len().saturating_sub(off);
+        if remaining < avail {
+          off = off.saturating_add(remaining);
+          remaining = 0;
+        } else {
+          remaining = remaining.saturating_sub(avail);
+          idx = idx.saturating_add(1);
+          off = 0;
+        }
+      }
+    }
   }
 
   /// Read headers and body into a [`RawResponse`].
@@ -113,16 +167,15 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
     expect_body: bool,
   ) -> Result<RawResponse, Error> {
     let max_header_size = self.max_header_size;
-    let scratch_cap = max_header_size.min(8192);
-    self.ensure_scratch(scratch_cap);
+    let chunk_cap = max_header_size.min(8192);
     // Start of a message: drop any leftover (should be empty on a reusable conn).
     self.buf.clear();
     // Header growth is capped by `max_header_size` (see loop below). Prefetch a
-    // modest scratch capacity only. Never reserve the full max header budget up front.
-    if self.buf.capacity() < scratch_cap {
+    // modest chunk capacity only. Never reserve the full max header budget up front.
+    if self.buf.capacity() < chunk_cap {
       self
         .buf
-        .reserve(scratch_cap.saturating_sub(self.buf.capacity()));
+        .reserve(chunk_cap.saturating_sub(self.buf.capacity()));
     }
 
     loop {
@@ -130,14 +183,11 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         if self.buf.len() > max_header_size {
           return Err(Error::ResponseHeaderTooLarge);
         }
-        let n = self.read_socket_scratch()?;
+        let n = self.read_socket_into_buf(chunk_cap)?;
         if n == 0 {
           // Peer closed before a complete header section: Socket NotConnected / EOF.
           // A partial status line surfaces as InvalidHttpVersion.
           return Err(Error::Socket(SocketError::NotConnected));
-        }
-        if let Some(slice) = self.scratch.get(..n) {
-          self.buf.extend_from_slice(slice);
         }
         // Check after append even when this read completed headers. Only the header
         // section counts toward the limit; body bytes past `\r\n\r\n` do not.
@@ -148,7 +198,9 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         }
       }
 
-      // Zero-copy scan: framing from borrowed refs, then materialize for RawResponse.
+      // Zero-copy scan, then adopt the frozen header section as the Headers arena
+      // (spans point into that Bytes). Non-ASCII values fall back to a copy+lossy
+      // materialize. Body bytes may share the same allocation after freeze.
       let (status_code, reason_bytes, header_refs, version, remaining_after_headers) =
         Response::scan_headers_only(&self.buf).map_err(Error::Parse)?;
       let consumed = self.buf.len().saturating_sub(remaining_after_headers.len());
@@ -171,11 +223,25 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         None
       };
 
-      let headers = Response::headers_from_refs(&header_refs);
       let reason = Response::reason_owned(reason_bytes);
-      let _ = self.buf.split_to(consumed);
+      // Compute owned spans (or None) while refs still borrow `buf`, then freeze.
+      let wire_spans =
+        Response::try_wire_header_spans(self.buf.get(..consumed).unwrap_or(&[]), &header_refs);
+      let headers = match wire_spans {
+        Some(spans) => {
+          // Adopts the wire header section; no name/value copy.
+          Headers::from_spans(self.buf.split_to(consumed).freeze(), spans)
+        },
+        None => {
+          // Obs-text / non-ASCII value: copy+lossy into a fresh arena, then drop
+          // the wire header section from the receive buffer.
+          let headers = Response::headers_from_refs(&header_refs);
+          let _ = self.buf.split_to(consumed);
+          headers
+        },
+      };
 
-      let body_bytes = if let Some(strategy) = body_strategy {
+      let (body_bytes, decoded_chunked_trailers) = if let Some(strategy) = body_strategy {
         if matches!(strategy, BodyReadStrategy::UntilClose) {
           // UntilClose ends the connection; never pool it.
           self.reusable = false;
@@ -187,7 +253,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
           self.reusable = false;
           self.buf.clear();
         }
-        Bytes::new()
+        (Bytes::new(), None)
       };
 
       // RFC 9112 §9.3 / §9.6: persistence from version + all Connection field lines
@@ -206,24 +272,51 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         headers,
         version,
         body_bytes,
+        decoded_chunked_trailers,
       });
     }
   }
 
-  fn ensure_scratch(
+  /// Read up to `max` bytes from the socket directly into `self.buf` spare capacity.
+  ///
+  /// Reserves spare capacity as needed. For `Content-Length`, callers pass the
+  /// remaining byte count so we never pull past the framed body into the next
+  /// message (connection reuse).
+  fn read_socket_into_buf(
     &mut self,
-    cap: usize,
-  ) {
-    if self.scratch.len() < cap {
-      self.scratch.resize(cap, 0);
+    max: usize,
+  ) -> Result<usize, Error> {
+    if max == 0 {
+      return Ok(0);
     }
-  }
+    let existing_spare = self.buf.capacity().saturating_sub(self.buf.len());
+    if existing_spare < max {
+      self.buf.reserve(max.saturating_sub(existing_spare));
+    }
 
-  fn read_socket_scratch(&mut self) -> Result<usize, Error> {
-    // Split borrows: `socket` + `scratch` are distinct fields.
-    let Self { socket, scratch, .. } = self;
-    match socket.read(scratch.as_mut_slice()) {
-      Ok(n) => Ok(n),
+    // Split borrows: `socket` + `buf` are distinct fields.
+    let Self { socket, buf, .. } = self;
+    let uninit = buf.spare_capacity_mut();
+    let to_read = uninit.len().min(max);
+    if to_read == 0 {
+      return Ok(0);
+    }
+
+    // SAFETY: `BlockingSocket::read` only writes into `dst` (OS/TLS adapters never
+    // read the destination). Treating spare `MaybeUninit<u8>` as `&mut [u8]` for
+    // the duration of the write is the standard direct-into-buffer pattern.
+    let dst =
+      unsafe { core::slice::from_raw_parts_mut(uninit.as_mut_ptr().cast::<u8>(), to_read) };
+
+    match socket.read(dst) {
+      Ok(n) => {
+        // SAFETY: `read` initialized the first `n` spare bytes; `n <= to_read`
+        // so the new length stays within capacity.
+        unsafe {
+          buf.set_len(buf.len().saturating_add(n));
+        }
+        Ok(n)
+      },
       Err(e) => {
         // RFC 9112 Section 9.5: If timing out, implementation SHOULD issue a graceful close
         if e == SocketError::TimedOut {
@@ -234,29 +327,14 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
     }
   }
 
-  fn read_socket_into_scratch(
-    &mut self,
-    to_read: usize,
-  ) -> Result<usize, Error> {
-    let Self { socket, scratch, .. } = self;
-    let Some(buf_slice) = scratch.get_mut(..to_read) else {
-      return Ok(0);
-    };
-    match socket.read(buf_slice) {
-      Ok(n) => Ok(n),
-      Err(e) => {
-        if e == SocketError::TimedOut {
-          let _ = socket.shutdown();
-        }
-        Err(Error::Socket(e))
-      },
-    }
-  }
-
+  /// Read the entity body according to `strategy`.
+  ///
+  /// For chunked, returns the decoded payload plus `Some(trailers)` so the client
+  /// skips a second decode pass. Other strategies return `(bytes, None)`.
   fn read_body(
     &mut self,
     strategy: BodyReadStrategy,
-  ) -> Result<Bytes, Error> {
+  ) -> Result<(Bytes, Option<Headers>), Error> {
     let max_body = self.max_body_size;
     match strategy {
       BodyReadStrategy::NoBody => {
@@ -264,7 +342,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
           self.reusable = false;
           self.buf.clear();
         }
-        Ok(Bytes::new())
+        Ok((Bytes::new(), None))
       },
       BodyReadStrategy::ContentLength(len) => {
         // Fail fast before reserve: a huge advertised CL must not try to allocate
@@ -288,46 +366,60 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
           // Bounded by `max_body` check above (header buffer similarly capped by
           // `max_header_size` in `read_raw_response`).
           self.buf.reserve(bytes_needed);
-          self.ensure_scratch(bytes_needed.min(8192));
           let mut bytes_read = 0usize;
 
           while bytes_read < bytes_needed {
-            let to_read = (bytes_needed - bytes_read).min(self.scratch.len());
-            let n = self.read_socket_into_scratch(to_read)?;
+            let to_read = bytes_needed.saturating_sub(bytes_read);
+            let n = self.read_socket_into_buf(to_read)?;
             if n == 0 {
               return Err(Error::Socket(SocketError::NotConnected));
             }
-            if let Some(slice) = self.scratch.get(..n) {
-              self.buf.extend_from_slice(slice);
-            }
-            bytes_read += n;
+            bytes_read = bytes_read.saturating_add(n);
           }
         }
 
         // split_to + freeze: body `Bytes` may share the allocation; leftover `self.buf`
         // stays empty (and possibly shared). Next request reallocates if still shared.
-        Ok(self.buf.split_to(len).freeze())
+        Ok((self.buf.split_to(len).freeze(), None))
       },
       BodyReadStrategy::Chunked => {
-        // Stateful feed + cursor: each wire byte is framed once (O(n)), no full-buffer
-        // re-parse. Framing-only (`output: None`); payload decode happens in the parser.
+        // Single-pass: frame and accumulate decoded payload during recv. Reclaim
+        // consumed wire from `buf` so we do not hold the full framed message plus
+        // the decoded body. Trailers are parsed when the final chunk completes
+        // (trailer section is still buffered until its terminating blank line).
         if self.buf.len() > max_body {
           self.reusable = false;
           return Err(Error::BodyExceedsLimit(max_body));
         }
         let mut decoder = ChunkedDecoder::new();
-        let mut cursor = 0usize;
-        self.ensure_scratch(8192);
+        let mut decoded = Vec::new();
 
-        let consumed = loop {
-          let unread = self.buf.get(cursor..).unwrap_or(&[]);
-          match decoder.feed(unread, None) {
+        loop {
+          match decoder.feed(self.buf.as_ref(), Some(&mut decoded)) {
             Ok(FeedResult::Done { rest }) => {
-              let framed = unread.len().saturating_sub(rest.len());
-              break cursor.saturating_add(framed);
+              let rest_len = rest.len();
+              let framed = self.buf.len().saturating_sub(rest_len);
+              if rest_len > 0 {
+                // Bytes past the chunked message cannot be unread; do not pool.
+                self.reusable = false;
+                let _ = self.buf.split_to(framed);
+              } else {
+                self.buf.clear();
+              }
+              if decoded.len() > max_body {
+                self.reusable = false;
+                return Err(Error::BodyExceedsLimit(max_body));
+              }
+              return Ok((Bytes::from(decoded), Some(decoder.take_trailers())));
             },
             Ok(FeedResult::NeedMore { consumed }) => {
-              cursor = cursor.saturating_add(consumed);
+              if consumed > 0 {
+                let _ = self.buf.split_to(consumed);
+              }
+              if decoded.len() > max_body {
+                self.reusable = false;
+                return Err(Error::BodyExceedsLimit(max_body));
+              }
             },
             Err(e) => {
               self.reusable = false;
@@ -335,39 +427,27 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
             },
           }
 
-          let n = self.read_socket_scratch()?;
+          let n = self.read_socket_into_buf(8192)?;
           if n == 0 {
             return Err(Error::Socket(SocketError::NotConnected));
           }
-          if let Some(slice) = self.scratch.get(..n) {
-            self.buf.extend_from_slice(slice);
-          }
+          // Cap unparsed wire remainder (decoded payload lives in `decoded`).
           if self.buf.len() > max_body {
             self.reusable = false;
             return Err(Error::BodyExceedsLimit(max_body));
           }
-        };
-
-        if consumed < self.buf.len() {
-          // Bytes past the chunked message cannot be unread; do not pool.
-          self.reusable = false;
         }
-        Ok(self.buf.split_to(consumed).freeze())
       },
       BodyReadStrategy::UntilClose => {
         if self.buf.len() > max_body {
           self.reusable = false;
           return Err(Error::BodyExceedsLimit(max_body));
         }
-        self.ensure_scratch(8192);
 
         loop {
-          let n = self.read_socket_scratch()?;
+          let n = self.read_socket_into_buf(8192)?;
           if n == 0 {
             break;
-          }
-          if let Some(slice) = self.scratch.get(..n) {
-            self.buf.extend_from_slice(slice);
           }
           if self.buf.len() > max_body {
             self.reusable = false;
@@ -375,7 +455,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
           }
         }
 
-        Ok(self.buf.split().freeze())
+        Ok((self.buf.split().freeze(), None))
       },
     }
   }

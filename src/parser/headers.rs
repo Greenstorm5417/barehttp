@@ -1,12 +1,14 @@
 //! Header-section scanner (RFC 9112 §5). Obs-fold is rejected.
 //!
 //! Field names and values are `&[u8]` views into the input until
-//! [`materialize_headers`] or [`parse_header_fields`] builds owned [`Headers`].
+//! [`materialize_headers`], [`parse_header_fields`], or (on the connection path)
+//! [`try_wire_spans`] + [`Headers::from_spans`] adopts a frozen wire section.
 
 use crate::error::ParseError;
 use crate::headers::Headers;
+use alloc::string::String;
 use alloc::vec::Vec;
-use compact_str::CompactString;
+use bytes::BytesMut;
 
 /// Borrowed header field (views into the input buffer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,43 +36,125 @@ pub fn scan_header_fields(input: &[u8]) -> Result<(Vec<HeaderRef<'_>>, &[u8]), P
 }
 
 /// Promote borrowed header refs into owned [`Headers`].
+///
+/// Copies all name/value bytes into one [`Bytes`] arena (offsets per field).
+/// Leaves the side-index unset; [`Headers`] builds it lazily on mutation past
+/// the index threshold (lookups stay linear until then).
+///
+/// Prefer [`try_wire_spans`] on the connection path when the receive buffer can
+/// be frozen and adopted without copying (ASCII values).
 #[must_use]
 pub fn materialize_headers(refs: &[HeaderRef<'_>]) -> Headers {
-  let mut headers = Headers::with_capacity(refs.len());
-  for &h in refs {
-    push_materialized(&mut headers, h);
+  let mut byte_cap = 0usize;
+  for h in refs {
+    byte_cap = byte_cap.saturating_add(h.name.len()).saturating_add(h.value.len());
   }
-  headers.rebuild_index();
-  headers
+  let mut buf = BytesMut::with_capacity(byte_cap);
+  let mut spans = Vec::with_capacity(refs.len());
+  for &h in refs {
+    push_span(&mut buf, &mut spans, h);
+  }
+  Headers::from_spans(buf.freeze(), spans)
+}
+
+/// Map borrowed [`HeaderRef`]s to arena offsets into `section` (zero-copy).
+///
+/// `refs` must be subslices of `section`. Returns [`None`] when any value is
+/// non-ASCII (obs-text needs lossy UTF-8 via [`materialize_headers`]) or when a
+/// ref is not contained in `section`.
+///
+/// Side-index stays deferred (same as [`materialize_headers`]).
+#[must_use]
+pub(crate) fn try_wire_spans(
+  section: &[u8],
+  refs: &[HeaderRef<'_>],
+) -> Option<Vec<(u32, u32, u32, u32)>> {
+  // Names are token charset (ASCII). Values with obs-text are not valid UTF-8;
+  // the Headers arena requires UTF-8 for `str` views, so fall back to copy+lossy.
+  if refs.iter().any(|h| !h.value.is_ascii()) {
+    return None;
+  }
+
+  let base = section.as_ptr() as usize;
+  let section_len = section.len();
+  let mut spans = Vec::with_capacity(refs.len());
+
+  for h in refs {
+    let name_start = subslice_offset(base, section_len, h.name)?;
+    let value_start = subslice_offset(base, section_len, h.value)?;
+    spans.push((
+      usize_as_u32(name_start),
+      usize_as_u32(h.name.len()),
+      usize_as_u32(value_start),
+      usize_as_u32(h.value.len()),
+    ));
+  }
+
+  Some(spans)
+}
+
+/// Byte offset of `slice` within a parent buffer starting at `base` with `parent_len`.
+#[inline]
+fn subslice_offset(
+  base: usize,
+  parent_len: usize,
+  slice: &[u8],
+) -> Option<usize> {
+  let start = slice.as_ptr() as usize;
+  if start < base {
+    return None;
+  }
+  let offset = start.saturating_sub(base);
+  if offset.saturating_add(slice.len()) > parent_len {
+    return None;
+  }
+  Some(offset)
 }
 
 /// One-pass scan + materialize (buffered `Response::parse` / trailers).
 ///
 /// Builds owned [`Headers`] without an intermediate [`HeaderRef`] `Vec`.
+/// Side-index is deferred (same as [`materialize_headers`]).
 ///
 /// # Errors
 /// Malformed fields, obs-fold, or whitespace before the first field.
 pub fn parse_header_fields(input: &[u8]) -> Result<(Headers, &[u8]), ParseError> {
-  let mut headers = Headers::with_capacity(8);
+  let mut buf = BytesMut::with_capacity(256);
+  let mut spans = Vec::with_capacity(8);
   let remaining = for_each_header_field(input, |h| {
-    push_materialized(&mut headers, h);
+    push_span(&mut buf, &mut spans, h);
     Ok(())
   })?;
-  headers.rebuild_index();
-  Ok((headers, remaining))
+  Ok((Headers::from_spans(buf.freeze(), spans), remaining))
 }
 
 #[inline]
-fn push_materialized(
-  headers: &mut Headers,
+fn usize_as_u32(n: usize) -> u32 {
+  u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+#[inline]
+fn push_span(
+  buf: &mut BytesMut,
+  spans: &mut Vec<(u32, u32, u32, u32)>,
   h: HeaderRef<'_>,
 ) {
+  let name_start = usize_as_u32(buf.len());
   // Token charset was validated in [`for_each_header_field`] → ASCII UTF-8.
-  // SAFETY: every name byte is an RFC 9110 token char (ASCII).
-  let name = CompactString::new(unsafe { core::str::from_utf8_unchecked(h.name) });
-  // `from_utf8_lossy` fast-paths valid UTF-8; no intermediate `String`.
-  let value = CompactString::from_utf8_lossy(h.value);
-  headers.push_owned(name, value);
+  buf.extend_from_slice(h.name);
+  let name_len = usize_as_u32(h.name.len());
+
+  let value_start = usize_as_u32(buf.len());
+  let value_len = if h.value.is_ascii() {
+    buf.extend_from_slice(h.value);
+    usize_as_u32(h.value.len())
+  } else {
+    // Obs-text → lossy UTF-8 (same policy as the former CompactString path).
+    let lossy = String::from_utf8_lossy(h.value);
+    buf.extend_from_slice(lossy.as_bytes());
+    usize_as_u32(lossy.len())
+  };
+  spans.push((name_start, name_len, value_start, value_len));
 }
 
 /// Shared field-line scanner. `on_field` runs once per header before the blank line.
@@ -153,6 +237,14 @@ where
       }
     }
 
+    // RFC 9110 field-content: HTAB / SP / VCHAR / obs-text only.
+    // Reject NUL, CR, LF, VT, and other CTLs (incl. DEL) rather than replace.
+    for &b in value_slice {
+      if !is_field_vchar_or_ws(b) {
+        return Err(ParseError::InvalidHeaderValue);
+      }
+    }
+
     remaining = remaining.get(line_end..).ok_or(ParseError::MissingCrlf)?;
 
     let next_byte0 = remaining.first().copied();
@@ -214,6 +306,12 @@ pub const fn is_token_char(b: u8) -> bool {
   )
 }
 
+/// RFC 9110 field-vchar / obs-text, plus HTAB and SP (field-content).
+#[inline]
+const fn is_field_vchar_or_ws(b: u8) -> bool {
+  matches!(b, 0x09 | 0x20..=0x7e | 0x80..=0xff)
+}
+
 /// Consume a CRLF (or lone LF). Bare CR is an error.
 pub fn expect_crlf(input: &[u8]) -> Result<&[u8], ParseError> {
   if input.is_empty() {
@@ -241,4 +339,41 @@ pub fn expect_crlf(input: &[u8]) -> Result<&[u8], ParseError> {
   }
 
   Err(ParseError::MissingCrlf)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use bytes::Bytes;
+
+  #[test]
+  fn try_wire_spans_maps_subslices() {
+    let section = b"Host: example.com\r\nX-A: 1\r\n\r\n";
+    let (refs, rest) = scan_header_fields(section).unwrap();
+    assert!(rest.is_empty());
+    let spans = try_wire_spans(section, &refs).expect("ascii");
+    let headers = Headers::from_spans(Bytes::copy_from_slice(section), spans);
+    assert_eq!(headers.get("host"), Some("example.com"));
+    assert_eq!(headers.get("x-a"), Some("1"));
+    // Wire section is larger than packed name+value bytes (CRLF / colon / OWS dead).
+    assert!(headers.arena_len() > "Host".len() + "example.com".len() + "X-A".len() + "1".len());
+  }
+
+  #[test]
+  fn try_wire_spans_rejects_obs_text() {
+    let section = b"X-Bin: \xff\xfe\r\n\r\n";
+    let (refs, _) = scan_header_fields(section).unwrap();
+    assert!(try_wire_spans(section, &refs).is_none());
+    let copied = materialize_headers(&refs);
+    assert_eq!(copied.get("x-bin"), Some("\u{fffd}\u{fffd}"));
+  }
+
+  #[test]
+  fn try_wire_spans_trims_ows_offsets() {
+    let section = b"Host:   example.com  \r\n\r\n";
+    let (refs, _) = scan_header_fields(section).unwrap();
+    let spans = try_wire_spans(section, &refs).unwrap();
+    let headers = Headers::from_spans(Bytes::copy_from_slice(section), spans);
+    assert_eq!(headers.get("host"), Some("example.com"));
+  }
 }

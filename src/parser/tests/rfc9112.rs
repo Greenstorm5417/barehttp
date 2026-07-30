@@ -110,7 +110,25 @@ fn serialize_with_headers(
   headers: &Headers,
   body: Option<&[u8]>,
 ) -> Result<bytes::Bytes, ParseError> {
-  serialize_request(method, path, headers, body)
+  Ok(serialize_request(method, path, headers, body)?.to_bytes())
+}
+
+#[test]
+fn serialize_keeps_body_out_of_head_buffer() {
+  let mut headers = Headers::new();
+  headers.insert("Host", "example.com");
+  let body = b"large-body-payload";
+  let req = serialize_request("POST", "/", &headers, Some(body)).unwrap();
+  assert!(req.head.ends_with(b"\r\n\r\n"));
+  assert!(!req.head.windows(body.len()).any(|w| w == body));
+  assert_eq!(req.body, body);
+  let wire = req.to_bytes();
+  assert!(wire.ends_with(body));
+  assert!(
+    core::str::from_utf8(&req.head)
+      .unwrap()
+      .contains("Content-Length: 18\r\n")
+  );
 }
 
 #[test]

@@ -13,10 +13,24 @@ fn send_request_writes_to_socket() {
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
 
   let request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
-  let result = conn.send_request(request);
+  let result = conn.send_request(request, &[]);
 
   assert!(result.is_ok());
   assert_eq!(socket.get_written(), "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n");
+}
+
+#[test]
+fn send_request_writes_head_and_body_without_concat() {
+  let mut socket = MockSocket::with_response("");
+  let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
+
+  let head = b"POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 11\r\n\r\n";
+  let body = b"hello world";
+  assert!(conn.send_request(head, body).is_ok());
+  assert_eq!(
+    socket.get_written(),
+    "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 11\r\n\r\nhello world"
+  );
 }
 
 #[test]
@@ -59,7 +73,8 @@ fn read_response_chunked_encoding() {
   assert!(result.is_ok());
   let raw = result.unwrap();
   assert_eq!(raw.status_code, 200);
-  assert_eq!(&raw.body_bytes[..], b"5\r\nHello\r\n0\r\n\r\n");
+  assert_eq!(&raw.body_bytes[..], b"Hello");
+  assert!(raw.decoded_chunked_trailers.is_some());
 }
 
 #[test]
@@ -156,6 +171,7 @@ fn raw_response_can_be_cloned() {
     headers,
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::from(vec![1, 2, 3]),
+    decoded_chunked_trailers: None,
   };
 
   let cloned = response.clone();
@@ -217,7 +233,8 @@ fn read_response_chunked_multiple_chunks() {
 
   assert!(result.is_ok());
   let raw = result.unwrap();
-  assert!(!raw.body_bytes.is_empty());
+  assert_eq!(&raw.body_bytes[..], b"TestChunk");
+  assert!(raw.decoded_chunked_trailers.is_some());
 }
 
 #[test]
@@ -226,7 +243,7 @@ fn send_request_retries_short_writes() {
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
 
   let request = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
-  assert!(conn.send_request(request).is_ok());
+  assert!(conn.send_request(request, &[]).is_ok());
   assert_eq!(socket.get_written().as_bytes(), request);
 }
 
@@ -307,7 +324,7 @@ fn request_connection_close_marks_non_reusable() {
   let mut socket = MockSocket::with_response("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
   let request = b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
-  assert!(conn.send_request(request).is_ok());
+  assert!(conn.send_request(request, &[]).is_ok());
   assert!(!conn.is_reusable());
 }
 
@@ -331,7 +348,56 @@ fn chunked_read_keeps_payload_that_looks_like_terminator() {
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
 
   let raw = conn.read_raw_response(true).unwrap();
-  assert_eq!(&raw.body_bytes[..], b"5\r\n0\r\n\r\n\r\n5\r\nHello\r\n0\r\n\r\n");
+  assert_eq!(&raw.body_bytes[..], b"0\r\n\r\nHello");
+  assert!(raw.decoded_chunked_trailers.is_some());
+}
+
+#[test]
+fn chunked_read_decodes_trailers_on_wire() {
+  let response =
+    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Trailer: value\r\n\r\n";
+  let mut socket = MockSocket::with_response(response);
+  let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
+
+  let raw = conn.read_raw_response(true).unwrap();
+  assert_eq!(&raw.body_bytes[..], b"hello");
+  let trailers = raw.decoded_chunked_trailers.expect("decoded trailers");
+  assert_eq!(trailers.get("X-Trailer"), Some("value"));
+}
+
+#[test]
+fn read_response_headers_adopt_wire_section_zero_copy() {
+  // Arena must be the frozen header section (status line + fields + blank line),
+  // not a packed name/value copy. Body may share the same allocation.
+  let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nHello";
+  let header_section_len = response.find("\r\n\r\n").unwrap() + 4;
+  let mut socket = MockSocket::with_response(response);
+  let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
+
+  let mut raw = conn.read_raw_response(true).unwrap();
+  assert_eq!(raw.status_code, 200);
+  assert_eq!(raw.headers.get("content-type"), Some("text/plain"));
+  assert_eq!(raw.headers.get("content-length"), Some("5"));
+  assert_eq!(&raw.body_bytes[..], b"Hello");
+  assert_eq!(raw.headers.arena_len(), header_section_len);
+
+  // Mutation COW must not corrupt the body Bytes that may share the allocation.
+  raw.headers.set("Content-Type", "application/json");
+  assert_eq!(raw.headers.get("content-type"), Some("application/json"));
+  assert_eq!(&raw.body_bytes[..], b"Hello");
+}
+
+#[test]
+fn read_response_obs_text_header_falls_back_to_copy() {
+  let response = b"HTTP/1.1 200 OK\r\nX-Bin: \xff\xfe\r\nContent-Length: 0\r\n\r\n";
+  let mut socket = MockSocket::with_read_sizes(response, &[]);
+  let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
+
+  let raw = conn.read_raw_response(true).unwrap();
+  assert_eq!(raw.headers.get("x-bin"), Some("\u{fffd}\u{fffd}"));
+  // Packed copy is smaller than the full wire header section.
+  let header_section_len = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+  assert!(raw.headers.arena_len() < header_section_len);
 }
 
 #[test]

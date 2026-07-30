@@ -144,6 +144,115 @@ fn test_host_ipv6_with_port() {
 }
 
 #[test]
+fn test_host_ipv6_unspecified() {
+  let uri = Uri::parse("http://[::]").unwrap();
+  let auth = uri.authority().unwrap();
+  if let Host::IpAddr(IpAddr::V6(addr)) = auth.host() {
+    assert_eq!(*addr, Ipv6Addr::UNSPECIFIED);
+  } else {
+    panic!("Expected IPv6 address");
+  }
+}
+
+#[test]
+fn test_host_ipv6_compressed_and_full() {
+  let compressed = Uri::parse("http://[2001:db8:85a3::8a2e:370:7334]").unwrap();
+  let full = Uri::parse("http://[2001:0db8:85a3:0000:0000:8a2e:0370:7334]").unwrap();
+  assert_eq!(compressed.authority().unwrap().host(), full.authority().unwrap().host());
+}
+
+#[test]
+fn test_host_ipv6_mapped_ipv4() {
+  let uri = Uri::parse("http://[::ffff:192.0.2.1]").unwrap();
+  let auth = uri.authority().unwrap();
+  if let Host::IpAddr(IpAddr::V6(addr)) = auth.host() {
+    assert_eq!(*addr, "::ffff:192.0.2.1".parse::<Ipv6Addr>().unwrap());
+  } else {
+    panic!("Expected IPv6 address");
+  }
+}
+
+#[test]
+fn test_host_ipv6_embedded_ipv4() {
+  let uri = Uri::parse("http://[2001:db8::192.0.2.1]").unwrap();
+  let auth = uri.authority().unwrap();
+  if let Host::IpAddr(IpAddr::V6(addr)) = auth.host() {
+    assert_eq!(*addr, "2001:db8::c000:201".parse::<Ipv6Addr>().unwrap());
+  } else {
+    panic!("Expected IPv6 address");
+  }
+}
+
+#[test]
+fn test_host_ipv6_case_insensitive_hex() {
+  let lower = Uri::parse("http://[2001:db8::8a2e:370:7334]").unwrap();
+  let upper = Uri::parse("http://[2001:DB8::8A2E:370:7334]").unwrap();
+  assert_eq!(lower.authority().unwrap().host(), upper.authority().unwrap().host());
+}
+
+#[test]
+fn test_error_ipv6_zone_id_rejected() {
+  // Match `Ipv6Addr::from_str`: zone / scope ids are not accepted in the literal.
+  assert!(matches!(
+    Uri::parse("http://[fe80::1%eth0]"),
+    Err(ParseError::InvalidUri)
+  ));
+  assert!(matches!(
+    Uri::parse("http://[fe80::1%25eth0]"),
+    Err(ParseError::InvalidUri)
+  ));
+}
+
+#[test]
+fn test_error_ipv6_double_compression() {
+  assert!(matches!(
+    Uri::parse("http://[1::2::3]"),
+    Err(ParseError::InvalidUri)
+  ));
+  assert!(matches!(Uri::parse("http://[:::]"), Err(ParseError::InvalidUri)));
+}
+
+#[test]
+fn test_error_ipv6_bad_hextet_and_count() {
+  assert!(matches!(
+    Uri::parse("http://[gggg::1]"),
+    Err(ParseError::InvalidUri)
+  ));
+  assert!(matches!(
+    Uri::parse("http://[1:2:3:4:5:6:7]"),
+    Err(ParseError::InvalidUri)
+  ));
+  assert!(matches!(
+    Uri::parse("http://[1:2:3:4:5:6:7:8:9]"),
+    Err(ParseError::InvalidUri)
+  ));
+  assert!(matches!(
+    Uri::parse("http://[00000::1]"),
+    Err(ParseError::InvalidUri)
+  ));
+}
+
+#[test]
+fn test_error_ipv6_bad_embedded_ipv4() {
+  assert!(matches!(
+    Uri::parse("http://[::ffff:256.0.0.1]"),
+    Err(ParseError::InvalidUri)
+  ));
+  assert!(matches!(
+    Uri::parse("http://[::ffff:1.2.3]"),
+    Err(ParseError::InvalidUri)
+  ));
+  assert!(matches!(
+    Uri::parse("http://[1:2:3:4:5:1.2.3.4]"),
+    Err(ParseError::InvalidUri)
+  ));
+  assert!(matches!(
+    Uri::parse("http://[::ffff:01.2.3.4]"),
+    Err(ParseError::InvalidUri)
+  ));
+}
+
+#[test]
 fn test_host_reg_name_simple() {
   let uri = Uri::parse("http://example.com").unwrap();
   let auth = uri.authority().unwrap();

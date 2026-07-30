@@ -23,6 +23,7 @@ fn make_redirect_response(
     headers,
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::new(),
+    decoded_chunked_trailers: None,
   }
 }
 
@@ -36,9 +37,12 @@ fn raw_to_response_for_test(
     mut headers,
     version,
     body_bytes,
+    decoded_chunked_trailers,
   } = raw;
   let (body, trailers) = if method == &Method::Head {
     (bytes::Bytes::new(), Headers::new())
+  } else if let Some(trailers) = decoded_chunked_trailers {
+    crate::parser::Response::finish_decoded_body(body_bytes, &mut headers, trailers, usize::MAX).unwrap()
   } else {
     crate::parser::Response::parse_body_from_bytes(&body_bytes, &mut headers, status_code, version, usize::MAX).unwrap()
   };
@@ -138,6 +142,7 @@ fn policy_drops_body_for_head_requests() {
     headers,
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::from_static(b"1234567890"),
+    decoded_chunked_trailers: None,
   };
   let resp = raw_to_response_for_test(raw, &Method::Head);
   assert_eq!(resp.status_code(), 200);
@@ -241,6 +246,7 @@ fn non_followable_3xx_is_returned() {
       headers,
       version: Version::HTTP_11,
       body_bytes: bytes::Bytes::new(),
+      decoded_chunked_trailers: None,
     };
     assert!(
       process(
@@ -322,6 +328,7 @@ fn status_error_when_configured() {
       headers,
       version: Version::HTTP_11,
       body_bytes: bytes::Bytes::from_static(b"fail"),
+      decoded_chunked_trailers: None,
     };
     let err = process(
       &config,
@@ -356,6 +363,7 @@ fn status_4xx_is_ok_when_configured_as_response() {
     headers: Headers::new(),
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::new(),
+    decoded_chunked_trailers: None,
   };
   assert!(
     process(
@@ -523,6 +531,7 @@ fn chunked_trailers_reach_response() {
     headers,
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::from_static(b"5\r\nhello\r\n0\r\nX-Trailer: value\r\n\r\n"),
+    decoded_chunked_trailers: None,
   };
   let resp = raw_to_response_for_test(raw, &Method::Get);
   assert_eq!(resp.body(), b"hello");
@@ -542,7 +551,7 @@ fn build_request_is_http11_with_host_and_origin_form() {
     None,
     &Config::default(),
   )
-  .unwrap();
+  .unwrap().to_bytes();
   let text = String::from_utf8_lossy(&bytes);
   assert!(text.starts_with("GET /a/b?q=1 HTTP/1.1\r\n"));
   assert!(text.contains("Host: example.com:8080\r\n"));
@@ -557,7 +566,9 @@ fn build_request_sends_connection_close_when_pooling_disabled() {
   let config = Config::builder().max_idle_per_host(0).build();
   let mut custom = Headers::new();
   custom.insert("Connection", "keep-alive");
-  let bytes = build_request(&uri, &Method::Get, "example.com", 80, &custom, None, &config).unwrap();
+  let bytes = build_request(&uri, &Method::Get, "example.com", 80, &custom, None, &config)
+    .unwrap()
+    .to_bytes();
   let text = String::from_utf8_lossy(&bytes);
   assert!(text.contains("Connection: close\r\n"));
   assert!(!text.contains("keep-alive"));
@@ -575,7 +586,7 @@ fn build_request_default_port_omits_port_in_host() {
     None,
     &Config::default(),
   )
-  .unwrap();
+  .unwrap().to_bytes();
   let text = String::from_utf8_lossy(&bytes);
   assert!(text.contains("Host: example.com\r\n"));
   assert!(!text.contains("Host: example.com:80"));

@@ -253,6 +253,8 @@ pub enum InvalidRequest {
   FormAndBody,
   /// Cookie name or value contained `;` or a control octet.
   CookieOctet,
+  /// `CONNECT` needs authority-form + a tunneled socket (RFC 9112 §3.2.3 / §9.3.6); not supported yet.
+  ConnectUnsupported,
 }
 
 impl InvalidRequest {
@@ -260,6 +262,10 @@ impl InvalidRequest {
     match self {
       Self::FormAndBody => "cannot set both form fields and an explicit body",
       Self::CookieOctet => "cookie name or value contains illegal octets",
+      // Keep until a tunnel API exists; successful CONNECT must ignore CL/TE (RFC 9112 §9.3.6).
+      Self::ConnectUnsupported => {
+        "CONNECT is unsupported (RFC 9112 authority-form + tunnel; ignore CL/TE on success)"
+      },
     }
   }
 }

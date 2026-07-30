@@ -59,6 +59,28 @@ pub trait BlockingSocket {
     buf: &[u8],
   ) -> Result<usize, SocketError>;
 
+  /// Vectored write: attempt to write from `bufs` in order (like `writev`).
+  ///
+  /// Returns the number of bytes accepted in this call (may span buffers).
+  /// Default implementation writes the first non-empty buffer via [`Self::write`]
+  /// so TLS / stream adapters that only accept `&[u8]` keep working without a
+  /// body+headers concat; cleartext [`crate::OsBlockingSocket`] overrides with
+  /// a real `writev`/`WSASend` where available.
+  ///
+  /// # Errors
+  /// Same as [`Self::write`].
+  fn write_vectored(
+    &mut self,
+    bufs: &[&[u8]],
+  ) -> Result<usize, SocketError> {
+    for buf in bufs {
+      if !buf.is_empty() {
+        return self.write(buf);
+      }
+    }
+    Ok(0)
+  }
+
   /// Shut down the socket.
   ///
   /// # Errors

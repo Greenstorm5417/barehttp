@@ -7,7 +7,7 @@
 //! Outcomes:
 //! - `BothAccept` / `BothReject`
 //! - `IntentionalStrictness`: we reject, they accept (allowlisted)
-//! - `IntentionalLeniency`: we accept, they reject (allowlisted; e.g. some CTLs)
+//! - `IntentionalLeniency`: we accept, they reject (allowlisted)
 //! - `PotentialBug`: unexpected divergence (must be empty on this corpus)
 
 use barehttp::Response;
@@ -132,17 +132,16 @@ fn corpus() -> Vec<Case> {
       data: b"HTTP/1.1 200 OK\r\nContent-Length: 999999999999999\r\n\r\n",
       expect: Some(Outcome::IntentionalStrictness),
     },
-    // IntentionalLeniency allowlist: we accept some header CTLs httparse rejects.
-    // RFC 9110 forbids most CTLs; tightening later need not reclassify these as bugs.
+    // Both reject forbidden CTLs in header values (RFC 9110 field-content).
     Case {
       name: "null_byte_in_header_value",
       data: b"HTTP/1.1 200 OK\r\nX-Header: value\x00injected\r\nContent-Length: 0\r\n\r\n",
-      expect: Some(Outcome::IntentionalLeniency),
+      expect: Some(Outcome::BothReject),
     },
     Case {
       name: "vertical_tab_in_header_value",
       data: b"HTTP/1.1 200 OK\r\nX-Header:\x0Bvalue\r\nContent-Length: 0\r\n\r\n",
-      expect: Some(Outcome::IntentionalLeniency),
+      expect: Some(Outcome::BothReject),
     },
   ]
 }

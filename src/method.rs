@@ -72,7 +72,12 @@ pub enum Method {
   Patch,
   /// `OPTIONS`
   Options,
-  /// `CONNECT`
+  /// `CONNECT` (parsed / matchable; execution rejects until tunnel support exists).
+  ///
+  /// RFC 9112 §3.2.3 requires authority-form for CONNECT; §9.3.6 requires ignoring
+  /// `Content-Length` / `Transfer-Encoding` on a successful response. This crate has no
+  /// tunneled-socket API yet, so builders/clients return
+  /// [`crate::InvalidRequest::ConnectUnsupported`] instead of sending a mis-framed request.
   Connect,
   /// `TRACE`
   Trace,
@@ -248,6 +253,7 @@ mod tests {
   fn needs_request_body_only_entity_methods() {
     assert!(Method::Post.needs_request_body());
     assert!(!Method::Options.needs_request_body());
+    assert!(!Method::Connect.needs_request_body());
     assert!(!Method::new("PURGE").unwrap().needs_request_body());
   }
 }

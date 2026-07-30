@@ -4,7 +4,9 @@ extern crate alloc;
 use crate::error::{DecompressError, IntoStringError, ParseError};
 use crate::headers::Headers;
 use crate::parser::chunked::ChunkedDecoder;
-use crate::parser::headers::{HeaderRef, materialize_headers, parse_header_fields, scan_header_fields};
+use crate::parser::headers::{
+  HeaderRef, materialize_headers, parse_header_fields, scan_header_fields, try_wire_spans,
+};
 use crate::parser::version::{Version, parse_status_line};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -190,10 +192,20 @@ impl Response {
     self.headers.get(name)
   }
 
-  /// Promote borrowed header refs to owned [`Headers`].
+  /// Promote borrowed header refs to owned [`Headers`] (copies into a new arena).
   #[must_use]
   pub(crate) fn headers_from_refs(refs: &[HeaderRef<'_>]) -> Headers {
     materialize_headers(refs)
+  }
+
+  /// Offsets into `section` for zero-copy [`Headers::from_spans`], or [`None`] when
+  /// a value needs lossy UTF-8 (caller should [`Self::headers_from_refs`]).
+  #[must_use]
+  pub(crate) fn try_wire_header_spans(
+    section: &[u8],
+    refs: &[HeaderRef<'_>],
+  ) -> Option<alloc::vec::Vec<(u32, u32, u32, u32)>> {
+    try_wire_spans(section, refs)
   }
 
   /// Own a reason-phrase byte slice.
@@ -358,7 +370,9 @@ impl Response {
   /// Owned-buffer variant of [`Self::parse_body_from_bytes`].
   ///
   /// For `Content-Length` and until-close bodies already held by the transport,
-  /// returns that buffer with no copy.
+  /// returns that buffer with no copy. Chunked wire still re-decodes here; the
+  /// live transport path uses [`Self::finish_decoded_body`] after single-pass
+  /// decode on the wire instead.
   ///
   /// # Errors
   /// [`ParseError`] when framing is illegal or the body cannot be decoded / decompressed.
@@ -372,6 +386,22 @@ impl Response {
     let strategy = Self::body_read_strategy(headers, status_code, version)?;
     let (body_vec, trailer_bytes) = decode_body_owned(body_bytes, strategy)?;
     finish_body(headers, body_vec, trailer_bytes, max_body)
+  }
+
+  /// Finish a body the transport already decoded (chunked single-pass on recv).
+  ///
+  /// Applies Content-Encoding decompression and the body size cap; does not
+  /// re-parse chunked framing.
+  ///
+  /// # Errors
+  /// [`ParseError`] when decompression fails or the body exceeds `max_body`.
+  pub(crate) fn finish_decoded_body(
+    body_bytes: Bytes,
+    headers: &mut Headers,
+    trailers: Headers,
+    max_body: usize,
+  ) -> Result<(Bytes, Headers), ParseError> {
+    finish_body(headers, body_bytes, trailers, max_body)
   }
 
   /// Deprecated alias of [`Self::status_code`].

@@ -54,6 +54,8 @@ windows-sys = { version = "0.61.2", default-features = false, features = [
   "Win32_Networking_WinSock",
   "Win32_Foundation",
   "Win32_System_SystemInformation",
+  # Required for `WSASend` (vectored write); pulls `OVERLAPPED` only.
+  "Win32_System_IO",
 ] }
 
 # Lints that apply to *all* targets (lib, tests, benches, examples). Keep this

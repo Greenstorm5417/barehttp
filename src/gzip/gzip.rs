@@ -1,8 +1,8 @@
 //! Gzip member parse + inflate (RFC 1952).
 
 use super::DecompressError;
-use super::crc32::{crc32, update_crc};
-use super::inflate;
+use super::crc32::crc32;
+use super::inflate::{self, RunningChecksum};
 use alloc::vec::Vec;
 
 const ID1: u8 = 0x1f;
@@ -86,7 +86,8 @@ pub(super) fn decompress_member(
   }
 
   let deflate = data.get(i..).ok_or(DecompressError::InvalidInput)?;
-  let (out, consumed) = inflate::inflate(deflate, max_out)?;
+  let mut crc = RunningChecksum::crc();
+  let (out, consumed) = inflate::inflate(deflate, max_out, &mut crc)?;
   let trailer_off = i
     .checked_add(consumed)
     .ok_or(DecompressError::InvalidInput)?;
@@ -106,8 +107,7 @@ pub(super) fn decompress_member(
     *trailer.get(7).ok_or(DecompressError::InvalidInput)?,
   ]);
 
-  let crc_expect = update_crc(0, &out);
-  if crc_got != crc_expect {
+  if crc_got != crc.crc_value() {
     return Err(DecompressError::InvalidInput);
   }
   #[allow(clippy::cast_possible_truncation)] // ISIZE is defined as len mod 2^32

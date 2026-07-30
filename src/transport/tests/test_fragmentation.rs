@@ -47,7 +47,8 @@ fn chunked_body_split_across_reads() {
 
   let raw = conn.read_raw_response(true).unwrap();
   assert_eq!(raw.status_code, 200);
-  assert_eq!(&raw.body_bytes[..], b"5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n");
+  assert_eq!(&raw.body_bytes[..], b"Hello World");
+  assert_eq!(raw.decoded_chunked_trailers.as_ref().map(|t| t.len()), Some(0));
 }
 
 #[test]
@@ -109,8 +110,9 @@ fn large_chunked_stream_byte_at_a_time() {
   let raw = conn
     .read_raw_response(true)
     .expect("fragmented chunked read");
-  assert!(raw.body_bytes.starts_with(b"8\r\nchunk-00\r\n"));
-  assert!(raw.body_bytes.ends_with(b"0\r\n\r\n"));
+  assert!(raw.body_bytes.starts_with(b"chunk-00"));
+  assert!(raw.body_bytes.ends_with(b"chunk-19"));
+  assert!(raw.decoded_chunked_trailers.is_some());
 }
 
 /// Two-fragment splits at every byte boundary for tiny fixtures (< 80 bytes).

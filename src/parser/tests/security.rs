@@ -21,9 +21,13 @@ fn test_request_smuggling_conflicting_content_lengths() {
 
 #[test]
 fn test_header_injection_null_byte() {
+  // RFC 9110 field-content: NUL is forbidden in header values.
   let input = b"HTTP/1.1 200 OK\r\nX-Header: value\x00injected\r\n\r\n";
   let result = Response::parse(input);
-  assert!(result.is_ok());
+  assert!(
+    matches!(result, Err(ParseError::InvalidHeaderValue)),
+    "got {result:?}"
+  );
 }
 
 #[test]
@@ -117,9 +121,23 @@ fn test_transfer_encoding_identity_not_chunked() {
 
 #[test]
 fn test_header_with_vertical_tab() {
+  // RFC 9110: VT and other CTLs (except HTAB) are not field-content.
   let input = b"HTTP/1.1 200 OK\r\nX-Header:\x0Bvalue\r\n\r\n";
   let result = Response::parse(input);
-  assert!(result.is_ok());
+  assert!(
+    matches!(result, Err(ParseError::InvalidHeaderValue)),
+    "got {result:?}"
+  );
+}
+
+#[test]
+fn test_header_value_with_del_rejected() {
+  let input = b"HTTP/1.1 200 OK\r\nX-Header: va\x7Flue\r\n\r\n";
+  let result = Response::parse(input);
+  assert!(
+    matches!(result, Err(ParseError::InvalidHeaderValue)),
+    "got {result:?}"
+  );
 }
 
 #[test]

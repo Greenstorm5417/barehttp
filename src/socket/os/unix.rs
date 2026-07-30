@@ -153,6 +153,60 @@ impl crate::socket::BlockingSocket for OsSocket {
     }
   }
 
+  fn write_vectored(
+    &mut self,
+    bufs: &[&[u8]],
+  ) -> Result<usize, SocketError> {
+    if !self.connected {
+      return Err(SocketError::NotConnected);
+    }
+
+    // Request send uses at most head + body.
+    let mut iov = [libc::iovec {
+      iov_base: core::ptr::null_mut(),
+      iov_len: 0,
+    }; 2];
+    let mut count = 0usize;
+    for buf in bufs {
+      if buf.is_empty() {
+        continue;
+      }
+      if count >= iov.len() {
+        break;
+      }
+      if let Some(slot) = iov.get_mut(count) {
+        slot.iov_base = buf.as_ptr().cast::<c_void>().cast_mut();
+        slot.iov_len = buf.len();
+        count = count.saturating_add(1);
+      }
+    }
+    if count == 0 {
+      return Ok(0);
+    }
+
+    loop {
+      // SAFETY: `self.fd` is connected; `iov[..count]` points at caller-borrowed
+      // readable slices for the duration of `writev`.
+      let result = unsafe {
+        libc::writev(
+          self.fd,
+          iov.as_ptr(),
+          c_int::try_from(count).unwrap_or(c_int::MAX),
+        )
+      };
+
+      if result < 0 {
+        let err = get_last_error();
+        if matches!(err, SocketError::Interrupted) {
+          continue;
+        }
+        return Err(err);
+      }
+
+      return usize::try_from(result).map_err(|_| SocketError::Unsupported);
+    }
+  }
+
   fn shutdown(&mut self) -> Result<(), SocketError> {
     if !self.connected {
       return Ok(());

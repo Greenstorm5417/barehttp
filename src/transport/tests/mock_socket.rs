@@ -160,6 +160,24 @@ impl BlockingSocket for MockSocket {
     Ok(n)
   }
 
+  fn write_vectored(
+    &mut self,
+    bufs: &[&[u8]],
+  ) -> Result<usize, SocketError> {
+    let mut written = 0usize;
+    let mut budget = self.max_write;
+    for buf in bufs {
+      if budget == 0 {
+        break;
+      }
+      let n = buf.len().min(budget);
+      self.written.extend_from_slice(buf.get(..n).unwrap_or(&[]));
+      written = written.saturating_add(n);
+      budget = budget.saturating_sub(n);
+    }
+    Ok(written)
+  }
+
   fn shutdown(&mut self) -> Result<(), SocketError> {
     Ok(())
   }

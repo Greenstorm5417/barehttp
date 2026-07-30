@@ -166,7 +166,7 @@ fn write_failure_mid_request_reports_bytes_accepted() {
     .push_write(WriteStep::Error(SocketError::OsError(32)));
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  let err = conn.send_request(request).unwrap_err();
+  let err = conn.send_request(request, &[]).unwrap_err();
   assert_eq!(err, Error::Socket(SocketError::OsError(32)));
   assert_eq!(socket.written_len(), 10);
   assert_eq!(socket.get_written(), &request[..10]);
@@ -179,7 +179,7 @@ fn zero_byte_write_maps_to_not_connected() {
   socket.push_write(WriteStep::Zero);
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  let err = conn.send_request(request).unwrap_err();
+  let err = conn.send_request(request, &[]).unwrap_err();
   assert_eq!(err, Error::Socket(SocketError::NotConnected));
   assert_eq!(socket.written_len(), 0);
 }
@@ -194,7 +194,7 @@ fn interrupted_on_write_no_connection_retry() {
     .push_write(WriteStep::AcceptAll);
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  let err = conn.send_request(request).unwrap_err();
+  let err = conn.send_request(request, &[]).unwrap_err();
   assert_eq!(err, Error::Socket(SocketError::Interrupted));
   assert_eq!(socket.written_len(), 5);
   assert_eq!(socket.write_calls, 2, "must not retry Interrupted at Connection layer");

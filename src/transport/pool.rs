@@ -33,9 +33,8 @@ impl PoolKey {
 #[derive(Debug, Default)]
 pub struct PooledBuffers {
   /// Assemble buffer for the next response (`BytesMut` capacity, empty length).
+  /// Socket bytes are read directly into spare capacity (no intermediate scratch).
   pub buf: BytesMut,
-  /// Socket `read` scratch; never frozen into [`bytes::Bytes`].
-  pub scratch: Vec<u8>,
 }
 
 struct IdleConn<S> {

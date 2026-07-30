@@ -162,6 +162,9 @@ impl ChunkedDecoder {
           Err(e) => return Err(e),
         },
         DecodeState::TrailerSection => {
+          // Incomplete edge: the whole trailer section (through the terminating blank
+          // line) must be present before `parse_header_fields` runs — trailers are not
+          // streamed field-by-field. Payload chunks above are single-pass.
           if !trailer_section_looks_complete(remaining) {
             return Ok(FeedResult::NeedMore {
               consumed: input.len().saturating_sub(remaining.len()),

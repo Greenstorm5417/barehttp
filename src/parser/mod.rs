@@ -1,7 +1,7 @@
 //! HTTP/1.1 parsing and wire serialization (`pub(crate)`).
 //!
 //! Crate-root re-exports: [`Response`], [`version::Version`].
-//! Internal: [`serialize_request`], [`BodyReadStrategy`], [`uri::Uri`], [`has_complete_headers`].
+//! Internal: [`serialize_request`], [`SerializedRequest`], [`BodyReadStrategy`], [`uri::Uri`], [`has_complete_headers`].
 
 pub mod chunked;
 #[cfg(feature = "cookie-jar")]
@@ -44,4 +44,4 @@ pub fn has_complete_headers(data: &[u8]) -> bool {
 
 pub use response::BodyReadStrategy;
 pub use response::Response;
-pub use wire_request::serialize_request;
+pub use wire_request::{SerializedRequest, serialize_request};

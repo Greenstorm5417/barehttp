@@ -16,6 +16,27 @@ fn success_response() -> Vec<u8> {
 }
 
 #[test]
+fn short_writes_across_vectored_head_and_body() {
+  let head = b"POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4\r\n\r\n";
+  let body = b"BODY";
+  let mut expected = Vec::new();
+  expected.extend_from_slice(head);
+  expected.extend_from_slice(body);
+
+  let mut socket = ScriptedSocket::new();
+  socket.push_writes([
+    WriteStep::Accept(7),
+    WriteStep::Accept(3),
+    WriteStep::Accept(100),
+    WriteStep::AcceptAll,
+  ]);
+
+  let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
+  assert!(conn.send_request(head, body).is_ok());
+  assert_eq!(socket.get_written(), expected.as_slice());
+}
+
+#[test]
 fn short_writes_split_across_request_line_headers_body() {
   // Force cuts inside request-line, headers, and body.
   let mut socket = ScriptedSocket::new();
@@ -35,7 +56,7 @@ fn short_writes_split_across_request_line_headers_body() {
     .push_read(ReadStep::Data(success_response()));
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  assert!(conn.send_request(REQUEST).is_ok());
+  assert!(conn.send_request(REQUEST, &[]).is_ok());
   assert_eq!(socket.get_written(), REQUEST);
 }
 
@@ -48,7 +69,7 @@ fn one_byte_writes_send_full_request() {
   socket.push_read(ReadStep::Data(success_response()));
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  assert!(conn.send_request(REQUEST).is_ok());
+  assert!(conn.send_request(REQUEST, &[]).is_ok());
   assert_eq!(socket.get_written(), REQUEST);
   assert_eq!(socket.write_calls, REQUEST.len());
 }
@@ -64,7 +85,7 @@ fn interrupted_mid_write_returns_socket_interrupted() {
   ]);
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  let err = conn.send_request(REQUEST).unwrap_err();
+  let err = conn.send_request(REQUEST, &[]).unwrap_err();
   assert_eq!(err, Error::Socket(SocketError::Interrupted));
   assert_eq!(socket.written_len(), 10);
   assert_eq!(socket.write_calls, 2);
@@ -76,7 +97,7 @@ fn zero_byte_write_maps_to_not_connected() {
   socket.push_writes([WriteStep::Accept(4), WriteStep::Zero]);
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  let err = conn.send_request(REQUEST).unwrap_err();
+  let err = conn.send_request(REQUEST, &[]).unwrap_err();
   assert_eq!(err, Error::Socket(SocketError::NotConnected));
   assert_eq!(socket.written_len(), 4);
 }
@@ -90,7 +111,7 @@ fn failure_mid_request_after_partial_accept() {
   ]);
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  let err = conn.send_request(REQUEST).unwrap_err();
+  let err = conn.send_request(REQUEST, &[]).unwrap_err();
   assert_eq!(err, Error::Socket(SocketError::OsError(104)));
   assert_eq!(socket.written_len(), 15);
   assert_eq!(socket.get_written(), &REQUEST[..15]);
@@ -105,7 +126,7 @@ fn connection_refused_mid_write() {
   ]);
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  let err = conn.send_request(REQUEST).unwrap_err();
+  let err = conn.send_request(REQUEST, &[]).unwrap_err();
   assert_eq!(err, Error::Socket(SocketError::ConnectionRefused));
   assert_eq!(socket.written_len(), 1);
 }
@@ -119,7 +140,7 @@ fn timed_out_mid_write() {
   ]);
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  let err = conn.send_request(REQUEST).unwrap_err();
+  let err = conn.send_request(REQUEST, &[]).unwrap_err();
   assert_eq!(err, Error::Socket(SocketError::TimedOut));
   assert_eq!(socket.written_len(), 8);
 }
@@ -133,7 +154,7 @@ fn not_connected_mid_write() {
   ]);
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  let err = conn.send_request(REQUEST).unwrap_err();
+  let err = conn.send_request(REQUEST, &[]).unwrap_err();
   assert_eq!(err, Error::Socket(SocketError::NotConnected));
   assert_eq!(socket.written_len(), 2);
 }
@@ -153,7 +174,7 @@ fn retry_interrupted_adapter_absorbs_eintr_like_os() {
   let mut socket = RetryInterrupted::new(inner);
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  assert!(conn.send_request(REQUEST).is_ok());
+  assert!(conn.send_request(REQUEST, &[]).is_ok());
   assert_eq!(socket.interrupted_retries, 2);
   assert_eq!(socket.inner().get_written(), REQUEST);
 }
@@ -165,7 +186,7 @@ fn accept_all_unscripted_writes_succeed() {
   socket.push_read(ReadStep::Data(success_response()));
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  assert!(conn.send_request(REQUEST).is_ok());
+  assert!(conn.send_request(REQUEST, &[]).is_ok());
   assert_eq!(socket.get_written(), REQUEST);
   assert_eq!(socket.write_calls, 1);
 }
@@ -177,7 +198,7 @@ fn short_write_of_zero_cap_is_not_connected() {
   socket.push_write(WriteStep::Accept(0));
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  let err = conn.send_request(REQUEST).unwrap_err();
+  let err = conn.send_request(REQUEST, &[]).unwrap_err();
   assert_eq!(err, Error::Socket(SocketError::NotConnected));
 }
 
@@ -191,7 +212,7 @@ fn send_then_read_after_fragmented_writes() {
   socket.push_read(ReadStep::Data(success_response()));
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  conn.send_request(REQUEST).unwrap();
+  conn.send_request(REQUEST, &[]).unwrap();
   let raw = conn.read_raw_response(true).unwrap();
   assert_eq!(raw.status_code, 200);
   assert!(raw.body_bytes.is_empty());
@@ -206,7 +227,7 @@ fn document_no_mid_write_client_retry_on_fresh_connect() {
   socket.push_writes([WriteStep::Accept(3), WriteStep::Interrupted]);
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
-  let err = conn.send_request(REQUEST).unwrap_err();
+  let err = conn.send_request(REQUEST, &[]).unwrap_err();
   assert_eq!(err, Error::Socket(SocketError::Interrupted));
   assert_eq!(socket.written_len(), 3);
 }

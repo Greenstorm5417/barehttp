@@ -185,11 +185,20 @@ impl<'a> BitReader<'a> {
     }
     out.reserve(len);
     let mut left = len;
-    while left > 0 && self.bitcnt >= 8 {
-      out.push(self.bitbuf as u8);
-      self.bitbuf >>= 8;
-      self.bitcnt -= 8;
-      left -= 1;
+    // Drain buffered full bytes in one extend (bitbuf holds ≤ 7 full bytes after align).
+    if left > 0 && self.bitcnt >= 8 {
+      let mut tmp = [0u8; 8];
+      let mut n = 0usize;
+      while left > 0 && self.bitcnt >= 8 && n < tmp.len() {
+        if let Some(slot) = tmp.get_mut(n) {
+          *slot = self.bitbuf as u8;
+        }
+        self.bitbuf >>= 8;
+        self.bitcnt -= 8;
+        n += 1;
+        left -= 1;
+      }
+      out.extend_from_slice(tmp.get(..n).unwrap_or(&[]));
     }
     if left == 0 {
       return Ok(());

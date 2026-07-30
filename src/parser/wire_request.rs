@@ -4,16 +4,43 @@ use crate::headers::{Headers, WellKnownHeader, well_known_header};
 use crate::parser::headers::is_token_char;
 use bytes::{Bytes, BytesMut};
 
-/// Serialize an HTTP/1.1 request to wire bytes.
+/// Wire request with header block and body kept separate (no concat copy).
+///
+/// `head` is request-line + fields + terminating blank line. `body` borrows the
+/// caller buffer so large payloads are not copied into the header allocation.
+#[derive(Debug, Clone)]
+pub struct SerializedRequest<'a> {
+  /// Request-line, headers, and final `\r\n` (no entity body).
+  pub head: Bytes,
+  /// Entity body octets (empty when no body).
+  pub body: &'a [u8],
+}
+
+impl SerializedRequest<'_> {
+  /// Contiguous wire image (tests / assertions). Copies the body when present.
+  #[cfg(test)]
+  #[must_use]
+  pub fn to_bytes(&self) -> Bytes {
+    if self.body.is_empty() {
+      return self.head.clone();
+    }
+    let mut out = BytesMut::with_capacity(self.head.len().saturating_add(self.body.len()));
+    out.extend_from_slice(&self.head);
+    out.extend_from_slice(self.body);
+    out.freeze()
+  }
+}
+
+/// Serialize an HTTP/1.1 request: header block in [`SerializedRequest::head`], body uncopied.
 ///
 /// # Errors
 /// [`ParseError::MissingHostHeader`], host / TE / framing violations of RFC 9112.
-pub fn serialize_request(
+pub fn serialize_request<'a>(
   method: &str,
   path: &str,
   headers: &Headers,
-  body: Option<&[u8]>,
-) -> Result<Bytes, ParseError> {
+  body: Option<&'a [u8]>,
+) -> Result<SerializedRequest<'a>, ParseError> {
   let mut host_value: Option<&str> = None;
   let mut host_count = 0usize;
   let mut has_te = false;
@@ -98,8 +125,10 @@ pub fn serialize_request(
     return Err(ParseError::RequestTransferEncodingUnsupported);
   }
 
+  let body_bytes = body.unwrap_or(&[]);
+
   // Body length is authoritative: reject a mismatched Content-Length.
-  if let Some(body_bytes) = body
+  if body.is_some()
     && let Some(cl_val) = cl_value
   {
     let parsed = cl_val
@@ -130,9 +159,7 @@ pub fn serialize_request(
     // "Content-Length: " + digits + "\r\n" — digits ≤ 20 for usize.
     wire_bytes = wire_bytes.saturating_add(32);
   }
-  if let Some(body_bytes) = body {
-    wire_bytes = wire_bytes.saturating_add(body_bytes.len());
-  }
+  // Capacity is header block only — body is written from the caller slice.
 
   let mut request = BytesMut::with_capacity(wire_bytes);
 
@@ -152,9 +179,7 @@ pub fn serialize_request(
     write_header_line(&mut request, name, value);
   }
 
-  if let Some(body_bytes) = body
-    && inject_cl
-  {
+  if inject_cl {
     request.extend_from_slice(b"Content-Length: ");
     push_usize_decimal(&mut request, body_bytes.len());
     request.extend_from_slice(b"\r\n");
@@ -162,11 +187,10 @@ pub fn serialize_request(
 
   request.extend_from_slice(b"\r\n");
 
-  if let Some(body_bytes) = body {
-    request.extend_from_slice(body_bytes);
-  }
-
-  Ok(request.freeze())
+  Ok(SerializedRequest {
+    head: request.freeze(),
+    body: body_bytes,
+  })
 }
 
 fn write_header_line(

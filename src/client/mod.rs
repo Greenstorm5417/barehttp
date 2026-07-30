@@ -3,11 +3,11 @@ pub mod tests;
 
 use crate::config::Config;
 use crate::dns::DnsResolver;
-use crate::error::Error;
+use crate::error::{Error, InvalidRequest};
 use crate::headers::Headers;
 use crate::method::Method;
 use crate::parser::Response;
-use crate::parser::serialize_request;
+use crate::parser::{SerializedRequest, serialize_request};
 use crate::parser::uri::{Host, Uri};
 use crate::request_builder::ClientRequestBuilder;
 use crate::socket::{BlockingSocket, BlockingSocketFactory};
@@ -190,6 +190,7 @@ where
   /// Pass `None::<&[u8]>` when there is no body.
   ///
   /// # Errors
+  /// [`Error::InvalidRequest`] for [`Method::Connect`] (no tunnel API),
   /// [`Error::InvalidUrl`], [`Error::Dns`], [`Error::Socket`], [`Error::Parse`],
   /// redirect / TLS / size-limit variants, or [`Error::HttpStatus`] when configured.
   pub fn request(
@@ -237,6 +238,10 @@ where
     custom_headers: &Headers,
     body: Option<Vec<u8>>,
   ) -> Result<Response, Error> {
+    // No tunnel / authority-form yet (RFC 9112 §3.2.3 / §9.3.6).
+    if matches!(method, Method::Connect) {
+      return Err(Error::InvalidRequest(InvalidRequest::ConnectUnsupported));
+    }
     // Refuse assume_tls_socket with cleartext OS adapter.
     if config.assume_tls_socket() && S::is_os_cleartext() {
       return Err(Error::TlsNotConfigured);
@@ -336,10 +341,14 @@ fn raw_to_response(
     mut headers,
     version,
     body_bytes,
+    decoded_chunked_trailers,
   } = raw;
 
   let (response_body, trailers) = if method == &Method::Head {
     (bytes::Bytes::new(), Headers::new())
+  } else if let Some(trailers) = decoded_chunked_trailers {
+    // Transport already decoded chunked framing on the wire — skip second pass.
+    Response::finish_decoded_body(body_bytes, &mut headers, trailers, max_body).map_err(Error::from)?
   } else {
     Response::parse_body_from_owned(body_bytes, &mut headers, status_code, version, max_body).map_err(Error::from)?
   };
@@ -557,8 +566,8 @@ where
   D: DnsResolver,
 {
   let mut conn = crate::transport::connection::connect_with_buffers(socket, dns, uri, config, reused, buffers)?;
-  let request_bytes = build_request(uri, method, host_str, port, custom_headers, body, config)?;
-  conn.send_request(&request_bytes)?;
+  let request = build_request(uri, method, host_str, port, custom_headers, body, config)?;
+  conn.send_request(&request.head, request.body)?;
   let raw = conn.read_raw_response(method != &Method::Head)?;
   let reusable = conn.is_reusable();
   let returned_bufs = conn.take_buffers();
@@ -593,18 +602,20 @@ where
     .map_err(Error::Socket)
 }
 
-/// Build wire request bytes (HTTP/1.1 + Host + origin-form target).
+/// Build wire request (HTTP/1.1 + Host + origin-form target).
 ///
-/// Exposed for unit tests that assert wire serialization.
-pub fn build_request(
+/// Header block and body stay separate ([`SerializedRequest`]) so the transport
+/// can write them without concatenating. Exposed for unit tests that assert wire
+/// serialization.
+pub fn build_request<'a>(
   uri: &Uri,
   method: &Method,
   host_str: &str,
   port: u16,
   custom_headers: &Headers,
-  body: Option<&[u8]>,
+  body: Option<&'a [u8]>,
   config: &Config,
-) -> Result<bytes::Bytes, Error> {
+) -> Result<SerializedRequest<'a>, Error> {
   // Userinfo rejected at Uri::parse for HTTP client use.
 
   let host_header = if (uri.scheme().eq_ignore_ascii_case("http") && port == 80)

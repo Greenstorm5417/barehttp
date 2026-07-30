@@ -88,6 +88,7 @@ pub fn decompress_raw_deflate(
   data: &[u8],
   max_out: usize,
 ) -> Result<Vec<u8>, DecompressError> {
-  let (out, _) = inflate::inflate(data, max_out)?;
+  let mut none = inflate::RunningChecksum::None;
+  let (out, _) = inflate::inflate(data, max_out, &mut none)?;
   Ok(out)
 }

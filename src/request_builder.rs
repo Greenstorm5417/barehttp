@@ -240,8 +240,10 @@ where
   /// Send the request.
   ///
   /// # Errors
-  /// [`Error::InvalidRequest`] if form fields and a body are both set, or a cookie is invalid.
-  /// Otherwise the same failures as [`HttpClient::request_with_config`].
+  /// [`Error::InvalidRequest`] for [`Method::Connect`] (no tunnel API; RFC 9112
+  /// authority-form / ignore CL/TE on success), if form fields and a body are both set,
+  /// or a cookie is invalid. Otherwise the same failures as
+  /// [`HttpClient::request_with_config`].
   ///
   /// # Examples
   ///
@@ -253,6 +255,9 @@ where
   /// # Ok::<(), barehttp::Error>(())
   /// ```
   pub fn call(self) -> Result<Response, Error> {
+    if matches!(self.method, Method::Connect) {
+      return Err(Error::InvalidRequest(InvalidRequest::ConnectUnsupported));
+    }
     if !self.form_data.is_empty() && self.body.is_some() {
       return Err(Error::InvalidRequest(InvalidRequest::FormAndBody));
     }
@@ -288,12 +293,13 @@ where
       (_, other) => other,
     };
 
-    let config = self
-      .config_override
-      .unwrap_or_else(|| self.client.config().clone());
+    // Borrow client config when no per-request override (avoid cloning Strings).
+    // Move headers in so the client can mutate Host/defaults in place (no map clone).
+    let config_owned = self.config_override;
+    let config = config_owned.as_ref().unwrap_or_else(|| self.client.config());
     self
       .client
-      .request_with_config_owned(&config, self.method, &url, &headers, body)
+      .request_with_config_owned(config, self.method, &url, &headers, body)
   }
 
   /// Set the body and send ([`Self::call`]).
@@ -424,5 +430,37 @@ mod tests {
       .call()
       .unwrap_err();
     assert_eq!(err, Error::InvalidRequest(InvalidRequest::CookieOctet));
+  }
+
+  #[test]
+  fn connect_method_rejected_at_call() {
+    use crate::method::Method;
+    let err = HttpClient::new()
+      .method(Method::Connect, "http://example.com:443")
+      .call()
+      .unwrap_err();
+    assert_eq!(err, Error::InvalidRequest(InvalidRequest::ConnectUnsupported));
+  }
+
+  #[test]
+  fn connect_method_rejected_on_request_api() {
+    use crate::headers::Headers;
+    use crate::method::Method;
+    let client = HttpClient::new();
+    let err = client
+      .request(Method::Connect, "http://example.com:443", &Headers::new(), None::<&[u8]>)
+      .unwrap_err();
+    assert_eq!(err, Error::InvalidRequest(InvalidRequest::ConnectUnsupported));
+  }
+
+  #[test]
+  fn connect_with_body_still_rejected() {
+    use crate::method::Method;
+    let err = HttpClient::new()
+      .method(Method::Connect, "http://example.com:443")
+      .body(b"nope")
+      .call()
+      .unwrap_err();
+    assert_eq!(err, Error::InvalidRequest(InvalidRequest::ConnectUnsupported));
   }
 }

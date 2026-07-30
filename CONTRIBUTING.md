@@ -217,7 +217,15 @@ cargo check --target thumbv7em-none-eabi --no-default-features
 
 ## Packaging / release
 
-Release workflow runs `cargo deny check`, `cargo package --locked`, tests the extracted package, docs (`RUSTDOCFLAGS=-D warnings`), and uploads coverage / fuzz / bench artifacts. **It does not publish to crates.io.**
+The release workflow (`.github/workflows/release.yml`) runs `cargo deny check`, `cargo package --locked`, tests the extracted package, docs (`RUSTDOCFLAGS=-D warnings`), sanitizers, Kani, Docker interop, and uploads coverage / fuzz / bench artifacts. **It never publishes to crates.io.**
+
+### Cut a release (maintainers)
+
+1. Land the release notes under `## [x.y.z] - YYYY-MM-DD` in `CHANGELOG.md` (fold `[Unreleased]`; leave an empty Unreleased stub).
+2. On the **exact commit** to ship, run the **Release** workflow manually (`workflow_dispatch`) and wait until it is green. Prefer dispatch over tagging first so a bad cut does not leave a published tag.
+3. Locally, on that same commit: `cargo publish --dry-run --locked` (add `--allow-dirty` only if the tree still has intentional uncommitted noise; prefer a clean tree).
+4. After dry-run succeeds, create and push the version tag (`v0.1.0`, etc.). Tag push re-runs release CI; that is expected.
+5. Only then `cargo publish --locked` by hand. There is no Actions job that publishes.
 
 `cargo-semver-checks`: the first `0.1.0` crates.io publish has no registry baseline.
 The release job and `scripts/semver-checks.sh` skip, or use `--baseline-rev` of a prior git tag.

@@ -244,6 +244,21 @@ impl BlockingSocket for ScriptedSocket {
     }
   }
 
+  fn write_vectored(
+    &mut self,
+    bufs: &[&[u8]],
+  ) -> Result<usize, SocketError> {
+    let total: usize = bufs.iter().map(|b| b.len()).sum();
+    if total == 0 {
+      return Ok(0);
+    }
+    let mut flat = Vec::with_capacity(total);
+    for buf in bufs {
+      flat.extend_from_slice(buf);
+    }
+    self.write(flat.as_slice())
+  }
+
   fn shutdown(&mut self) -> Result<(), SocketError> {
     Ok(())
   }
@@ -330,6 +345,20 @@ impl<S: BlockingSocket> BlockingSocket for RetryInterrupted<S> {
   ) -> Result<usize, SocketError> {
     loop {
       match self.inner.write(buf) {
+        Err(SocketError::Interrupted) => {
+          self.interrupted_retries = self.interrupted_retries.saturating_add(1);
+        },
+        other => return other,
+      }
+    }
+  }
+
+  fn write_vectored(
+    &mut self,
+    bufs: &[&[u8]],
+  ) -> Result<usize, SocketError> {
+    loop {
+      match self.inner.write_vectored(bufs) {
         Err(SocketError::Interrupted) => {
           self.interrupted_retries = self.interrupted_retries.saturating_add(1);
         },
