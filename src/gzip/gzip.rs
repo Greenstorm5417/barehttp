@@ -125,11 +125,15 @@ pub(super) fn decompress_member_owned(
   max_out: usize,
 ) -> Result<Vec<u8>, DecompressError> {
   let (deflate, i) = member_deflate(data)?;
-  let mut crc = RunningChecksum::crc();
-  let (out, consumed) = inflate::inflate_owned(deflate, max_out, &mut crc)?;
+  // Post-pass CRC: the full output is already contiguous here. Incremental
+  // updates during inflate help the streaming/`into` path; on tiny members
+  // (Callgrind `hello`) they add call overhead for no memory win.
+  let mut none = RunningChecksum::None;
+  let (out, consumed) = inflate::inflate_owned(deflate, max_out, &mut none)?;
   let trailer_off = i
     .checked_add(consumed)
     .ok_or(DecompressError::InvalidInput)?;
+  let crc = RunningChecksum::Crc(crc32(&out));
   check_trailer(data, trailer_off, &out, crc)?;
   Ok(out)
 }

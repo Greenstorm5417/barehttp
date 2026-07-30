@@ -664,7 +664,14 @@ jobs:
             ~/.cargo/bin/kani
             ~/.cargo/bin/cargo-kani
           # Exact key only — avoid restore-keys pulling a different Kani major/minor.
-          key: kani-toolchain-${{ runner.os }}-${{ env.KANI_VERSION }}
+          # v2: prior key left cargo bins in place; kani-github-action's install then
+          # fails with "binary already exists" (no --force).
+          key: kani-toolchain-${{ runner.os }}-${{ env.KANI_VERSION }}-v2
+
+      # Cached cargo bins collide with `cargo install kani-verifier` inside the action.
+      # Keep ~/.kani (the expensive bundle); drop the shim bins so install can rewrite them.
+      - name: Clear cached Kani cargo bins
+        run: rm -f "${CARGO_HOME:-$HOME/.cargo}/bin/kani" "${CARGO_HOME:-$HOME/.cargo}/bin/cargo-kani"
 
       # Action installs rustc + kani-verifier; MSRV 1.90 fits Kani 0.67's rustc 1.93.
       # --jobs needs --output-format=terse on Kani 0.67; ubuntu-latest is 4 vCPU.

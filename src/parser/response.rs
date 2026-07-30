@@ -4,7 +4,7 @@ extern crate alloc;
 use crate::error::{DecompressError, IntoStringError, ParseError};
 use crate::headers::Headers;
 use crate::parser::chunked::ChunkedDecoder;
-use crate::parser::headers::{HeaderRef, materialize_headers, parse_header_fields, scan_header_fields, try_wire_spans};
+use crate::parser::headers::{HeaderRef, materialize_headers, scan_header_fields, try_wire_spans};
 use crate::parser::version::{Version, parse_status_line};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -100,11 +100,17 @@ impl Response {
   /// # Errors
   /// [`ParseError`] when the status line, headers, framing, or body are illegal.
   pub fn parse(input: &[u8]) -> Result<Self, ParseError> {
-    let (status_code, reason, mut headers, version, rest) = Self::parse_headers_only(input)?;
-    let (body, trailers) = Self::parse_body_from_bytes(rest, &mut headers, status_code, version, usize::MAX)?;
+    // Scan as borrowed views first so framing strategy can use wire bytes
+    // directly (no arena `str_at` on the Content-Length / TE walk), then
+    // materialize with an exact-capacity arena.
+    let (status_code, reason_bytes, refs, version, rest) = Self::scan_headers_only(input)?;
+    let strategy = Self::body_read_strategy_refs(&refs, status_code, version)?;
+    let mut headers = materialize_headers(&refs);
+    let (body_vec, trailer_bytes) = decode_body_bytes(rest, strategy)?;
+    let (body, trailers) = finish_body(&mut headers, body_vec, trailer_bytes, usize::MAX)?;
     Ok(Self {
       status_code,
-      reason,
+      reason: reason_to_string(reason_bytes),
       headers,
       body,
       trailers,
@@ -227,20 +233,6 @@ impl Response {
     reason_to_string(reason_bytes)
   }
 
-  /// Parse the status line and headers only (two-phase / buffered `parse`).
-  ///
-  /// Returns `(status_code, reason, headers, version, remainder_after_headers)`.
-  ///
-  /// # Errors
-  /// [`ParseError`] when the status line or header section is illegal.
-  pub(crate) fn parse_headers_only(input: &[u8]) -> Result<(u16, String, Headers, Version, &[u8]), ParseError> {
-    // One-pass owned headers (no intermediate `HeaderRef` vec).
-    let data = skip_leading_crlf(input);
-    let (version, status, reason_bytes, after_status) = parse_status_line(data)?;
-    let (headers, remaining) = parse_header_fields(after_status)?;
-    Ok((status, reason_to_string(reason_bytes), headers, version, remaining))
-  }
-
   /// Status line + header scan as borrowed views (no name/value `String`s yet).
   ///
   /// # Errors
@@ -359,25 +351,6 @@ impl Response {
     }
 
     Ok(BodyReadStrategy::UntilClose)
-  }
-
-  /// Decode the body from bytes after the header section (buffered `parse`).
-  ///
-  /// Returns the (possibly decompressed) body and any chunked trailer fields.
-  /// `max_body` caps wire-decoded and decompressed size ([`ParseError::BodyExceedsLimit`]).
-  ///
-  /// # Errors
-  /// [`ParseError`] when framing is illegal or the body cannot be decoded / decompressed.
-  pub(crate) fn parse_body_from_bytes(
-    body_bytes: &[u8],
-    headers: &mut Headers,
-    status_code: u16,
-    version: Version,
-    max_body: usize,
-  ) -> Result<(Bytes, Headers), ParseError> {
-    let strategy = Self::body_read_strategy(headers, status_code, version)?;
-    let (body_vec, trailer_bytes) = decode_body_bytes(body_bytes, strategy)?;
-    finish_body(headers, body_vec, trailer_bytes, max_body)
   }
 
   /// Decode a body already held in an owned buffer (two-phase / transport path).
@@ -811,15 +784,9 @@ fn decode_body_owned(
 }
 
 fn decode_chunked(input: &[u8]) -> Result<(Bytes, Headers), ParseError> {
-  // Single-pass feed (buffered `Response::parse`). Owned transport buffers use
-  // [`ChunkedDecoder::decode_buffered`] instead.
-  let mut decoder = ChunkedDecoder::new();
-  let mut output = Vec::new();
-  let remaining = decoder.decode_chunk(input, &mut output)?;
-  if !remaining.is_empty() {
-    return Err(ParseError::ExtraDataAfterResponse);
-  }
-  Ok((Bytes::from(output), decoder.take_trailers()))
+  // Same framing walk as the owned transport path: empty-trailer fast path,
+  // contiguous `Bytes::slice` reuse when possible, exact-capacity multi-chunk concat.
+  ChunkedDecoder::decode_buffered(Bytes::copy_from_slice(input))
 }
 
 #[cfg(test)]

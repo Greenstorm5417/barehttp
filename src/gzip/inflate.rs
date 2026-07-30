@@ -127,8 +127,8 @@ pub(super) fn inflate_owned(
     .min(data.len().saturating_mul(4).max(64))
     .min(WINDOW.saturating_mul(2));
   let mut out = Vec::with_capacity(guess);
-  // Reuse capped Huffman table buffers across dynamic blocks (peak ≈ 2× 2 KiB).
-  let mut huff_pool = HuffmanPool::new();
+  // Lazy: fixed/stored-only members never touch the dynamic Huffman pool.
+  let mut huff_pool: Option<HuffmanPool> = None;
   loop {
     let bfinal = bits.get_bits(1)?;
     let btype = bits.get_bits(2)?;
@@ -136,9 +136,10 @@ pub(super) fn inflate_owned(
       0 => inflate_stored(&mut bits, &mut out, max_out, checksum)?,
       1 => inflate_fixed(&mut bits, &mut out, max_out, checksum)?,
       2 => {
-        let (lit, dist) = read_dynamic_trees(&mut bits, &mut huff_pool)?;
+        let pool = huff_pool.get_or_insert_with(HuffmanPool::new);
+        let (lit, dist) = read_dynamic_trees(&mut bits, pool)?;
         inflate_compressed(&mut bits, &mut out, max_out, checksum, &lit, &dist)?;
-        huff_pool.recycle_pair(lit, dist);
+        pool.recycle_pair(lit, dist);
       },
       _ => return Err(DecompressError::InvalidInput),
     }
@@ -174,8 +175,8 @@ pub(super) fn inflate(
     out.clear();
     out.reserve(guess);
   }
-  // Reuse capped Huffman table buffers across dynamic blocks (peak ≈ 2× 2 KiB).
-  let mut huff_pool = HuffmanPool::new();
+  // Lazy: fixed/stored-only members never touch the dynamic Huffman pool.
+  let mut huff_pool: Option<HuffmanPool> = None;
   loop {
     let bfinal = bits.get_bits(1)?;
     let btype = bits.get_bits(2)?;
@@ -183,9 +184,10 @@ pub(super) fn inflate(
       0 => inflate_stored(&mut bits, out, max_out, checksum)?,
       1 => inflate_fixed(&mut bits, out, max_out, checksum)?,
       2 => {
-        let (lit, dist) = read_dynamic_trees(&mut bits, &mut huff_pool)?;
+        let pool = huff_pool.get_or_insert_with(HuffmanPool::new);
+        let (lit, dist) = read_dynamic_trees(&mut bits, pool)?;
         inflate_compressed(&mut bits, out, max_out, checksum, &lit, &dist)?;
-        huff_pool.recycle_pair(lit, dist);
+        pool.recycle_pair(lit, dist);
       },
       _ => return Err(DecompressError::InvalidInput),
     }
@@ -226,6 +228,12 @@ fn inflate_fixed(
   max_out: usize,
   checksum: &mut RunningChecksum,
 ) -> Result<(), DecompressError> {
+  // Streaming CRC/Adler: batch literals to amortize `extend` + checksum updates.
+  // Owned decompress uses `RunningChecksum::None` + a post-pass CRC — match the
+  // pre-arena `out.push` path so tiny fixed members (Callgrind `hello`) stay hot.
+  if matches!(checksum, RunningChecksum::None) {
+    return inflate_fixed_push(bits, out, max_out);
+  }
   let mut lit_buf = [0u8; LIT_BATCH];
   let mut lit_n = 0usize;
   loop {
@@ -258,6 +266,42 @@ fn inflate_fixed(
     let (base_dist, extra_dist) = dist_base_extra(dsym)?;
     let distance = base_dist + bits.get_bits(extra_dist)? as u16;
     copy_match(out, max_out, checksum, usize::from(distance), usize::from(len))?;
+  }
+}
+
+/// Fixed Huffman with direct `push` (no literal batch / checksum) — owned API path.
+fn inflate_fixed_push(
+  bits: &mut BitReader<'_>,
+  out: &mut Vec<u8>,
+  max_out: usize,
+) -> Result<(), DecompressError> {
+  loop {
+    let sym = HuffmanDecoder::decode_static(&FIXED_LIT_TABLE, FIXED_LIT_MAX_BITS, bits)?;
+    if sym < 256 {
+      if out.len() >= max_out {
+        return Err(DecompressError::LimitExceeded);
+      }
+      #[allow(clippy::cast_possible_truncation)] // sym < 256
+      out.push(sym as u8);
+      continue;
+    }
+    if sym == 256 {
+      return Ok(());
+    }
+    if sym > 285 {
+      return Err(DecompressError::InvalidInput);
+    }
+    let (base_len, extra_len) = length_base_extra(sym)?;
+    let len = base_len + bits.get_bits(extra_len)? as u16;
+    let dsym = HuffmanDecoder::decode_static(&FIXED_DIST_TABLE, FIXED_DIST_MAX_BITS, bits)?;
+    if dsym > 29 {
+      return Err(DecompressError::InvalidInput);
+    }
+    let (base_dist, extra_dist) = dist_base_extra(dsym)?;
+    let distance = base_dist + bits.get_bits(extra_dist)? as u16;
+    // No running checksum on this path — caller post-passes CRC/Adler.
+    let mut none = RunningChecksum::None;
+    copy_match(out, max_out, &mut none, usize::from(distance), usize::from(len))?;
   }
 }
 

@@ -117,16 +117,30 @@ fn subslice_offset(
 ///
 /// Builds owned [`Headers`] without an intermediate [`HeaderRef`] `Vec`.
 /// Side-index is deferred (same as [`materialize_headers`]).
+/// Empty sections (blank line only — common chunked trailers) skip the arena.
 ///
 /// # Errors
 /// Malformed fields, obs-fold, or whitespace before the first field.
 pub fn parse_header_fields(input: &[u8]) -> Result<(Headers, &[u8]), ParseError> {
-  let mut buf = BytesMut::with_capacity(256);
+  // Empty trailer / blank header block: no `BytesMut` arena.
+  if input.starts_with(b"\r\n") {
+    return Ok((Headers::new(), input.get(2..).unwrap_or(&[])));
+  }
+  if input.starts_with(b"\n") {
+    return Ok((Headers::new(), input.get(1..).unwrap_or(&[])));
+  }
+
+  // Start small — typical responses are far under 256 B of name+value bytes.
+  // `BytesMut::with_capacity(256)` over-allocated on every parse of a few fields.
+  let mut buf = BytesMut::with_capacity(64);
   let mut spans = Vec::with_capacity(8);
   let remaining = for_each_header_field(input, |h| {
     push_span(&mut buf, &mut spans, h);
     Ok(())
   })?;
+  if spans.is_empty() {
+    return Ok((Headers::new(), remaining));
+  }
   Ok((Headers::from_spans(buf.freeze(), spans), remaining))
 }
 

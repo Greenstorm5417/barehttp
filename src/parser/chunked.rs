@@ -203,6 +203,7 @@ impl ChunkedDecoder {
   ///
   /// # Errors
   /// [`ParseError`] when the message is incomplete or framing is illegal.
+  #[allow(dead_code)] // exercised in unit tests; buffered parse uses `decode_buffered`
   pub fn decode_chunk<'a>(
     &'a mut self,
     input: &'a [u8],

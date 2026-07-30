@@ -111,7 +111,6 @@ impl HuffmanPool {
 
 enum Table {
   Owned(Vec<u32>),
-  Static(&'static [u32]),
 }
 
 impl Table {
@@ -122,7 +121,6 @@ impl Table {
   ) -> Option<u32> {
     match self {
       Self::Owned(v) => v.get(idx).copied(),
-      Self::Static(s) => s.get(idx).copied(),
     }
   }
 }
@@ -264,10 +262,7 @@ impl HuffmanDecoder {
 
   /// Return owned buffers for pool recycling.
   fn into_buffers(self) -> (Vec<u32>, Vec<LongCode>) {
-    let table = match self.table {
-      Table::Owned(v) => v,
-      Table::Static(_) => Vec::new(),
-    };
+    let Table::Owned(table) = self.table;
     (table, self.long_codes)
   }
 
@@ -343,14 +338,17 @@ impl HuffmanDecoder {
     bits: &mut BitReader<'_>,
   ) -> Result<u16, DecompressError> {
     debug_assert_eq!(table.len(), 1usize << max_bits);
+    // Near EOF we may have fewer than `max_bits` left (e.g. 7-bit EOB). Refill
+    // in place — do not build a temporary `HuffmanDecoder`.
     if bits.bitcnt() < max_bits {
-      let dec = Self {
-        table: Table::Static(table),
-        root_bits: max_bits,
-        max_bits,
-        long_codes: Vec::new(),
-      };
-      return dec.decode(bits);
+      let (peek, have) = bits.peek_bits_available(max_bits)?;
+      let entry = table[peek as usize];
+      let len = unpack_len(entry);
+      if len == 0 || len > max_bits || len > have {
+        return Err(DecompressError::InvalidInput);
+      }
+      bits.drop_bits(len);
+      return Ok(unpack_sym(entry));
     }
     let peek = bits.peek_bits(max_bits) as usize;
     // Index in range: peek is masked to `max_bits` and `table.len() == 1 << max_bits`.
