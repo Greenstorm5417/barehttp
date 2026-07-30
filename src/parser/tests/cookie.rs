@@ -8,6 +8,7 @@ fn parse_simple_cookie() {
   assert_eq!(cookie.value, "31d4d96e407aad42");
   assert!(!cookie.secure);
   assert!(!cookie.http_only);
+  assert_eq!(cookie.same_site, crate::parser::cookie::SameSite::Default);
 }
 
 #[test]
@@ -28,8 +29,19 @@ fn parse_cookie_with_attributes() {
 
 #[test]
 fn parse_cookie_edge_cases() {
-  assert!(SetCookie::parse("=value").is_none());
-  assert!(SetCookie::parse("namevalue").is_none());
+  // Empty name with a value is allowed (RFC 10025 nameless cookie).
+  let empty_name = SetCookie::parse("=value").unwrap();
+  assert_eq!(empty_name.name, "");
+  assert_eq!(empty_name.value, "value");
+
+  // No `=`: empty name, token is the value.
+  let bare = SetCookie::parse("namevalue").unwrap();
+  assert_eq!(bare.name, "");
+  assert_eq!(bare.value, "namevalue");
+
+  assert!(SetCookie::parse("=").is_none());
+  assert!(SetCookie::parse("").is_none());
+  assert!(SetCookie::parse("id=1\nX").is_none());
 
   let empty_val = SetCookie::parse("name=").unwrap();
   assert_eq!(empty_val.value, "");
@@ -54,6 +66,12 @@ fn parse_cookie_edge_cases() {
 
   let bad_age = SetCookie::parse("id=123; Max-Age=abc").unwrap();
   assert!(bad_age.max_age.is_none());
+
+  let ss = SetCookie::parse("id=1; SameSite=Lax").unwrap();
+  assert_eq!(ss.same_site, crate::parser::cookie::SameSite::Lax);
+
+  let ss_none = SetCookie::parse("id=1; SameSite=None; Secure").unwrap();
+  assert_eq!(ss_none.same_site, crate::parser::cookie::SameSite::None);
 }
 
 #[test]

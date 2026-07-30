@@ -1,5 +1,5 @@
-use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bytes::{Bytes, BytesMut};
 use core::hash::{Hash, Hasher};
@@ -30,16 +30,17 @@ use hashbrown::HashMap;
 pub struct Headers {
   /// Contiguous UTF-8 name/value bytes. On the connection path this may be a
   /// frozen slice of the receive buffer (status line / CRLFs / OWS may remain as
-  /// dead bytes). `Clone` is refcount-cheap while unique mutations copy-on-write
-  /// via [`BytesMut`].
+  /// dead bytes). `Clone` bumps the arena refcount; mutation copy-on-writes only
+  /// when the arena is shared (unique mutates in place via [`BytesMut`]).
   buf: Bytes,
   /// Insertion-ordered fields as offsets into `buf`.
   fields: Vec<FieldSpan>,
   /// FNV-1a of ASCII-lowercased name → index of the first matching field.
-  /// Boxed so the discriminant stays a pointer when empty (keeps `Response` leaner).
-  /// Lookups always re-check [`eq_ignore_ascii_case`](str::eq_ignore_ascii_case)
-  /// so hash collisions fall back to a linear scan.
-  index: Option<Box<HashMap<u64, usize>>>,
+  /// Shared via [`Arc`] so `Clone` keeps O(1) lookups without deep-copying the map
+  /// (mutation uses [`Arc::make_mut`]). Lookups always re-check
+  /// [`eq_ignore_ascii_case`](str::eq_ignore_ascii_case) so hash collisions fall
+  /// back to a linear scan.
+  index: Option<Arc<HashMap<u64, usize>>>,
 }
 
 /// Name/value span into [`Headers::buf`] (`u32` offsets; header sections are << 4 GiB).
@@ -60,10 +61,7 @@ impl PartialEq for Headers {
     if self.fields.len() != other.fields.len() {
       return false;
     }
-    self
-      .iter()
-      .zip(other.iter())
-      .all(|(a, b)| a == b)
+    self.iter().zip(other.iter()).all(|(a, b)| a == b)
   }
 }
 
@@ -216,7 +214,7 @@ pub fn well_known_header_bytes(name: &[u8]) -> Option<WellKnownHeader> {
 /// FNV-1a over ASCII-lowercased bytes (index key; not a stored lowercase string).
 #[inline]
 fn ascii_lower_hash(name: &str) -> u64 {
-  let mut hash: u64 = 0xcbf29ce484222325;
+  let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
   for &b in name.as_bytes() {
     hash ^= u64::from(b.to_ascii_lowercase());
     hash = hash.wrapping_mul(0x0100_0000_01b3);
@@ -269,7 +267,8 @@ impl Headers {
   /// Used by the parser materialize path and by the connection path when the
   /// receive buffer's header section is frozen into `buf` (zero-copy). Spans may
   /// leave dead bytes (status line, CRLFs, OWS) in the arena. Side-index stays
-  /// deferred. Mutation copy-on-writes via [`BytesMut`] when `buf` is shared.
+  /// deferred. Mutation copy-on-writes (packing live spans when the arena is
+  /// shared and has dead bytes) via [`BytesMut`].
   #[must_use]
   pub(crate) fn from_spans(
     buf: Bytes,
@@ -326,14 +325,8 @@ impl Headers {
     name: impl AsRef<str>,
     value: impl AsRef<str>,
   ) {
-    let (name_start, name_len) = self.append_str(name.as_ref());
-    let (value_start, value_len) = self.append_str(value.as_ref());
-    self.fields.push(FieldSpan {
-      name_start,
-      name_len,
-      value_start,
-      value_len,
-    });
+    let pair = self.append_pair(name.as_ref(), value.as_ref());
+    self.fields.push(pair);
   }
 
   /// Rebuild the lowercase-hash → first-index map from `fields` (source of truth).
@@ -346,7 +339,7 @@ impl Headers {
       return;
     }
     let Self { buf, fields, index } = self;
-    let map = index.get_or_insert_with(|| Box::new(HashMap::with_capacity(fields.len())));
+    let map = Arc::make_mut(index.get_or_insert_with(|| Arc::new(HashMap::with_capacity(fields.len()))));
     map.clear();
     map.reserve(fields.len());
     for (i, span) in fields.iter().enumerate() {
@@ -373,17 +366,10 @@ impl Headers {
     value: &str,
   ) {
     let idx = self.fields.len();
-    let (name_start, name_len) = self.append_str(name);
-    let (value_start, value_len) = self.append_str(value);
-    let span = FieldSpan {
-      name_start,
-      name_len,
-      value_start,
-      value_len,
-    };
+    let span = self.append_pair(name, value);
     if let Some(map) = self.index.as_mut() {
       let key = ascii_lower_hash(name);
-      map.entry(key).or_insert(idx);
+      Arc::make_mut(map).entry(key).or_insert(idx);
       self.fields.push(span);
     } else {
       // No index yet (small / deferred). Keep linear until we cross the threshold.
@@ -401,8 +387,8 @@ impl Headers {
     value: impl AsRef<str>,
   ) {
     self.ensure_index();
-    let name = name.as_ref();
-    let value = value.as_ref();
+    let name_ref = name.as_ref();
+    let value_ref = value.as_ref();
     let mut first: Option<usize> = None;
     let mut removed = false;
     let mut i = 0usize;
@@ -410,7 +396,7 @@ impl Headers {
       let is_match = self
         .fields
         .get(i)
-        .is_some_and(|span| self.name_str(span).eq_ignore_ascii_case(name));
+        .is_some_and(|span| self.name_str(span).eq_ignore_ascii_case(name_ref));
       if is_match {
         if first.is_none() {
           first = Some(i);
@@ -424,34 +410,24 @@ impl Headers {
       }
     }
     if let Some(idx) = first {
-      let (name_start, name_len) = self.append_str(name);
-      let (value_start, value_len) = self.append_str(value);
+      // Keep the existing name span; only append the new value (Host / defaults hot path).
+      let (value_start, value_len) = self.append_str(value_ref);
       if let Some(slot) = self.fields.get_mut(idx) {
-        *slot = FieldSpan {
-          name_start,
-          name_len,
-          value_start,
-          value_len,
-        };
+        slot.value_start = value_start;
+        slot.value_len = value_len;
       }
       if removed {
         // Indices after removals shifted — rebuild.
         self.rebuild_index();
       }
-      // else: same first-index slot; lowercase hash unchanged for case-only rename.
+      // else: same first-index slot; name bytes (and lowercase hash) unchanged.
     } else {
       let idx = self.fields.len();
-      let key = ascii_lower_hash(name);
-      let (name_start, name_len) = self.append_str(name);
-      let (value_start, value_len) = self.append_str(value);
-      self.fields.push(FieldSpan {
-        name_start,
-        name_len,
-        value_start,
-        value_len,
-      });
+      let key = ascii_lower_hash(name_ref);
+      let pair = self.append_pair(name_ref, value_ref);
+      self.fields.push(pair);
       if let Some(map) = self.index.as_mut() {
-        map.entry(key).or_insert(idx);
+        Arc::make_mut(map).entry(key).or_insert(idx);
       } else if self.fields.len() >= INDEX_THRESHOLD {
         self.rebuild_index();
       }
@@ -498,6 +474,22 @@ impl Headers {
       }
     }
     out
+  }
+
+  /// Iterate values for `name` without allocating (case-insensitive, insertion order).
+  /// Used by `cookie-jar` store path; kept available for unit tests when that feature is off.
+  #[cfg_attr(not(feature = "cookie-jar"), allow(dead_code))]
+  #[inline]
+  pub(crate) fn values<'a>(
+    &'a self,
+    name: &'a str,
+  ) -> impl Iterator<Item = &'a str> + 'a {
+    self.fields.iter().filter_map(move |span| {
+      self
+        .name_str(span)
+        .eq_ignore_ascii_case(name)
+        .then(|| self.value_str(span))
+    })
   }
 
   /// Whether any field matches `name` (case-insensitive).
@@ -558,20 +550,17 @@ impl Headers {
       .iter()
       .position(|span| self.name_str(span).eq_ignore_ascii_case(Self::COOKIE))
     {
-      // Re-append existing + "; " + value at end of arena (old bytes become dead).
-      let old = {
-        let span = self.fields.get(idx).copied();
-        span.map(|s| String::from(self.value_str(&s)))
-      };
-      if let Some(old) = old {
-        let (value_start, value_len) = {
-          let start = self.buf.len();
-          self.extend_parts(&[old.as_bytes(), b"; ", value.as_bytes()]);
-          (usize_to_u32(start), usize_to_u32(self.buf.len().saturating_sub(start)))
-        };
+      // Snapshot old value bytes before COW (cannot borrow arena across `extend_parts`).
+      let old_bytes = self
+        .fields
+        .get(idx)
+        .map(|s| self.value_str(s).as_bytes().to_vec());
+      if let Some(old) = old_bytes {
+        let add = old.len().saturating_add(2).saturating_add(value.len());
+        let value_start = self.extend_parts(&[&old, b"; ", value.as_bytes()]);
         if let Some(slot) = self.fields.get_mut(idx) {
           slot.value_start = value_start;
-          slot.value_len = value_len;
+          slot.value_len = usize_to_u32(add);
         }
       }
     } else {
@@ -582,10 +571,7 @@ impl Headers {
   /// Iterate `(name, value)` pairs in insertion order.
   #[must_use]
   pub fn iter(&self) -> Iter<'_> {
-    Iter {
-      headers: self,
-      idx: 0,
-    }
+    Iter { headers: self, idx: 0 }
   }
 
   /// Number of fields (including duplicate names).
@@ -648,9 +634,9 @@ impl Headers {
     start: u32,
     len: u32,
   ) -> &str {
-    let start = start as usize;
-    let end = start.saturating_add(len as usize);
-    let bytes = self.buf.get(start..end).unwrap_or(&[]);
+    let start_usize = start as usize;
+    let end = start_usize.saturating_add(len as usize);
+    let bytes = self.buf.get(start_usize..end).unwrap_or(&[]);
     // SAFETY: arena only receives UTF-8 (`str` / ASCII wire / lossy UTF-8).
     unsafe { core::str::from_utf8_unchecked(bytes) }
   }
@@ -668,25 +654,92 @@ impl Headers {
     &mut self,
     bytes: &[u8],
   ) -> (u32, u32) {
-    let start = self.buf.len();
-    self.extend_parts(&[bytes]);
-    (usize_to_u32(start), usize_to_u32(bytes.len()))
+    let start = self.extend_parts(&[bytes]);
+    (start, usize_to_u32(bytes.len()))
   }
 
+  /// Append `name` then `value` in one COW/extend (single uniqueness check).
+  #[inline]
+  fn append_pair(
+    &mut self,
+    name: &str,
+    value: &str,
+  ) -> FieldSpan {
+    let start = self.extend_parts(&[name.as_bytes(), value.as_bytes()]);
+    let name_len = name.len();
+    let start_usize = start as usize;
+    FieldSpan {
+      name_start: start,
+      name_len: usize_to_u32(name_len),
+      value_start: usize_to_u32(start_usize.saturating_add(name_len)),
+      value_len: usize_to_u32(value.len()),
+    }
+  }
+
+  /// Extend the arena; returns the start offset of the appended bytes.
+  ///
+  /// Copy-on-write only when `buf` is shared. Shared + dead wire bytes: pack
+  /// live name/value spans into a tight buffer (cheaper than memcpy of the full
+  /// section). Shared + already packed: one memcpy of the live view. Unique:
+  /// mutate in place via [`Bytes::try_into_mut`].
   fn extend_parts(
     &mut self,
     parts: &[&[u8]],
-  ) {
+  ) -> u32 {
     let add: usize = parts.iter().map(|p| p.len()).sum();
     if add == 0 {
-      return;
+      return usize_to_u32(self.buf.len());
     }
-    let mut mut_buf = BytesMut::from(core::mem::replace(&mut self.buf, Bytes::new()));
+    let buf = core::mem::replace(&mut self.buf, Bytes::new());
+    let mut mut_buf = match buf.try_into_mut() {
+      Ok(b) => b,
+      Err(shared) => self.cow_arena(shared, add),
+    };
+    let start = mut_buf.len();
     mut_buf.reserve(add);
     for part in parts {
       mut_buf.extend_from_slice(part);
     }
     self.buf = mut_buf.freeze();
+    usize_to_u32(start)
+  }
+
+  /// Build a uniquely owned arena from a shared `Bytes` view, reserving `extra`.
+  fn cow_arena(
+    &mut self,
+    shared: Bytes,
+    extra: usize,
+  ) -> BytesMut {
+    let live: usize = self
+      .fields
+      .iter()
+      .map(|s| (s.name_len as usize).saturating_add(s.value_len as usize))
+      .sum();
+    if live < shared.len() {
+      // Drop dead status-line / CRLF / rewritten-value bytes; remap spans.
+      let mut out = BytesMut::with_capacity(live.saturating_add(extra));
+      for span in &mut self.fields {
+        let name = str_from_buf(&shared, span.name_start, span.name_len).as_bytes();
+        let value = str_from_buf(&shared, span.value_start, span.value_len).as_bytes();
+        let name_start = out.len();
+        out.extend_from_slice(name);
+        let value_start = out.len();
+        out.extend_from_slice(value);
+        *span = FieldSpan {
+          name_start: usize_to_u32(name_start),
+          name_len: usize_to_u32(name.len()),
+          value_start: usize_to_u32(value_start),
+          value_len: usize_to_u32(value.len()),
+        };
+      }
+      // Field indices unchanged → existing side-index stays valid.
+      out
+    } else {
+      // Already packed: one memcpy of the live view; spans stay put.
+      let mut out = BytesMut::with_capacity(shared.len().saturating_add(extra));
+      out.extend_from_slice(&shared);
+      out
+    }
   }
 }
 
@@ -783,15 +836,16 @@ fn str_from_buf(
   start: u32,
   len: u32,
 ) -> &str {
-  let start = start as usize;
-  let end = start.saturating_add(len as usize);
-  let bytes = buf.get(start..end).unwrap_or(&[]);
+  let start_usize = start as usize;
+  let end = start_usize.saturating_add(len as usize);
+  let bytes = buf.get(start_usize..end).unwrap_or(&[]);
   // SAFETY: arena only receives UTF-8.
   unsafe { core::str::from_utf8_unchecked(bytes) }
 }
 
 #[cfg(test)]
 mod tests {
+  #![allow(clippy::unwrap_used, clippy::expect_used)]
   use super::*;
 
   #[test]
@@ -821,6 +875,18 @@ mod tests {
     h.insert("Set-Cookie", "a=1");
     h.insert("Set-Cookie", "b=2");
     assert_eq!(h.get_all("set-cookie"), alloc::vec!["a=1", "b=2"]);
+  }
+
+  #[test]
+  fn values_iterates_duplicates_without_collect() {
+    let mut h = Headers::new();
+    h.insert("Set-Cookie", "a=1");
+    h.insert("X-Other", "z");
+    h.insert("Set-Cookie", "b=2");
+    let mut it = h.values("set-cookie");
+    assert_eq!(it.next(), Some("a=1"));
+    assert_eq!(it.next(), Some("b=2"));
+    assert_eq!(it.next(), None);
   }
 
   #[test]
@@ -954,6 +1020,63 @@ mod tests {
     a.set("Host", "other.example");
     assert_eq!(a.get("host"), Some("other.example"));
     assert_eq!(b.get("host"), Some("example.com"));
+  }
+
+  #[test]
+  fn clone_shares_side_index_cache() {
+    let mut a = Headers::new();
+    for i in 0..INDEX_THRESHOLD {
+      a.insert(alloc::format!("X-{i}"), "1");
+    }
+    assert!(a.index.is_some());
+    let b = a.clone();
+    assert!(b.index.is_some());
+    // Same Arc — clone must not deep-copy the map (Drop/Callgrind sensitive).
+    assert!(Arc::ptr_eq(a.index.as_ref().unwrap(), b.index.as_ref().unwrap()));
+    assert_eq!(b.get("x-0"), Some("1"));
+    assert_eq!(a, b);
+  }
+
+  #[test]
+  fn shared_mutation_packs_dead_arena_bytes() {
+    // Simulate a wire section: dead prefix + live name/value (shared via clone).
+    let mut wire = BytesMut::new();
+    wire.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
+    let name_start = wire.len();
+    wire.extend_from_slice(b"Host");
+    let value_start = wire.len();
+    wire.extend_from_slice(b"example.com");
+    wire.extend_from_slice(b"\r\n\r\n");
+    let buf = wire.freeze();
+    let live = "Host".len() + "example.com".len();
+    assert!(buf.len() > live);
+
+    let mut a = Headers::from_spans(
+      buf,
+      alloc::vec![(
+        usize_to_u32(name_start),
+        usize_to_u32(4),
+        usize_to_u32(value_start),
+        usize_to_u32("example.com".len()),
+      )],
+    );
+    let _keep_shared = a.clone();
+    let before = a.arena_len();
+    a.set("Host", "other.example");
+    // Packed live fields + new value only — no status line / CRLFs retained.
+    assert!(a.arena_len() < before);
+    assert_eq!(a.get("host"), Some("other.example"));
+    assert_eq!(a.iter().next(), Some(("Host", "other.example")));
+  }
+
+  #[test]
+  fn set_keeps_name_span_on_replace() {
+    let mut a = Headers::new();
+    a.insert("Content-Type", "text/plain");
+    let _shared = a.clone();
+    a.set("content-type", "application/json");
+    // Wire name casing preserved; only the value was rewritten.
+    assert_eq!(a.iter().next(), Some(("Content-Type", "application/json")));
   }
 
   #[test]

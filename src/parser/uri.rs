@@ -488,8 +488,7 @@ fn parse_ipv6(s: &str) -> Result<Ipv6Addr, ParseError> {
   }
 
   // `::` marks one or more zero hextets.
-  if bytes.get(pos).copied() != Some(b':') || bytes.get(pos.saturating_add(1)).copied() != Some(b':')
-  {
+  if bytes.get(pos).copied() != Some(b':') || bytes.get(pos.saturating_add(1)).copied() != Some(b':') {
     return Err(ParseError::InvalidUri);
   }
   pos = pos.saturating_add(2);
@@ -497,14 +496,17 @@ fn parse_ipv6(s: &str) -> Result<Ipv6Addr, ParseError> {
   // At least one hextet must be compressed, so the tail fits in 7 slots.
   let mut tail = [0u16; 7];
   let limit = 8usize.saturating_sub(head_size.saturating_add(1));
-  let (tail_size, _) = read_ipv6_groups(bytes, &mut pos, &mut tail[..limit])?;
+  let tail_slot = tail.get_mut(..limit).ok_or(ParseError::InvalidUri)?;
+  let (tail_size, _) = read_ipv6_groups(bytes, &mut pos, tail_slot)?;
 
   if pos != bytes.len() {
     return Err(ParseError::InvalidUri);
   }
 
   let fill_at = 8usize.saturating_sub(tail_size);
-  head[fill_at..8].copy_from_slice(&tail[..tail_size]);
+  let dest = head.get_mut(fill_at..8).ok_or(ParseError::InvalidUri)?;
+  let src = tail.get(..tail_size).ok_or(ParseError::InvalidUri)?;
+  dest.copy_from_slice(src);
   Ok(Ipv6Addr::from(head))
 }
 
@@ -535,8 +537,14 @@ fn read_ipv6_groups(
       match read_embedded_ipv4(bytes, pos) {
         Some(v4) => {
           let oct = v4.octets();
-          groups[i] = u16::from_be_bytes([oct[0], oct[1]]);
-          groups[i.saturating_add(1)] = u16::from_be_bytes([oct[2], oct[3]]);
+          let Some(slot0) = groups.get_mut(i) else {
+            return Err(ParseError::InvalidUri);
+          };
+          *slot0 = u16::from_be_bytes([oct[0], oct[1]]);
+          let Some(slot1) = groups.get_mut(i.saturating_add(1)) else {
+            return Err(ParseError::InvalidUri);
+          };
+          *slot1 = u16::from_be_bytes([oct[2], oct[3]]);
           return Ok((i.saturating_add(2), true));
         },
         None => {
@@ -557,7 +565,10 @@ fn read_ipv6_groups(
 
     match read_hextet(bytes, pos) {
       Some(g) => {
-        groups[i] = g;
+        let Some(slot) = groups.get_mut(i) else {
+          return Err(ParseError::InvalidUri);
+        };
+        *slot = g;
         i = i.saturating_add(1);
       },
       None => {

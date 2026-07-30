@@ -46,11 +46,7 @@ pub(super) enum RunningChecksum {
   /// Gzip member CRC-32 (init `0`; `update_crc` pre/post-conditions).
   Crc(u32),
   /// Zlib Adler-32 (RFC 1950). `pending` = bytes since last `% 65521`.
-  Adler {
-    a: u32,
-    b: u32,
-    pending: usize,
-  },
+  Adler { a: u32, b: u32, pending: usize },
 }
 
 impl RunningChecksum {
@@ -59,11 +55,7 @@ impl RunningChecksum {
   }
 
   pub(super) const fn adler() -> Self {
-    Self::Adler {
-      a: 1,
-      b: 0,
-      pending: 0,
-    }
+    Self::Adler { a: 1, b: 0, pending: 0 }
   }
 
   #[inline]
@@ -122,7 +114,9 @@ fn update_adler(
 }
 
 /// Inflate a raw DEFLATE stream. Returns `(output, bytes_consumed)`.
-pub(super) fn inflate(
+///
+/// Allocating entry used by the public `decompress_*` APIs (Callgrind-sensitive).
+pub(super) fn inflate_owned(
   data: &[u8],
   max_out: usize,
   checksum: &mut RunningChecksum,
@@ -154,6 +148,53 @@ pub(super) fn inflate(
   }
   bits.align_to_byte();
   Ok((out, bits.byte_pos()))
+}
+
+/// Inflate a raw DEFLATE stream into `out` (cleared first when reusing capacity).
+///
+/// Returns bytes of `data` consumed. On error, `out` may hold a partial payload —
+/// callers that reuse the buffer should `clear` before the next attempt if they
+/// do not already call this again (which clears / reallocates).
+pub(super) fn inflate(
+  data: &[u8],
+  max_out: usize,
+  checksum: &mut RunningChecksum,
+  out: &mut Vec<u8>,
+) -> Result<usize, DecompressError> {
+  let mut bits = BitReader::new(data);
+  // Heuristic capacity: prefer avoiding realloc churn on typical HTTP bodies.
+  let guess = max_out
+    .min(data.len().saturating_mul(4).max(64))
+    .min(WINDOW.saturating_mul(2));
+  // Fresh buffer: `with_capacity` matches [`inflate_owned`].
+  // Reused buffer: clear + reserve keeps pooled capacity.
+  if out.capacity() == 0 {
+    *out = Vec::with_capacity(guess);
+  } else {
+    out.clear();
+    out.reserve(guess);
+  }
+  // Reuse capped Huffman table buffers across dynamic blocks (peak ≈ 2× 2 KiB).
+  let mut huff_pool = HuffmanPool::new();
+  loop {
+    let bfinal = bits.get_bits(1)?;
+    let btype = bits.get_bits(2)?;
+    match btype {
+      0 => inflate_stored(&mut bits, out, max_out, checksum)?,
+      1 => inflate_fixed(&mut bits, out, max_out, checksum)?,
+      2 => {
+        let (lit, dist) = read_dynamic_trees(&mut bits, &mut huff_pool)?;
+        inflate_compressed(&mut bits, out, max_out, checksum, &lit, &dist)?;
+        huff_pool.recycle_pair(lit, dist);
+      },
+      _ => return Err(DecompressError::InvalidInput),
+    }
+    if bfinal != 0 {
+      break;
+    }
+  }
+  bits.align_to_byte();
+  Ok(bits.byte_pos())
 }
 
 fn inflate_stored(

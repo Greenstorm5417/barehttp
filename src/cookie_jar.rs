@@ -1,10 +1,17 @@
 use crate::sync::Mutex;
+use alloc::borrow::Cow;
+use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use crate::error::ParseError;
 use crate::parser::cookie::SetCookie;
 use crate::parser::uri::{Host, Uri};
+
+pub use crate::parser::cookie::SameSite;
+
+/// Cookie age cap (RFC 10025 §5.5): 400 days in seconds.
+const COOKIE_AGE_LIMIT_SECS: u64 = 400 * 24 * 60 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Cookie entry in [`CookieStore`].
@@ -14,7 +21,9 @@ pub struct StoredCookie {
   domain: String,
   path: String,
   secure: bool,
+  http_only: bool,
   host_only: bool,
+  same_site: SameSite,
   creation_time: u64,
   expiry_time: Option<u64>,
 }
@@ -50,10 +59,23 @@ impl StoredCookie {
     self.secure
   }
 
+  /// `HttpOnly` attribute (stored; all jar retrievals are HTTP).
+  #[must_use]
+  pub const fn http_only(&self) -> bool {
+    self.http_only
+  }
+
   /// Match the exact host only (`host-only`).
   #[must_use]
   pub const fn host_only(&self) -> bool {
     self.host_only
+  }
+
+  /// `SameSite` attribute (RFC 10025). Browser cross-site send rules are not applied;
+  /// matching cookies are always attached on domain/path/`Secure` match.
+  #[must_use]
+  pub const fn same_site(&self) -> SameSite {
+    self.same_site
   }
 
   /// Logical creation counter (sort key).
@@ -69,7 +91,35 @@ impl StoredCookie {
   }
 }
 
-/// Mutex-backed RFC 6265 cookie jar (domain/path match, expiry, `Secure`).
+/// Domain-keyed cookie map: `BTreeMap<domain, small Vec>` plus jar-wide length.
+///
+/// Request matching only probes the request host and its DNS parent suffixes.
+/// Insert/replace scans only the target domain's vec (one pass).
+#[derive(Debug)]
+struct CookieMap {
+  by_domain: BTreeMap<String, Vec<StoredCookie>>,
+  len: usize,
+}
+
+impl CookieMap {
+  const fn new() -> Self {
+    Self {
+      by_domain: BTreeMap::new(),
+      len: 0,
+    }
+  }
+
+  const fn len(&self) -> usize {
+    self.len
+  }
+
+  fn clear(&mut self) {
+    self.by_domain.clear();
+    self.len = 0;
+  }
+}
+
+/// Mutex-backed RFC 10025 cookie jar (domain/path match, expiry, `Secure`, prefixes).
 ///
 /// # Examples
 ///
@@ -83,7 +133,7 @@ impl StoredCookie {
 /// ```
 #[derive(Debug)]
 pub struct CookieStore {
-  cookies: Mutex<Vec<StoredCookie>>,
+  cookies: Mutex<CookieMap>,
 }
 
 impl CookieStore {
@@ -91,14 +141,14 @@ impl CookieStore {
   #[must_use]
   pub const fn new() -> Self {
     Self {
-      cookies: Mutex::new(Vec::new()),
+      cookies: Mutex::new(CookieMap::new()),
     }
   }
 
-  /// Parse `Set-Cookie` values and insert them (RFC 6265 domain/path match; replace on name+domain+path).
+  /// Parse `Set-Cookie` values and insert them (RFC 10025 domain/path/`host-only` match).
   ///
-  /// `Secure` cookies are rejected unless `uri` is `https://` (RFC 6265bis).
-  /// Individual malformed `Set-Cookie` values are skipped (RFC 6265 ignore-bad-cookie).
+  /// `Secure` cookies (and `SameSite=None` / `__Secure-` / `__Host-` rules) are rejected
+  /// unless `uri` is `https://`. Malformed values are skipped.
   ///
   /// # Errors
   /// [`ParseError::InvalidUri`] if `uri` is not a usable absolute HTTP(S) URI
@@ -120,19 +170,21 @@ impl CookieStore {
   }
 
   fn insert_cookie_locked(
-    cookies: &mut Vec<StoredCookie>,
+    cookies: &mut CookieMap,
     cookie: SetCookie,
     request_host: &str,
     request_path: &str,
     request_is_secure: bool,
   ) {
-    // RFC 6265bis: reject Secure cookies received over a non-secure channel.
+    // RFC 10025 §5.7: reject Secure cookies received over a non-secure channel.
     if cookie.secure && !request_is_secure {
       return;
     }
 
-    let creation = u64::try_from(cookies.len()).unwrap_or(u64::MAX);
-    let now = crate::util::now_unix_secs();
+    // SameSite=None requires Secure.
+    if cookie.same_site == SameSite::None && !cookie.secure {
+      return;
+    }
 
     let host_only = cookie.domain.is_none();
 
@@ -145,95 +197,215 @@ impl CookieStore {
       }
       domain_attr
     } else {
-      request_host.to_string()
+      request_host.to_ascii_lowercase()
     };
 
     let path = cookie.path.unwrap_or_else(|| default_path(request_path));
 
-    // RFC 6265: Max-Age wins over Expires when both are present.
+    // Cookie-name prefixes (case-insensitive match on the name).
+    if name_has_prefix(&cookie.name, "__Secure-") && !cookie.secure {
+      return;
+    }
+    if name_has_prefix(&cookie.name, "__Host-") && !(cookie.secure && host_only && path == "/") {
+      return;
+    }
+    // Nameless cookie must not mimic a prefix via its value.
+    if cookie.name.is_empty()
+      && (name_has_prefix(&cookie.value, "__Secure-") || name_has_prefix(&cookie.value, "__Host-"))
+    {
+      return;
+    }
+
+    // Non-secure cookie must not overlay an existing Secure cookie (RFC 10025 §5.7).
+    // Related domains only: same key, parents, and children (not the whole jar).
+    if !cookie.secure && overlays_secure_cookie(cookies, &cookie.name, &domain, &path) {
+      return;
+    }
+
+    let now = crate::util::now_unix_secs();
+    let age_limit = now.saturating_add(COOKIE_AGE_LIMIT_SECS);
+
+    // RFC 10025: Max-Age wins over Expires; both capped to 400 days.
     let expiry_time = if let Some(max_age) = cookie.max_age {
       if max_age <= 0 {
         Some(0)
       } else {
-        Some(now.saturating_add(max_age.unsigned_abs()))
+        let capped = max_age.unsigned_abs().min(COOKIE_AGE_LIMIT_SECS);
+        Some(now.saturating_add(capped))
       }
     } else if let Some(expires) = cookie.expires {
       match expires.to_unix_secs() {
-        Some(ts) if ts > now => Some(ts),
+        Some(ts) if ts > now => Some(ts.min(age_limit)),
         _ => Some(0),
       }
     } else {
       None
     };
 
-    cookies.retain(|c| !(c.name == cookie.name && c.domain == domain && c.path == path));
-
-    if expiry_time != Some(0) {
-      cookies.push(StoredCookie {
-        name: cookie.name,
-        value: cookie.value,
-        domain,
-        path,
-        secure: cookie.secure,
-        host_only,
-        creation_time: creation,
-        expiry_time,
-      });
+    // Uniqueness: name + domain + host-only + path; one-pass replace in the domain bucket.
+    let mut creation = u64::try_from(cookies.len()).unwrap_or(u64::MAX);
+    if expiry_time == Some(0) {
+      let removed_empty = if let Some(bucket) = cookies.by_domain.get_mut(&domain) {
+        if let Some(pos) = bucket
+          .iter()
+          .position(|c| c.name == cookie.name && c.host_only == host_only && c.path == path)
+        {
+          bucket.remove(pos);
+          cookies.len = cookies.len.saturating_sub(1);
+        }
+        bucket.is_empty()
+      } else {
+        false
+      };
+      if removed_empty {
+        cookies.by_domain.remove(&domain);
+      }
+      return;
     }
+
+    let bucket = cookies.by_domain.entry(domain.clone()).or_default();
+    if let Some(pos) = bucket
+      .iter()
+      .position(|c| c.name == cookie.name && c.host_only == host_only && c.path == path)
+    {
+      if let Some(old) = bucket.get(pos) {
+        creation = old.creation_time;
+      }
+      if let Some(slot) = bucket.get_mut(pos) {
+        *slot = StoredCookie {
+          name: cookie.name,
+          value: cookie.value,
+          domain,
+          path,
+          secure: cookie.secure,
+          http_only: cookie.http_only,
+          host_only,
+          same_site: cookie.same_site,
+          creation_time: creation,
+          expiry_time,
+        };
+      }
+      return;
+    }
+
+    bucket.push(StoredCookie {
+      name: cookie.name,
+      value: cookie.value,
+      domain,
+      path,
+      secure: cookie.secure,
+      http_only: cookie.http_only,
+      host_only,
+      same_site: cookie.same_site,
+      creation_time: creation,
+      expiry_time,
+    });
+    cookies.len = cookies.len.saturating_add(1);
   }
 
-  /// Cookie header value for `uri` (RFC 6265 path-length / creation-time sort).
+  /// Cookie header value for `uri` (RFC 10025 path-length / creation-time sort).
   ///
   /// Empty when nothing matches, or when `uri` is not a usable absolute HTTP(S)
   /// URI. Unlike [`Self::store_response_cookies`], invalid URIs return an empty
   /// string (no [`ParseError::InvalidUri`]).
   /// Skips `Secure` cookies unless `uri` uses the `https` scheme (same rule as
   /// store-time rejection of `Secure` over cleartext).
+  ///
+  /// SameSite browser cross-site filtering is not applied (no document context).
   pub fn request_cookie_header(
     &self,
     uri: &str,
   ) -> String {
-    let Ok((request_host, request_path, is_secure)) = host_path_secure(uri) else {
+    let Ok(parsed) = Uri::parse(uri) else {
+      return String::new();
+    };
+    self.cookie_header_for_uri(&parsed)
+  }
+
+  /// Same as [`Self::request_cookie_header`], using an already-parsed [`Uri`]
+  /// (avoids a second parse on the client send path).
+  pub(crate) fn cookie_header_for_uri(
+    &self,
+    uri: &Uri<'_>,
+  ) -> String {
+    let Some(auth) = uri.authority() else {
       return String::new();
     };
 
+    // One host normalization for map keys + domain match; path stays borrowed.
+    // Skip alloc when the URI host is already lowercase (common case).
+    let host_lower: Cow<'_, str> = match auth.host() {
+      Host::RegName(name) => ascii_host_key(name),
+      Host::IpAddr(addr) => Cow::Owned(crate::util::format_ip_for_host(*addr)),
+    };
+    let request_path = if uri.path().is_empty() {
+      "/"
+    } else {
+      uri.path()
+    };
+    let is_secure = uri.scheme().eq_ignore_ascii_case("https");
     let now = crate::util::now_unix_secs();
 
     let cookies = self.cookies.lock();
-    let mut matching_cookies = Vec::new();
+    let mut matching = Vec::new();
 
-    for cookie in cookies.iter() {
-      if let Some(expiry) = cookie.expiry_time
-        && expiry <= now
-      {
+    // Host-only cookies live under the exact host key; Domain cookies under a
+    // DNS parent (or the host itself). Keys are `&str` slices into `host_lower`.
+    for domain_key in domain_lookup_keys(&host_lower) {
+      let Some(bucket) = cookies.by_domain.get(domain_key) else {
         continue;
-      }
-
-      if cookie.secure && !is_secure {
-        continue;
-      }
-
-      let domain_match = if cookie.host_only {
-        request_host.eq_ignore_ascii_case(&cookie.domain)
-      } else {
-        domain_matches(&request_host, &cookie.domain)
       };
+      for cookie in bucket {
+        if let Some(expiry) = cookie.expiry_time
+          && expiry <= now
+        {
+          continue;
+        }
 
-      if !domain_match {
-        continue;
+        if cookie.secure && !is_secure {
+          continue;
+        }
+
+        // Stored domains are lowercase; host is already normalized.
+        let domain_match = if cookie.host_only {
+          host_lower == cookie.domain
+        } else {
+          domain_matches(&host_lower, &cookie.domain)
+        };
+
+        if !domain_match {
+          continue;
+        }
+
+        if !path_matches(request_path, &cookie.path) {
+          continue;
+        }
+
+        matching.push(cookie);
       }
-
-      if !path_matches(&request_path, &cookie.path) {
-        continue;
-      }
-
-      matching_cookies.push(cookie);
     }
 
-    sort_cookies_for_send(&mut matching_cookies);
+    if matching.is_empty() {
+      return String::new();
+    }
 
-    let mut result = String::new();
-    for (i, cookie) in matching_cookies.iter().enumerate() {
+    if matching.len() > 1 {
+      sort_cookies_for_send(&mut matching);
+    }
+
+    let mut needed = 0usize;
+    for (i, cookie) in matching.iter().enumerate() {
+      if i > 0 {
+        needed = needed.saturating_add(2); // "; "
+      }
+      needed = needed
+        .saturating_add(cookie.name.len())
+        .saturating_add(1) // '='
+        .saturating_add(cookie.value.len());
+    }
+
+    let mut result = String::with_capacity(needed);
+    for (i, cookie) in matching.iter().enumerate() {
       if i > 0 {
         result.push_str("; ");
       }
@@ -259,10 +431,24 @@ impl CookieStore {
     domain: &str,
     path: &str,
   ) -> bool {
+    let key = domain.to_ascii_lowercase();
     let mut cookies = self.cookies.lock();
-    let before = cookies.len();
-    cookies.retain(|c| !(c.name == name && c.domain.eq_ignore_ascii_case(domain) && c.path == path));
-    before != cookies.len()
+    let removed = {
+      let Some(bucket) = cookies.by_domain.get_mut(&key) else {
+        return false;
+      };
+      let before = bucket.len();
+      bucket.retain(|c| !(c.name == name && c.path == path));
+      before.saturating_sub(bucket.len())
+    };
+    if removed == 0 {
+      return false;
+    }
+    cookies.len = cookies.len.saturating_sub(removed);
+    if cookies.by_domain.get(&key).is_some_and(Vec::is_empty) {
+      cookies.by_domain.remove(&key);
+    }
+    true
   }
 
   /// Iterate stored cookies (including expired). Holds the store lock for the iterator's lifetime.
@@ -270,15 +456,17 @@ impl CookieStore {
   pub fn iter(&self) -> Iter<'_> {
     Iter {
       guard: self.cookies.lock(),
-      index: 0,
+      domain_idx: 0,
+      cookie_idx: 0,
     }
   }
 }
 
 /// Iterator over [`StoredCookie`]s in a [`CookieStore`] (holds the store lock).
 pub struct Iter<'a> {
-  guard: crate::sync::MutexGuard<'a, Vec<StoredCookie>>,
-  index: usize,
+  guard: crate::sync::MutexGuard<'a, CookieMap>,
+  domain_idx: usize,
+  cookie_idx: usize,
 }
 
 impl core::fmt::Debug for Iter<'_> {
@@ -287,7 +475,8 @@ impl core::fmt::Debug for Iter<'_> {
     f: &mut core::fmt::Formatter<'_>,
   ) -> core::fmt::Result {
     f.debug_struct("Iter")
-      .field("index", &self.index)
+      .field("domain_idx", &self.domain_idx)
+      .field("cookie_idx", &self.cookie_idx)
       .finish_non_exhaustive()
   }
 }
@@ -296,16 +485,24 @@ impl<'a> Iterator for Iter<'a> {
   type Item = &'a StoredCookie;
 
   fn next(&mut self) -> Option<&'a StoredCookie> {
-    let cookie = self.guard.get(self.index)?;
-    self.index = self.index.saturating_add(1);
-    // SAFETY: `guard` is held for `'a` and grants exclusive access to the `Vec`.
-    // The returned reference points into that Vec and does not outlive the guard.
-    // `Iter` never mutates the Vec, so the reference stays valid.
-    Some(unsafe { &*core::ptr::from_ref(cookie) })
+    loop {
+      let Some((_, bucket)) = self.guard.by_domain.iter().nth(self.domain_idx) else {
+        return None;
+      };
+      if let Some(cookie) = bucket.get(self.cookie_idx) {
+        self.cookie_idx = self.cookie_idx.saturating_add(1);
+        // SAFETY: `guard` is held for `'a` and grants exclusive access to the map.
+        // The returned reference points into a bucket vec and does not outlive the guard.
+        // `Iter` never mutates the map, so the reference stays valid.
+        return Some(unsafe { &*core::ptr::from_ref(cookie) });
+      }
+      self.domain_idx = self.domain_idx.saturating_add(1);
+      self.cookie_idx = 0;
+    }
   }
 
   fn size_hint(&self) -> (usize, Option<usize>) {
-    let remaining = self.guard.len().saturating_sub(self.index);
+    let remaining = remaining_cookies(&self.guard, self.domain_idx, self.cookie_idx);
     (remaining, Some(remaining))
   }
 }
@@ -332,6 +529,108 @@ impl Default for CookieStore {
 /// Stable (not deprecated); prefer [`CookieStore`] in new code.
 pub type CookieJar = CookieStore;
 
+fn remaining_cookies(
+  map: &CookieMap,
+  domain_idx: usize,
+  cookie_idx: usize,
+) -> usize {
+  let mut remaining = 0usize;
+  for (i, (_, bucket)) in map.by_domain.iter().enumerate() {
+    if i < domain_idx {
+      continue;
+    }
+    if i == domain_idx {
+      remaining = remaining.saturating_add(bucket.len().saturating_sub(cookie_idx));
+    } else {
+      remaining = remaining.saturating_add(bucket.len());
+    }
+  }
+  remaining
+}
+
+/// Lowercase ASCII host for map lookup, borrowing when already lowercase.
+fn ascii_host_key(host: &str) -> Cow<'_, str> {
+  if host.bytes().all(|b| !b.is_ascii_uppercase()) {
+    Cow::Borrowed(host)
+  } else {
+    Cow::Owned(host.to_ascii_lowercase())
+  }
+}
+
+/// Request-host key plus each DNS parent suffix (`a.b.com` → `a.b.com`, `b.com`, `com`).
+///
+/// `host_lower` must already be ASCII-lowercased (stored domain keys are). Yields
+/// `&str` slices into that buffer — no per-suffix allocations.
+const fn domain_lookup_keys(host_lower: &str) -> DomainParentKeys<'_> {
+  DomainParentKeys {
+    host: host_lower,
+    pos: 0,
+    yielded_host: false,
+  }
+}
+
+/// Zero-alloc iterator over a host and its DNS parent suffixes.
+struct DomainParentKeys<'a> {
+  host: &'a str,
+  pos: usize,
+  yielded_host: bool,
+}
+
+impl<'a> Iterator for DomainParentKeys<'a> {
+  type Item = &'a str;
+
+  fn next(&mut self) -> Option<&'a str> {
+    if !self.yielded_host {
+      self.yielded_host = true;
+      return Some(self.host);
+    }
+    let bytes = self.host.as_bytes();
+    while self.pos < bytes.len() {
+      let i = self.pos;
+      self.pos = i.saturating_add(1);
+      if bytes.get(i) == Some(&b'.') {
+        let start = i.saturating_add(1);
+        if start < bytes.len() {
+          return self.host.get(start..);
+        }
+      }
+    }
+    None
+  }
+}
+
+/// Secure-overlay scan limited to domains related to `domain` (RFC 10025 §5.7).
+fn overlays_secure_cookie(
+  cookies: &CookieMap,
+  name: &str,
+  domain: &str,
+  path: &str,
+) -> bool {
+  // Same domain + DNS parents.
+  for key in domain_lookup_keys(domain) {
+    if let Some(bucket) = cookies.by_domain.get(key)
+      && bucket
+        .iter()
+        .any(|c| c.secure && c.name == name && path_matches(path, &c.path))
+    {
+      return true;
+    }
+  }
+  // Children: domain-match the other way (`www.example.com` under `example.com`).
+  for (key, bucket) in &cookies.by_domain {
+    if key.as_str() == domain || !domain_matches(key, domain) {
+      continue;
+    }
+    if bucket
+      .iter()
+      .any(|c| c.secure && c.name == name && path_matches(path, &c.path))
+    {
+      return true;
+    }
+  }
+  false
+}
+
 fn host_path_secure(uri: &str) -> Result<(String, String, bool), ParseError> {
   let parsed = Uri::parse(uri)?;
   let auth = parsed.authority().ok_or(ParseError::InvalidUri)?;
@@ -352,24 +651,25 @@ fn domain_matches(
   request_host: &str,
   cookie_domain: &str,
 ) -> bool {
-  let request_lower = request_host.to_ascii_lowercase();
-  let domain_lower = cookie_domain.to_ascii_lowercase();
-
-  if request_lower == domain_lower {
+  if request_host.eq_ignore_ascii_case(cookie_domain) {
     return true;
   }
 
-  if request_lower.ends_with(&domain_lower) {
-    let prefix_len = request_lower.len() - domain_lower.len();
-    if let Some(byte) = request_lower.as_bytes().get(prefix_len.saturating_sub(1)) {
-      return *byte == b'.';
-    }
+  if request_host.len() <= cookie_domain.len() {
+    return false;
   }
 
-  false
+  let split = request_host.len() - cookie_domain.len();
+  if request_host.as_bytes().get(split.saturating_sub(1)) != Some(&b'.') {
+    return false;
+  }
+
+  request_host
+    .get(split..)
+    .is_some_and(|suffix| suffix.eq_ignore_ascii_case(cookie_domain))
 }
 
-/// Reject public-suffix-like Domain attrs (no embedded `.`) and IP Domain (RFC 6265).
+/// Reject public-suffix-like Domain attrs (no embedded `.`) and IP Domain (RFC 10025).
 fn domain_attr_acceptable(domain: &str) -> bool {
   if domain.is_empty() {
     return false;
@@ -387,6 +687,13 @@ fn is_ip_host(host: &str) -> bool {
     .and_then(|h| h.strip_suffix(']'))
     .unwrap_or(host);
   bare.parse::<core::net::IpAddr>().is_ok()
+}
+
+fn name_has_prefix(
+  name: &str,
+  prefix: &str,
+) -> bool {
+  name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 
 fn path_matches(
@@ -410,7 +717,7 @@ fn path_matches(
   false
 }
 
-/// RFC 6265 cookie ordering: longer path first, then earlier creation time.
+/// RFC 10025 cookie ordering: longer path first, then earlier creation time.
 /// Insertion sort for small jars; avoids `slice::sort` monomorphization.
 fn sort_cookies_for_send(cookies: &mut [&StoredCookie]) {
   for i in 1..cookies.len() {
@@ -483,6 +790,14 @@ mod tests {
     assert!(domain_matches("sub.example.com", "example.com"));
     assert!(!domain_matches("example.com", "www.example.com"));
     assert!(!domain_matches("notexample.com", "example.com"));
+  }
+
+  #[test]
+  fn domain_lookup_keys_are_suffix_slices() {
+    let keys: Vec<&str> = domain_lookup_keys("a.b.example.com").collect();
+    assert_eq!(keys, ["a.b.example.com", "b.example.com", "example.com", "com"]);
+    assert!(matches!(ascii_host_key("example.com"), Cow::Borrowed(_)));
+    assert!(matches!(ascii_host_key("Example.COM"), Cow::Owned(_)));
   }
 
   #[test]
@@ -750,7 +1065,9 @@ mod tests {
       assert_eq!(cookie.domain(), "example.com");
       assert_eq!(cookie.path(), "/");
       assert!(!cookie.secure());
+      assert!(!cookie.http_only());
       assert!(cookie.host_only());
+      assert_eq!(cookie.same_site(), SameSite::Default);
       assert!(cookie.expiry_time().is_none());
     }
     pairs.sort_unstable();
@@ -763,5 +1080,96 @@ mod tests {
     );
     assert_eq!(store.iter().len(), 2);
     assert_eq!(store.iter().count(), 2);
+  }
+
+  #[test]
+  fn secure_prefix_requires_secure_https() {
+    let store = CookieStore::new();
+    store
+      .store_response_cookies("http://example.com/", ["__Secure-SID=1; Secure"])
+      .expect("uri");
+    assert_eq!(store.iter().len(), 0);
+
+    store
+      .store_response_cookies("https://example.com/", ["__Secure-SID=1; Secure"])
+      .expect("uri");
+    assert_eq!(store.request_cookie_header("https://example.com/"), "__Secure-SID=1");
+  }
+
+  #[test]
+  fn host_prefix_requires_secure_host_only_root_path() {
+    let store = CookieStore::new();
+    store
+      .store_response_cookies(
+        "https://example.com/",
+        ["__Host-SID=1; Secure; Domain=example.com; Path=/"],
+      )
+      .expect("uri");
+    assert_eq!(store.iter().len(), 0);
+
+    store
+      .store_response_cookies("https://example.com/", ["__Host-SID=1; Secure; Path=/"])
+      .expect("uri");
+    assert_eq!(store.request_cookie_header("https://example.com/"), "__Host-SID=1");
+  }
+
+  #[test]
+  fn samesite_none_requires_secure() {
+    let store = CookieStore::new();
+    store
+      .store_response_cookies("https://example.com/", ["x=1; SameSite=None"])
+      .expect("uri");
+    assert_eq!(store.iter().len(), 0);
+
+    store
+      .store_response_cookies("https://example.com/", ["x=1; SameSite=None; Secure"])
+      .expect("uri");
+    assert_eq!(store.iter().next().unwrap().same_site(), SameSite::None);
+  }
+
+  #[test]
+  fn non_secure_cannot_overlay_secure() {
+    let store = CookieStore::new();
+    store
+      .store_response_cookies("https://example.com/", ["a=secret; Secure; Path=/login"])
+      .expect("uri");
+    store
+      .store_response_cookies("http://example.com/", ["a=evil; Path=/login"])
+      .expect("uri");
+    assert_eq!(store.request_cookie_header("https://example.com/login"), "a=secret");
+  }
+
+  #[test]
+  fn non_secure_cannot_overlay_secure_child_domain() {
+    let store = CookieStore::new();
+    store
+      .store_response_cookies(
+        "https://www.example.com/",
+        ["a=secret; Secure; Domain=www.example.com; Path=/"],
+      )
+      .expect("uri");
+    store
+      .store_response_cookies("http://www.example.com/", ["a=evil; Domain=example.com; Path=/"])
+      .expect("uri");
+    assert_eq!(store.request_cookie_header("https://www.example.com/"), "a=secret");
+    assert_eq!(store.iter().len(), 1);
+  }
+
+  #[test]
+  fn multi_domain_jar_isolates_lookups() {
+    let store = CookieStore::new();
+    store
+      .store_response_cookies("http://a.example.com/", ["a=1"])
+      .expect("uri");
+    store
+      .store_response_cookies("http://b.other.org/", ["b=2"])
+      .expect("uri");
+    store
+      .store_response_cookies("http://c.third.net/", ["c=3"])
+      .expect("uri");
+    assert_eq!(store.request_cookie_header("http://a.example.com/"), "a=1");
+    assert_eq!(store.request_cookie_header("http://b.other.org/"), "b=2");
+    assert_eq!(store.request_cookie_header("http://c.third.net/"), "c=3");
+    assert_eq!(store.iter().len(), 3);
   }
 }

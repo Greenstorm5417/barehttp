@@ -296,10 +296,12 @@ where
     // Borrow client config when no per-request override (avoid cloning Strings).
     // Move headers in so the client can mutate Host/defaults in place (no map clone).
     let config_owned = self.config_override;
-    let config = config_owned.as_ref().unwrap_or_else(|| self.client.config());
+    let config = config_owned
+      .as_ref()
+      .unwrap_or_else(|| self.client.config());
     self
       .client
-      .request_with_config_owned(config, self.method, &url, &headers, body)
+      .request_with_config_owned(config, self.method, &url, headers, body)
   }
 
   /// Set the body and send ([`Self::call`]).
@@ -448,7 +450,12 @@ mod tests {
     use crate::method::Method;
     let client = HttpClient::new();
     let err = client
-      .request(Method::Connect, "http://example.com:443", &Headers::new(), None::<&[u8]>)
+      .request(
+        Method::Connect,
+        "http://example.com:443",
+        &Headers::new(),
+        None::<&[u8]>,
+      )
       .unwrap_err();
     assert_eq!(err, Error::InvalidRequest(InvalidRequest::ConnectUnsupported));
   }

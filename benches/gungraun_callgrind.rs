@@ -46,10 +46,15 @@ fn setup_headers() -> Headers {
   support::headers_lookup_fixture()
 }
 
+fn teardown_headers(_headers: Headers) {}
+
 #[library_benchmark]
-#[bench::lookup(setup = setup_headers)]
-fn headers_get(headers: Headers) -> bool {
-  black_box(headers.get(black_box("Content-Type")).is_some())
+#[bench::lookup(setup = setup_headers, teardown = teardown_headers)]
+fn headers_get(headers: Headers) -> Headers {
+  // Return the map to `teardown` so Drop/allocator teardown is not attributed to
+  // lookup Ir (that cost tracked arena growth / glibc free paths, not `get`).
+  let _ = black_box(headers.get(black_box("Content-Type")).is_some());
+  headers
 }
 
 #[cfg(feature = "gzip")]

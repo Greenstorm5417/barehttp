@@ -10,7 +10,10 @@
 )]
 
 use super::crc32::crc32;
-use super::{DecompressError, decompress_gzip, decompress_http_deflate, decompress_raw_deflate};
+use super::{
+  DecompressError, decompress_gzip, decompress_gzip_into, decompress_http_deflate, decompress_http_deflate_into,
+  decompress_raw_deflate, decompress_raw_deflate_into,
+};
 use alloc::vec::Vec;
 
 fn long_text() -> Vec<u8> {
@@ -137,6 +140,27 @@ fn gzip_empty_and_tiny() {
   assert_eq!(decompress_gzip(GZIP_HI, 64).unwrap(), b"hi");
   assert_eq!(decompress_gzip(GZIP_HELLO_WORLD, 64).unwrap(), b"hello world");
   assert_eq!(decompress_gzip(GZIP_AAAA, 64).unwrap(), b"aaaaaaaaaa");
+}
+
+#[test]
+fn decompress_into_reuses_output_capacity() {
+  let mut out = Vec::with_capacity(256);
+  decompress_gzip_into(GZIP_HELLO_WORLD, 64, &mut out).unwrap();
+  assert_eq!(out.as_slice(), b"hello world");
+  let cap = out.capacity();
+  assert!(cap >= 11);
+
+  decompress_gzip_into(GZIP_HI, 64, &mut out).unwrap();
+  assert_eq!(out.as_slice(), b"hi");
+  assert_eq!(out.capacity(), cap, "second inflate must keep pooled capacity");
+
+  decompress_raw_deflate_into(RAW_HI, 64, &mut out).unwrap();
+  assert_eq!(out.as_slice(), b"hi");
+  assert_eq!(out.capacity(), cap);
+
+  decompress_http_deflate_into(ZLIB_HI, 64, &mut out).unwrap();
+  assert_eq!(out.as_slice(), b"hi");
+  assert_eq!(out.capacity(), cap);
 }
 
 #[test]

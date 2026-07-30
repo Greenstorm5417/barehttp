@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- Windows cleartext TCP: `OsBlockingSocket::write_vectored` uses `WSASend` (head+body, no concat), matching Unix `writev`.
-- Connection receive path: response header section is frozen into the `Headers` arena (spans point into that `Bytes`) instead of copying name/value bytes; non-ASCII (obs-text) values still materialize with lossy UTF-8.
-
 ## [0.1.0] - 2026-07-29
 
 First crates.io minor after `0.0.1`. Cargo treats `0.0.x → 0.1.0` as a major/breaking bump ([SemVer Compatibility](https://doc.rust-lang.org/cargo/reference/semver.html)).
@@ -37,6 +32,10 @@ First crates.io minor after `0.0.1`. Cargo treats `0.0.x → 0.1.0` as a major/b
 - Release workflow: feature pairs, package+packaged tests, cargo-semver-checks, sanitizers, Kani, Docker interop (`scripts/semver-checks.sh`).
 
 ### Changed
+
+- Windows cleartext TCP: `OsBlockingSocket::write_vectored` uses `WSASend` (head+body, no concat), matching Unix `writev`.
+- Connection receive path: response header section is frozen into the `Headers` arena (spans point into that `Bytes`) instead of copying name/value bytes; non-ASCII (obs-text) values still materialize with lossy UTF-8.
+- Cookie jar (`cookie-jar`) cites **RFC 10025** (obsoletes 6265 / 6265bis): `SameSite`, `__Secure-` / `__Host-` prefixes, CTL/size caps, 400-day age limit, host-only in uniqueness, no Secure overlay from cleartext. Browser cross-site SameSite send rules are intentionally not applied.
 
 - Request send: header block and body stay separate (`SerializedRequest`); `Connection::send_request` uses vectored writes (OS TCP `writev`) without concatenating. `BlockingSocket::write_vectored` defaults to `write` for TLS/`&[u8]`-only adapters.
 - Cargo features: `gzip-decompression` → `gzip`, `zstd-decompression` → `zstd`. `gzip` is dep-free (no miniz); `zstd` still uses `ruzstd`.

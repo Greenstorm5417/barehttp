@@ -225,8 +225,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
 
       let reason = Response::reason_owned(reason_bytes);
       // Compute owned spans (or None) while refs still borrow `buf`, then freeze.
-      let wire_spans =
-        Response::try_wire_header_spans(self.buf.get(..consumed).unwrap_or(&[]), &header_refs);
+      let wire_spans = Response::try_wire_header_spans(self.buf.get(..consumed).unwrap_or(&[]), &header_refs);
       let headers = match wire_spans {
         Some(spans) => {
           // Adopts the wire header section; no name/value copy.
@@ -305,8 +304,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
     // SAFETY: `BlockingSocket::read` only writes into `dst` (OS/TLS adapters never
     // read the destination). Treating spare `MaybeUninit<u8>` as `&mut [u8]` for
     // the duration of the write is the standard direct-into-buffer pattern.
-    let dst =
-      unsafe { core::slice::from_raw_parts_mut(uninit.as_mut_ptr().cast::<u8>(), to_read) };
+    let dst = unsafe { core::slice::from_raw_parts_mut(uninit.as_mut_ptr().cast::<u8>(), to_read) };
 
     match socket.read(dst) {
       Ok(n) => {

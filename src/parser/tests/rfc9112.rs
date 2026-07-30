@@ -1,4 +1,8 @@
 //! RFC 9112 MUST cases beyond `message_body` / `chunked` / `security`.
+//!
+//! Intentional non-goals for this origin client (see `philosophy.md`): CONNECT
+//! tunnels / authority-form, proxy absolute-form, outbound chunked,
+//! `Expect: 100-continue`.
 use crate::error::ParseError;
 use crate::parser::version::Version;
 use crate::parser::*;
@@ -110,7 +114,7 @@ fn serialize_with_headers(
   headers: &Headers,
   body: Option<&[u8]>,
 ) -> Result<bytes::Bytes, ParseError> {
-  Ok(serialize_request(method, path, headers, body)?.to_bytes())
+  Ok(serialize_request(method, path, None, headers, body)?.to_bytes())
 }
 
 #[test]
@@ -118,7 +122,7 @@ fn serialize_keeps_body_out_of_head_buffer() {
   let mut headers = Headers::new();
   headers.insert("Host", "example.com");
   let body = b"large-body-payload";
-  let req = serialize_request("POST", "/", &headers, Some(body)).unwrap();
+  let req = serialize_request("POST", "/", None, &headers, Some(body)).unwrap();
   assert!(req.head.ends_with(b"\r\n\r\n"));
   assert!(!req.head.windows(body.len()).any(|w| w == body));
   assert_eq!(req.body, body);
@@ -137,6 +141,30 @@ fn empty_path_becomes_slash() {
   headers.insert("Host", "example.com");
   let request = serialize_with_headers("GET", "", &headers, None).unwrap();
   assert!(String::from_utf8_lossy(&request).starts_with("GET / HTTP/1.1\r\n"));
+}
+
+#[test]
+fn serialize_writes_query_without_joined_string() {
+  let mut headers = Headers::new();
+  headers.insert("Host", "example.com");
+  let req = serialize_request("GET", "/a/b", Some("q=1"), &headers, None).unwrap();
+  assert!(
+    core::str::from_utf8(&req.head)
+      .unwrap()
+      .starts_with("GET /a/b?q=1 HTTP/1.1\r\n")
+  );
+}
+
+#[test]
+fn empty_path_with_query_becomes_slash_query() {
+  let mut headers = Headers::new();
+  headers.insert("Host", "example.com");
+  let req = serialize_request("GET", "", Some("a=1"), &headers, None).unwrap();
+  assert!(
+    core::str::from_utf8(&req.head)
+      .unwrap()
+      .starts_with("GET /?a=1 HTTP/1.1\r\n")
+  );
 }
 
 #[test]

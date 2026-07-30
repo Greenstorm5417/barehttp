@@ -5,8 +5,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use windows_sys::Win32::Networking::WinSock::{
   AF_INET, AF_INET6, FD_SET, FIONBIO, INVALID_SOCKET, IPPROTO_TCP, SD_BOTH, SO_ERROR, SO_RCVTIMEO, SO_SNDTIMEO,
   SOCK_STREAM, SOCKADDR_IN, SOCKADDR_IN6, SOCKET, SOCKET_ERROR, SOL_SOCKET, TIMEVAL, WSABUF, WSADATA, WSAGetLastError,
-  WSASend, WSAStartup, closesocket, connect, getsockopt, ioctlsocket, recv, select, send, setsockopt, shutdown,
-  socket,
+  WSASend, WSAStartup, closesocket, connect, getsockopt, ioctlsocket, recv, select, send, setsockopt, shutdown, socket,
 };
 
 static WSA_INITIALIZED: AtomicBool = AtomicBool::new(false);

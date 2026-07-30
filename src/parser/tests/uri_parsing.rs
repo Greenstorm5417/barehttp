@@ -205,19 +205,13 @@ fn test_error_ipv6_zone_id_rejected() {
 
 #[test]
 fn test_error_ipv6_double_compression() {
-  assert!(matches!(
-    Uri::parse("http://[1::2::3]"),
-    Err(ParseError::InvalidUri)
-  ));
+  assert!(matches!(Uri::parse("http://[1::2::3]"), Err(ParseError::InvalidUri)));
   assert!(matches!(Uri::parse("http://[:::]"), Err(ParseError::InvalidUri)));
 }
 
 #[test]
 fn test_error_ipv6_bad_hextet_and_count() {
-  assert!(matches!(
-    Uri::parse("http://[gggg::1]"),
-    Err(ParseError::InvalidUri)
-  ));
+  assert!(matches!(Uri::parse("http://[gggg::1]"), Err(ParseError::InvalidUri)));
   assert!(matches!(
     Uri::parse("http://[1:2:3:4:5:6:7]"),
     Err(ParseError::InvalidUri)
@@ -226,10 +220,7 @@ fn test_error_ipv6_bad_hextet_and_count() {
     Uri::parse("http://[1:2:3:4:5:6:7:8:9]"),
     Err(ParseError::InvalidUri)
   ));
-  assert!(matches!(
-    Uri::parse("http://[00000::1]"),
-    Err(ParseError::InvalidUri)
-  ));
+  assert!(matches!(Uri::parse("http://[00000::1]"), Err(ParseError::InvalidUri)));
 }
 
 #[test]

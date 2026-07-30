@@ -7,16 +7,18 @@ use crate::error::{Error, InvalidRequest};
 use crate::headers::Headers;
 use crate::method::Method;
 use crate::parser::Response;
-use crate::parser::{SerializedRequest, serialize_request};
 use crate::parser::uri::{Host, Uri};
+use crate::parser::{SerializedRequest, serialize_request};
 use crate::request_builder::ClientRequestBuilder;
 use crate::socket::{BlockingSocket, BlockingSocketFactory};
 use crate::transport::{ConnectionPool, PoolKey, PooledBuffers, RawResponse};
+use alloc::borrow::Cow;
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
+use core::fmt::Write as _;
 
 #[cfg(feature = "cookie-jar")]
 use crate::cookie_jar::CookieStore;
@@ -218,24 +220,26 @@ where
     custom_headers: &Headers,
     body: Option<impl AsRef<[u8]>>,
   ) -> Result<Response, Error> {
-    // `AsRef` cannot move a `Vec`; one copy is the public-API cost. The request
-    // builder already holds `Option<Vec<u8>>` and uses `request_with_config_owned`.
+    // Public `&[u8]` / `AsRef` cannot move a `Vec`: one `to_vec` is the API cost.
+    // Builder path moves an owned body into `request_with_config_owned` (no second copy).
     self.request_with_config_owned(
       config,
       method,
       url.as_ref(),
-      custom_headers,
+      custom_headers.clone(),
       body.map(|b| b.as_ref().to_vec()),
     )
   }
 
-  /// Like [`Self::request_with_config`], but takes an already-owned body (no copy).
+  /// Like [`Self::request_with_config`], but takes already-owned headers + body (no map/body copy).
+  ///
+  /// Redirect hops reuse the same `Option<Vec<u8>>` in place (borrow for send, never re-copy).
   pub(crate) fn request_with_config_owned(
     &self,
     config: &Config,
     method: Method,
     url: &str,
-    custom_headers: &Headers,
+    mut current_headers: Headers,
     body: Option<Vec<u8>>,
   ) -> Result<Response, Error> {
     // No tunnel / authority-form yet (RFC 9112 §3.2.3 / §9.3.6).
@@ -249,8 +253,8 @@ where
 
     let mut current_url = String::from(url);
     let mut current_method = method;
+    // One owned body buffer for the whole redirect chain (send borrows; hops mutate in place).
     let mut current_body = body;
-    let mut current_headers = custom_headers.clone();
     let mut visited_urls: Vec<String> = Vec::new();
     let mut redirect_count = 0_u32;
 
@@ -258,18 +262,12 @@ where
       let uri = Uri::parse(&current_url).map_err(Error::Parse)?;
       validate_protocol(config, &uri)?;
 
-      #[cfg(feature = "cookie-jar")]
-      let mut headers_with_cookies = current_headers.clone();
+      // Jar cookies merge in place; redirect sanitize strips Cookie before the next hop.
       #[cfg(feature = "cookie-jar")]
       {
-        let cookie_header = self.cookie_store.request_cookie_header(&current_url);
-        headers_with_cookies.merge_cookie(&cookie_header);
+        let cookie_header = self.cookie_store.cookie_header_for_uri(&uri);
+        current_headers.merge_cookie(&cookie_header);
       }
-
-      #[cfg(feature = "cookie-jar")]
-      let headers_to_use = &headers_with_cookies;
-      #[cfg(not(feature = "cookie-jar"))]
-      let headers_to_use = &current_headers;
 
       let (raw, to_pool) = execute(
         &self.pool,
@@ -277,17 +275,17 @@ where
         config,
         &uri,
         &current_method,
-        headers_to_use,
+        &mut current_headers,
         current_body.as_deref(),
       )?;
 
       #[cfg(feature = "cookie-jar")]
       {
-        let set_cookie_headers = raw.headers.get_all(Headers::SET_COOKIE);
-        if !set_cookie_headers.is_empty() {
+        // Iterate Set-Cookie in place — no intermediate `get_all` Vec.
+        if raw.headers.contains(Headers::SET_COOKIE) {
           self
             .cookie_store
-            .store_response_cookies(&current_url, set_cookie_headers)?;
+            .store_response_cookies(&current_url, raw.headers.values(Headers::SET_COOKIE))?;
         }
       }
 
@@ -304,7 +302,7 @@ where
         ));
       }
 
-      let Some((next_url, next_method, next_body)) = follow_redirect(
+      let Some((next_url, next_method)) = follow_redirect(
         config,
         &mut visited_urls,
         &mut redirect_count,
@@ -312,16 +310,15 @@ where
         &uri,
         &current_url,
         &current_method,
-        current_body,
+        &mut current_body,
       )?
       else {
         return Ok(response);
       };
 
-      sanitize_redirect_headers(&mut current_headers, next_body.is_none());
+      sanitize_redirect_headers(&mut current_headers, current_body.is_none());
       current_url = next_url;
       current_method = next_method;
-      current_body = next_body;
     }
   }
 }
@@ -411,6 +408,9 @@ const fn is_followable_redirect(status: u16) -> bool {
 
 /// `Ok(None)` = return this response. `Ok(Some(...))` = follow redirect.
 ///
+/// When following, updates `current_body` in place (clear on method change to GET;
+/// otherwise the same `Vec` allocation is kept for the next hop — no re-copy).
+///
 /// Method / body rules match ureq (`ureq_proto` redirect):
 /// - 301/302/303: GET/HEAD keep method; all others become GET with no body.
 /// - 307/308: GET/HEAD keep method; POST/PUT/PATCH/DELETE -> [`Error::RedirectFailed`].
@@ -422,8 +422,8 @@ pub fn follow_redirect(
   current_uri: &Uri,
   current_url: &str,
   current_method: &Method,
-  current_body: Option<Vec<u8>>,
-) -> Result<Option<(String, Method, Option<Vec<u8>>)>, Error> {
+  current_body: &mut Option<Vec<u8>>,
+) -> Result<Option<(String, Method)>, Error> {
   // `max_redirects == 0` means do not follow (return the redirect response).
   if config.max_redirects() == 0 || !is_followable_redirect(response.status_code()) {
     return Ok(None);
@@ -447,32 +447,34 @@ pub fn follow_redirect(
 
   visited_urls.push(String::from(current_url));
 
-  let (next_method, next_body) = redirect_method_and_body(response.status_code(), current_method, current_body)?;
+  let next_method = redirect_method_and_body(response.status_code(), current_method, current_body)?;
 
   *redirect_count = redirect_count.saturating_add(1);
 
-  Ok(Some((next_url, next_method, next_body)))
+  Ok(Some((next_url, next_method)))
 }
 
 fn redirect_method_and_body(
   status: u16,
   method: &Method,
-  body: Option<Vec<u8>>,
-) -> Result<(Method, Option<Vec<u8>>), Error> {
+  body: &mut Option<Vec<u8>>,
+) -> Result<Method, Error> {
   match status {
     307 | 308 => {
       // Retain method only when there is no request body to replay (ureq).
       if method.needs_request_body() || method == &Method::Delete {
         return Err(Error::RedirectFailed);
       }
-      Ok((method.clone(), body))
+      // Body buffer stays put for the next hop.
+      Ok(method.clone())
     },
     // 301, 302, 303 (and only those are followable besides 307/308)
     _ => {
       if matches!(method, &Method::Get | &Method::Head) {
-        Ok((method.clone(), body))
+        Ok(method.clone())
       } else {
-        Ok((Method::Get, None))
+        *body = None;
+        Ok(Method::Get)
       }
     },
   }
@@ -488,16 +490,20 @@ fn execute<S, D>(
   config: &Config,
   uri: &Uri,
   method: &Method,
-  custom_headers: &Headers,
+  headers: &mut Headers,
   body: Option<&[u8]>,
 ) -> Result<(RawResponse, Option<(PoolKey, S, PooledBuffers)>), Error>
 where
   S: BlockingSocket + BlockingSocketFactory,
   D: DnsResolver,
 {
-  let host_str = host_from_uri(uri);
+  // ≤1 host-string alloc per hop: borrow reg-name; own only for IP literals.
+  // Host header reuses that buffer (append `:port` in place when needed).
+  // Residual: PoolKey lowercases into its own String; Headers::set copies into the
+  // arena; transport SNI still formats host separately (out of this change's scope).
+  let mut host = host_from_uri(uri);
   let port = uri.port_or_default();
-  let pool_key = PoolKey::new(uri.scheme().to_ascii_lowercase(), &host_str, port);
+  let pool_key = PoolKey::new(uri.scheme().to_ascii_lowercase(), host.as_ref(), port);
 
   let (mut socket, reused, pooled_bufs) = get_or_create_socket(pool, config, &pool_key)?;
   match try_one_hop(
@@ -505,9 +511,9 @@ where
     config,
     uri,
     method,
-    custom_headers,
+    headers,
     body,
-    &host_str,
+    &mut host,
     port,
     &mut socket,
     reused,
@@ -529,9 +535,9 @@ where
         config,
         uri,
         method,
-        custom_headers,
+        headers,
         body,
-        &host_str,
+        &mut host,
         port,
         &mut fresh,
         false,
@@ -553,9 +559,9 @@ fn try_one_hop<S, D>(
   config: &Config,
   uri: &Uri,
   method: &Method,
-  custom_headers: &Headers,
+  headers: &mut Headers,
   body: Option<&[u8]>,
-  host_str: &str,
+  host: &mut Cow<'_, str>,
   port: u16,
   socket: &mut S,
   reused: bool,
@@ -566,7 +572,7 @@ where
   D: DnsResolver,
 {
   let mut conn = crate::transport::connection::connect_with_buffers(socket, dns, uri, config, reused, buffers)?;
-  let request = build_request(uri, method, host_str, port, custom_headers, body, config)?;
+  let request = build_request(uri, method, host, port, headers, body, config)?;
   conn.send_request(&request.head, request.body)?;
   let raw = conn.read_raw_response(method != &Method::Head)?;
   let reusable = conn.is_reusable();
@@ -574,13 +580,51 @@ where
   Ok((raw, reusable, returned_bufs))
 }
 
-fn host_from_uri(uri: &Uri) -> String {
+/// Hostname for this hop: borrowed reg-name, or one alloc for an IP literal.
+fn host_from_uri<'a>(uri: &Uri<'a>) -> Cow<'a, str> {
   let Some(auth) = uri.authority() else {
-    return String::new();
+    return Cow::Borrowed("");
   };
   match auth.host() {
-    Host::RegName(name) => String::from(*name),
-    Host::IpAddr(addr) => crate::util::format_ip_for_host(*addr),
+    Host::RegName(name) => Cow::Borrowed(*name),
+    Host::IpAddr(addr) => Cow::Owned(crate::util::format_ip_for_host(*addr)),
+  }
+}
+
+#[inline]
+fn host_omits_port(
+  uri: &Uri<'_>,
+  port: u16,
+) -> bool {
+  (uri.scheme().eq_ignore_ascii_case("http") && port == 80)
+    || (uri.scheme().eq_ignore_ascii_case("https") && port == 443)
+}
+
+/// Set `Host` from `host`, appending `:port` without a second host alloc when `host` is owned.
+fn apply_host_header(
+  headers: &mut Headers,
+  uri: &Uri<'_>,
+  host: &mut Cow<'_, str>,
+  port: u16,
+) {
+  if host_omits_port(uri, port) {
+    headers.set(Headers::HOST, host.as_ref());
+    return;
+  }
+  match host {
+    Cow::Owned(s) => {
+      let len = s.len();
+      s.reserve(6);
+      s.push(':');
+      let _ = write!(s, "{port}");
+      headers.set(Headers::HOST, s.as_str());
+      // Restore hostname so a pooled-socket retry can rebuild Host.
+      s.truncate(len);
+    },
+    Cow::Borrowed(s) => {
+      // One alloc: `host:port` (reg-name was not heap-owned).
+      headers.set(Headers::HOST, format!("{s}:{port}").as_str());
+    },
   }
 }
 
@@ -602,34 +646,35 @@ where
     .map_err(Error::Socket)
 }
 
+/// Default `Accept-Encoding` when compression features are on (no per-request join).
+#[cfg(all(feature = "gzip", feature = "zstd"))]
+const DEFAULT_ACCEPT_ENCODING: &str = "gzip, deflate, zstd";
+#[cfg(all(feature = "gzip", not(feature = "zstd")))]
+const DEFAULT_ACCEPT_ENCODING: &str = "gzip, deflate";
+#[cfg(all(feature = "zstd", not(feature = "gzip")))]
+const DEFAULT_ACCEPT_ENCODING: &str = "zstd";
+
 /// Build wire request (HTTP/1.1 + Host + origin-form target).
 ///
-/// Header block and body stay separate ([`SerializedRequest`]) so the transport
-/// can write them without concatenating. Exposed for unit tests that assert wire
-/// serialization.
+/// Mutates `headers` in place (Host / defaults). Header block and body stay
+/// separate ([`SerializedRequest`]) so the transport can write them without
+/// concatenating. Exposed for unit tests that assert wire serialization.
+///
+/// `host` is the hop hostname (no port). On non-default ports an owned host may
+/// temporarily append `:port` for the header value, then truncate back.
 pub fn build_request<'a>(
   uri: &Uri,
   method: &Method,
-  host_str: &str,
+  host: &mut Cow<'_, str>,
   port: u16,
-  custom_headers: &Headers,
+  headers: &mut Headers,
   body: Option<&'a [u8]>,
   config: &Config,
 ) -> Result<SerializedRequest<'a>, Error> {
   // Userinfo rejected at Uri::parse for HTTP client use.
 
-  let host_header = if (uri.scheme().eq_ignore_ascii_case("http") && port == 80)
-    || (uri.scheme().eq_ignore_ascii_case("https") && port == 443)
-  {
-    String::from(host_str)
-  } else {
-    format!("{host_str}:{port}")
-  };
-
-  let mut headers = custom_headers.clone();
-
   // Always rebuild Host for the current hop (user Host may be stale after redirects).
-  headers.set(Headers::HOST, host_header.as_str());
+  apply_host_header(headers, uri, host, port);
 
   // RFC 9112 §9.3: client that will not reuse MUST send Connection: close
   if !pooling_enabled(config) {
@@ -646,23 +691,9 @@ pub fn build_request<'a>(
 
   #[cfg(any(feature = "gzip", feature = "zstd"))]
   if !headers.contains(Headers::ACCEPT_ENCODING) {
-    #[allow(unused_mut)]
-    let mut encodings: Vec<&str> = Vec::new();
-
-    #[cfg(feature = "gzip")]
-    {
-      encodings.push("gzip");
-      encodings.push("deflate");
-    }
-
-    #[cfg(feature = "zstd")]
-    encodings.push("zstd");
-
-    if !encodings.is_empty() {
-      let accept_encoding = encodings.join(", ");
-      headers.insert(Headers::ACCEPT_ENCODING, accept_encoding.as_str());
-    }
+    headers.insert(Headers::ACCEPT_ENCODING, DEFAULT_ACCEPT_ENCODING);
   }
 
-  serialize_request(method.as_str(), &uri.to_path_and_query(), &headers, body).map_err(Error::Parse)
+  // Borrow path/query into the head buffer — no intermediate `path?query` String.
+  serialize_request(method.as_str(), uri.path(), uri.query(), headers, body).map_err(Error::Parse)
 }

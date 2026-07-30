@@ -33,11 +33,15 @@ impl SerializedRequest<'_> {
 
 /// Serialize an HTTP/1.1 request: header block in [`SerializedRequest::head`], body uncopied.
 ///
+/// `path` and optional `query` are written separately into the request-line
+/// (no intermediate `path?query` [`String`]). Empty `path` becomes `/`.
+///
 /// # Errors
 /// [`ParseError::MissingHostHeader`], host / TE / framing violations of RFC 9112.
 pub fn serialize_request<'a>(
   method: &str,
   path: &str,
+  query: Option<&str>,
   headers: &Headers,
   body: Option<&'a [u8]>,
 ) -> Result<SerializedRequest<'a>, ParseError> {
@@ -152,6 +156,7 @@ pub fn serialize_request<'a>(
   }
   wire_bytes = wire_bytes
     .saturating_add(request_path.len())
+    .saturating_add(query.map_or(0, |q| q.len().saturating_add(1))) // "?" + query
     .saturating_add(2); // final CRLF
 
   let inject_cl = body.is_some() && !has_cl;
@@ -166,6 +171,10 @@ pub fn serialize_request<'a>(
   request.extend_from_slice(method.as_bytes());
   request.extend_from_slice(b" ");
   request.extend_from_slice(request_path.as_bytes());
+  if let Some(q) = query {
+    request.extend_from_slice(b"?");
+    request.extend_from_slice(q.as_bytes());
+  }
   // RFC 9112: this is an HTTP/1.1 client — request-line version is always 1.1
   request.extend_from_slice(b" HTTP/1.1\r\n");
 

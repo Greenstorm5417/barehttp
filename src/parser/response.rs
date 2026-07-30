@@ -4,9 +4,7 @@ extern crate alloc;
 use crate::error::{DecompressError, IntoStringError, ParseError};
 use crate::headers::Headers;
 use crate::parser::chunked::ChunkedDecoder;
-use crate::parser::headers::{
-  HeaderRef, materialize_headers, parse_header_fields, scan_header_fields, try_wire_spans,
-};
+use crate::parser::headers::{HeaderRef, materialize_headers, parse_header_fields, scan_header_fields, try_wire_spans};
 use crate::parser::version::{Version, parse_status_line};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -95,6 +93,10 @@ impl Response {
 
   /// Parse a complete buffered HTTP/1.1 response.
   ///
+  /// One-pass header materialize + slice body decode (Callgrind-sensitive). The
+  /// live receive path keeps owned-buffer adoption via [`Self::parse_body_from_owned`]
+  /// / wire spans on the connection buffer.
+  ///
   /// # Errors
   /// [`ParseError`] when the status line, headers, framing, or body are illegal.
   pub fn parse(input: &[u8]) -> Result<Self, ParseError> {
@@ -163,19 +165,30 @@ impl Response {
       return Ok(body_bytes);
     }
 
-    let mut decoded: Vec<u8> = body_bytes.into();
-    if let Some(coding) = single {
-      decoded = decompress_coding(coding, decoded, max_body)?;
-      if decoded.len() > max_body {
-        return Err(ParseError::BodyExceedsLimit(max_body));
-      }
+    // Decompress from the TE/CL buffer as a slice — no Bytes→Vec of the
+    // compressed body solely to feed the inflater.
+    let decoded = if let Some(coding) = single {
+      decompress_coding(coding, &body_bytes, max_body)?
     } else {
-      for coding in multi.iter().rev() {
-        decoded = decompress_coding(coding, decoded, max_body)?;
-        if decoded.len() > max_body {
+      let mut out = Vec::new();
+      let mut scratch = Vec::new();
+      for (i, coding) in multi.iter().rev().enumerate() {
+        if i == 0 {
+          decompress_coding_into(coding, &body_bytes, max_body, &mut out)?;
+        } else {
+          // Ping-pong: previous output becomes next input; reuse both capacities.
+          core::mem::swap(&mut out, &mut scratch);
+          decompress_coding_into(coding, &scratch, max_body, &mut out)?;
+        }
+        if out.len() > max_body {
           return Err(ParseError::BodyExceedsLimit(max_body));
         }
       }
+      out
+    };
+
+    if decoded.len() > max_body {
+      return Err(ParseError::BodyExceedsLimit(max_body));
     }
 
     headers.remove(Headers::CONTENT_ENCODING);
@@ -214,7 +227,7 @@ impl Response {
     reason_to_string(reason_bytes)
   }
 
-  /// Parse the status line and headers only (two-phase reading).
+  /// Parse the status line and headers only (two-phase / buffered `parse`).
   ///
   /// Returns `(status_code, reason, headers, version, remainder_after_headers)`.
   ///
@@ -348,7 +361,7 @@ impl Response {
     Ok(BodyReadStrategy::UntilClose)
   }
 
-  /// Decode the body from bytes after the header section (two-phase reading).
+  /// Decode the body from bytes after the header section (buffered `parse`).
   ///
   /// Returns the (possibly decompressed) body and any chunked trailer fields.
   /// `max_body` caps wire-decoded and decompressed size ([`ParseError::BodyExceedsLimit`]).
@@ -367,12 +380,14 @@ impl Response {
     finish_body(headers, body_vec, trailer_bytes, max_body)
   }
 
-  /// Owned-buffer variant of [`Self::parse_body_from_bytes`].
+  /// Decode a body already held in an owned buffer (two-phase / transport path).
   ///
-  /// For `Content-Length` and until-close bodies already held by the transport,
-  /// returns that buffer with no copy. Chunked wire still re-decodes here; the
-  /// live transport path uses [`Self::finish_decoded_body`] after single-pass
-  /// decode on the wire instead.
+  /// For `Content-Length` and until-close, returns that buffer with no copy.
+  /// Chunked wire reuses a contiguous payload span from `body_bytes` when possible
+  /// ([`ChunkedDecoder::decode_buffered`]); the live transport path uses
+  /// [`Self::finish_decoded_body`] after single-pass decode on the wire instead.
+  ///
+  /// `max_body` caps wire-decoded and decompressed size ([`ParseError::BodyExceedsLimit`]).
   ///
   /// # Errors
   /// [`ParseError`] when framing is illegal or the body cannot be decoded / decompressed.
@@ -545,47 +560,113 @@ const fn map_decompress_error(
   }
 }
 
+/// Decompress one Content-Encoding layer from a borrowed TE/CL body slice.
 fn decompress_coding(
   coding: &str,
-  body_bytes: Vec<u8>,
+  body: &[u8],
   max_body: usize,
 ) -> Result<Vec<u8>, ParseError> {
+  let mut out = Vec::new();
+  decompress_coding_into(coding, body, max_body, &mut out)?;
+  Ok(out)
+}
+
+/// Like [`decompress_coding`], writing into `out` (cleared; capacity reused).
+fn decompress_coding_into(
+  coding: &str,
+  body: &[u8],
+  max_body: usize,
+  out: &mut Vec<u8>,
+) -> Result<(), ParseError> {
   #[cfg(feature = "gzip")]
   if coding.eq_ignore_ascii_case("gzip") {
-    return crate::gzip::decompress_gzip(&body_bytes, max_body).map_err(|e| map_decompress_error(e, max_body));
+    return crate::gzip::decompress_gzip_into(body, max_body, out).map_err(|e| map_decompress_error(e, max_body));
   }
 
   #[cfg(feature = "gzip")]
   if coding.eq_ignore_ascii_case("deflate") {
-    return crate::gzip::decompress_http_deflate(&body_bytes, max_body).map_err(|e| map_decompress_error(e, max_body));
+    return crate::gzip::decompress_http_deflate_into(body, max_body, out)
+      .map_err(|e| map_decompress_error(e, max_body));
   }
 
   #[cfg(feature = "zstd")]
   if coding.eq_ignore_ascii_case("zstd") {
-    use ruzstd::io_nostd::Read;
-    let mut decoder =
-      StreamingDecoder::new(&body_bytes[..]).map_err(|_| ParseError::Decompression(DecompressError::InvalidInput))?;
-    let mut decompressed = Vec::new();
-    let mut buf = [0u8; 8192];
-    loop {
+    return decompress_zstd_into(body, max_body, out);
+  }
+
+  let _ = (coding, body, max_body, out);
+  Err(ParseError::Decompression(DecompressError::InvalidInput))
+}
+
+/// Zstd → `out` (cleared; capacity reused for fused Content-Encoding).
+///
+/// When the frame header carries a content-size, preallocate exactly and read
+/// straight into `out` (no 8KiB scratch / realloc churn). Unknown size keeps a
+/// mild heuristic reserve then scratch-extends.
+#[cfg(feature = "zstd")]
+fn decompress_zstd_into(
+  body: &[u8],
+  max_body: usize,
+  out: &mut Vec<u8>,
+) -> Result<(), ParseError> {
+  use ruzstd::io_nostd::Read;
+
+  out.clear();
+  let mut decoder =
+    StreamingDecoder::new(body).map_err(|_| ParseError::Decompression(DecompressError::InvalidInput))?;
+
+  let known = decoder.decoder.content_size();
+  if known > 0 {
+    let size = usize::try_from(known).map_err(|_| ParseError::Decompression(DecompressError::InvalidInput))?;
+    if size > max_body {
+      return Err(ParseError::BodyExceedsLimit(max_body));
+    }
+    // Exact prealloc into fused `out` — decode directly, no scratch copy.
+    out.resize(size, 0);
+    let mut filled = 0usize;
+    while filled < size {
+      let dst = out.get_mut(filled..size).unwrap_or(&mut []);
       let n = decoder
-        .read(&mut buf)
+        .read(dst)
         .map_err(|_| ParseError::Decompression(DecompressError::InvalidInput))?;
       if n == 0 {
         break;
       }
-      if decompressed.len().saturating_add(n) > max_body {
-        return Err(ParseError::BodyExceedsLimit(max_body));
-      }
-      if let Some(slice) = buf.get(..n) {
-        decompressed.extend_from_slice(slice);
-      }
+      filled = filled.saturating_add(n);
     }
-    return Ok(decompressed);
+    out.truncate(filled);
+    if filled != size {
+      return Err(ParseError::Decompression(DecompressError::InvalidInput));
+    }
+    // Declared FCS must be exact; trailing output would bypass the limit check.
+    let mut probe = [0u8; 1];
+    let extra = decoder
+      .read(&mut probe)
+      .map_err(|_| ParseError::Decompression(DecompressError::InvalidInput))?;
+    if extra != 0 {
+      return Err(ParseError::Decompression(DecompressError::InvalidInput));
+    }
+    return Ok(());
   }
 
-  let _ = (coding, body_bytes, max_body);
-  Err(ParseError::Decompression(DecompressError::InvalidInput))
+  // No frame content-size: heuristic reserve, then scratch-extend.
+  out.reserve(body.len().saturating_mul(2).min(max_body));
+  let mut buf = [0u8; 8192];
+  loop {
+    let n = decoder
+      .read(&mut buf)
+      .map_err(|_| ParseError::Decompression(DecompressError::InvalidInput))?;
+    if n == 0 {
+      break;
+    }
+    if out.len().saturating_add(n) > max_body {
+      return Err(ParseError::BodyExceedsLimit(max_body));
+    }
+    if let Some(slice) = buf.get(..n) {
+      out.extend_from_slice(slice);
+    }
+  }
+  Ok(())
 }
 
 /// Transfer-coding token: OWS-trimmed, parameter suffix (`;…`) stripped.
@@ -714,18 +795,20 @@ fn decode_body_owned(
       if input.len() > len {
         return Err(ParseError::ExtraDataAfterResponse);
       }
-      // Transport already owns exact CL bytes — no second allocation.
+      // Already owns exact CL bytes — no second allocation.
       Ok((input, Headers::new()))
     },
-    BodyReadStrategy::Chunked => decode_chunked(&input),
+    BodyReadStrategy::Chunked => ChunkedDecoder::decode_buffered(input),
     BodyReadStrategy::UntilClose => {
-      // Already the full body buffer from the transport.
+      // Already the full body buffer.
       Ok((input, Headers::new()))
     },
   }
 }
 
 fn decode_chunked(input: &[u8]) -> Result<(Bytes, Headers), ParseError> {
+  // Single-pass feed (buffered `Response::parse`). Owned transport buffers use
+  // [`ChunkedDecoder::decode_buffered`] instead.
   let mut decoder = ChunkedDecoder::new();
   let mut output = Vec::new();
   let remaining = decoder.decode_chunk(input, &mut output)?;
@@ -829,11 +912,12 @@ mod response_helpers_tests {
   }
 
   #[test]
-  fn parse_headers_only_builds_headers() {
+  fn scan_headers_only_builds_headers() {
     let input = b"HTTP/1.1 200 OK\r\nHost: a\r\nX-A: 1\r\n\r\nbody";
-    let (code, reason, headers, ver, rest) = Response::parse_headers_only(input).unwrap();
+    let (code, reason, refs, ver, rest) = Response::scan_headers_only(input).unwrap();
+    let headers = Response::headers_from_refs(&refs);
     assert_eq!(code, 200);
-    assert_eq!(reason, "OK");
+    assert_eq!(reason_to_string(reason), "OK");
     assert_eq!(ver, Version::HTTP_11);
     assert_eq!(headers.get("host"), Some("a"));
     assert_eq!(headers.get("x-a"), Some("1"));
@@ -874,6 +958,46 @@ mod response_helpers_tests {
 
   #[cfg(feature = "gzip")]
   #[test]
+  fn chunked_then_gzip_content_encoding_fused() {
+    // gzip.compress(b"hi") — TE chunked wraps CE gzip; decode must feed CE as slice.
+    let gzipped: &[u8] = &[
+      0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xcb, 0xc8, 0x04, 0x00, 0xac, 0x2a, 0x93, 0xd8, 0x02,
+      0x00, 0x00, 0x00,
+    ];
+    let mut msg = Vec::from(&b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Encoding: gzip\r\n\r\n"[..]);
+    msg.extend_from_slice(alloc::format!("{:X}\r\n", gzipped.len()).as_bytes());
+    msg.extend_from_slice(gzipped);
+    msg.extend_from_slice(b"\r\n0\r\n\r\n");
+
+    let resp = Response::parse(&msg).unwrap();
+    assert_eq!(resp.body(), b"hi");
+    assert!(resp.header("content-encoding").is_none());
+  }
+
+  #[cfg(feature = "gzip")]
+  #[test]
+  fn chunked_multi_then_gzip_content_encoding() {
+    // Same gzip payload split across two chunks — forces exact-capacity copy path.
+    let gzipped: &[u8] = &[
+      0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xcb, 0xc8, 0x04, 0x00, 0xac, 0x2a, 0x93, 0xd8, 0x02,
+      0x00, 0x00, 0x00,
+    ];
+    let (a, b) = gzipped.split_at(10);
+    let mut msg = Vec::from(&b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Encoding: gzip\r\n\r\n"[..]);
+    msg.extend_from_slice(alloc::format!("{:X}\r\n", a.len()).as_bytes());
+    msg.extend_from_slice(a);
+    msg.extend_from_slice(b"\r\n");
+    msg.extend_from_slice(alloc::format!("{:X}\r\n", b.len()).as_bytes());
+    msg.extend_from_slice(b);
+    msg.extend_from_slice(b"\r\n0\r\n\r\n");
+
+    let resp = Response::parse(&msg).unwrap();
+    assert_eq!(resp.body(), b"hi");
+    assert!(resp.header("content-encoding").is_none());
+  }
+
+  #[cfg(feature = "gzip")]
+  #[test]
   fn gzip_decompress_exceeds_limit() {
     use alloc::string::ToString;
     let gzipped: &[u8] = &[
@@ -883,7 +1007,8 @@ mod response_helpers_tests {
     let mut headers = Headers::new();
     headers.insert("Content-Encoding", "gzip");
     headers.insert("Content-Length", gzipped.len().to_string());
-    let err = Response::parse_body_from_bytes(gzipped, &mut headers, 200, Version::HTTP_11, 1).unwrap_err();
+    let err = Response::parse_body_from_owned(Bytes::copy_from_slice(gzipped), &mut headers, 200, Version::HTTP_11, 1)
+      .unwrap_err();
     assert_eq!(err, ParseError::BodyExceedsLimit(1));
   }
 
@@ -907,7 +1032,7 @@ mod response_helpers_tests {
   #[test]
   fn zstd_decompress_strips_content_encoding_and_length() {
     use alloc::string::ToString;
-    // `zstd -c` of `hi` (15-byte frame)
+    // `zstd -c` of `hi` (15-byte frame; no FCS — stdin path)
     let zstd_body: &[u8] = &[
       0x28, 0xb5, 0x2f, 0xfd, 0x04, 0x58, 0x11, 0x00, 0x00, 0x68, 0x69, 0xfa, 0x38, 0x26, 0xea,
     ];
@@ -920,6 +1045,56 @@ mod response_helpers_tests {
     assert_eq!(resp.body(), b"hi");
     assert!(resp.header("content-encoding").is_none());
     assert!(resp.header("content-length").is_none());
+  }
+
+  #[cfg(feature = "zstd")]
+  #[test]
+  fn zstd_frame_content_size_prealloc_and_limit() {
+    use alloc::string::ToString;
+    // `zstd -c file` of 100×'a' — single-segment FCS=100, wire ≈21 bytes
+    let zstd_body: &[u8] = &[
+      0x28, 0xb5, 0x2f, 0xfd, 0x24, 0x64, 0x45, 0x00, 0x00, 0x10, 0x61, 0x61, 0x01, 0x00, 0x3f, 0x01, 0x2c, 0xb3, 0xcf,
+      0xde, 0xb1,
+    ];
+
+    let mut msg = Vec::from(&b"HTTP/1.1 200 OK\r\nContent-Encoding: zstd\r\nContent-Length: "[..]);
+    msg.extend_from_slice(zstd_body.len().to_string().as_bytes());
+    msg.extend_from_slice(b"\r\n\r\n");
+    msg.extend_from_slice(zstd_body);
+    let resp = Response::parse(&msg).unwrap();
+    assert_eq!(resp.body(), b"a".repeat(100).as_slice());
+
+    // Wire fits (21 ≤ 50) but FCS=100 → reject before scratch growth / full inflate.
+    let mut headers = Headers::new();
+    headers.insert("Content-Encoding", "zstd");
+    headers.insert("Content-Length", zstd_body.len().to_string());
+    let err = Response::parse_body_from_owned(
+      Bytes::copy_from_slice(zstd_body),
+      &mut headers,
+      200,
+      Version::HTTP_11,
+      50,
+    )
+    .unwrap_err();
+    assert_eq!(err, ParseError::BodyExceedsLimit(50));
+  }
+
+  #[cfg(feature = "zstd")]
+  #[test]
+  fn zstd_into_reuses_output_capacity() {
+    // FCS frame of `hi` (size 2); fused CE path must keep pooled capacity.
+    let zstd_body: &[u8] = &[
+      0x28, 0xb5, 0x2f, 0xfd, 0x24, 0x02, 0x11, 0x00, 0x00, 0x68, 0x69, 0xfa, 0x38, 0x26, 0xea,
+    ];
+    let mut out = Vec::with_capacity(64);
+    decompress_zstd_into(zstd_body, 64, &mut out).unwrap();
+    assert_eq!(out, b"hi");
+    let cap = out.capacity();
+    assert!(cap >= 64);
+
+    decompress_zstd_into(zstd_body, 64, &mut out).unwrap();
+    assert_eq!(out, b"hi");
+    assert_eq!(out.capacity(), cap, "second zstd decode must keep pooled capacity");
   }
 }
 

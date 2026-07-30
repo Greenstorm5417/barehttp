@@ -354,8 +354,7 @@ fn chunked_read_keeps_payload_that_looks_like_terminator() {
 
 #[test]
 fn chunked_read_decodes_trailers_on_wire() {
-  let response =
-    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Trailer: value\r\n\r\n";
+  let response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Trailer: value\r\n\r\n";
   let mut socket = MockSocket::with_response(response);
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
 

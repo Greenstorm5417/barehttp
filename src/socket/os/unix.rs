@@ -187,13 +187,7 @@ impl crate::socket::BlockingSocket for OsSocket {
     loop {
       // SAFETY: `self.fd` is connected; `iov[..count]` points at caller-borrowed
       // readable slices for the duration of `writev`.
-      let result = unsafe {
-        libc::writev(
-          self.fd,
-          iov.as_ptr(),
-          c_int::try_from(count).unwrap_or(c_int::MAX),
-        )
-      };
+      let result = unsafe { libc::writev(self.fd, iov.as_ptr(), c_int::try_from(count).unwrap_or(c_int::MAX)) };
 
       if result < 0 {
         let err = get_last_error();

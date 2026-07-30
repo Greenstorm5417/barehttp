@@ -330,6 +330,18 @@ mod cookie_jar_api {
     let _ = store.request_cookie_header("https://example.com/");
     let _ = uri; // documents that callers pass URI strings, not (uri, bool)
   }
+
+  #[test]
+  fn same_site_is_public_and_stored() {
+    use barehttp::cookie_jar::SameSite;
+    let store = CookieStore::new();
+    store
+      .store_response_cookies("https://example.com/", ["x=1; SameSite=Strict; Secure"])
+      .expect("uri");
+    let c = store.iter().next().expect("cookie");
+    assert_eq!(c.same_site(), SameSite::Strict);
+    assert!(!c.http_only());
+  }
 }
 
 // ---------------------------------------------------------------------------

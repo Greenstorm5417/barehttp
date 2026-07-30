@@ -15,11 +15,8 @@ const FNAME: u8 = 1 << 3;
 const FCOMMENT: u8 = 1 << 4;
 const RESERVED: u8 = 0xe0;
 
-/// Decompress one gzip member.
-pub(super) fn decompress_member(
-  data: &[u8],
-  max_out: usize,
-) -> Result<Vec<u8>, DecompressError> {
+/// Locate the DEFLATE payload and its absolute start offset in `data`.
+fn member_deflate(data: &[u8]) -> Result<(&[u8], usize), DecompressError> {
   let mut i = 0usize;
 
   let id1 = *data.get(i).ok_or(DecompressError::InvalidInput)?;
@@ -86,11 +83,15 @@ pub(super) fn decompress_member(
   }
 
   let deflate = data.get(i..).ok_or(DecompressError::InvalidInput)?;
-  let mut crc = RunningChecksum::crc();
-  let (out, consumed) = inflate::inflate(deflate, max_out, &mut crc)?;
-  let trailer_off = i
-    .checked_add(consumed)
-    .ok_or(DecompressError::InvalidInput)?;
+  Ok((deflate, i))
+}
+
+fn check_trailer(
+  data: &[u8],
+  trailer_off: usize,
+  out: &[u8],
+  crc: RunningChecksum,
+) -> Result<(), DecompressError> {
   let trailer = data
     .get(trailer_off..trailer_off.saturating_add(8))
     .ok_or(DecompressError::InvalidInput)?;
@@ -115,7 +116,42 @@ pub(super) fn decompress_member(
   if isize != isize_expect {
     return Err(DecompressError::InvalidInput);
   }
+  Ok(())
+}
+
+/// Decompress one gzip member (allocating; public API / Callgrind path).
+pub(super) fn decompress_member_owned(
+  data: &[u8],
+  max_out: usize,
+) -> Result<Vec<u8>, DecompressError> {
+  let (deflate, i) = member_deflate(data)?;
+  let mut crc = RunningChecksum::crc();
+  let (out, consumed) = inflate::inflate_owned(deflate, max_out, &mut crc)?;
+  let trailer_off = i
+    .checked_add(consumed)
+    .ok_or(DecompressError::InvalidInput)?;
+  check_trailer(data, trailer_off, &out, crc)?;
   Ok(out)
+}
+
+/// Decompress one gzip member into `out` (cleared on entry when non-empty / pooled).
+pub(super) fn decompress_member(
+  data: &[u8],
+  max_out: usize,
+  out: &mut Vec<u8>,
+) -> Result<(), DecompressError> {
+  // Drop stale bytes before header checks; skip when `out` is a fresh empty Vec
+  // so the inflate `with_capacity` fast path stays intact.
+  if !out.is_empty() {
+    out.clear();
+  }
+  let (deflate, i) = member_deflate(data)?;
+  let mut crc = RunningChecksum::crc();
+  let consumed = inflate::inflate(deflate, max_out, &mut crc, out)?;
+  let trailer_off = i
+    .checked_add(consumed)
+    .ok_or(DecompressError::InvalidInput)?;
+  check_trailer(data, trailer_off, out, crc)
 }
 
 fn skip_cstr(

@@ -377,6 +377,7 @@ const fn reverse_bits(
 
 #[cfg(test)]
 mod huffman_tests {
+  #![allow(clippy::unwrap_used, clippy::expect_used)]
   use super::super::bit::BitReader;
   use super::*;
 

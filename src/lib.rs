@@ -47,7 +47,7 @@
 extern crate alloc;
 
 #[cfg(feature = "cookie-jar")]
-/// RFC 6265 cookie store ([`CookieStore`](cookie_jar::CookieStore); alias [`CookieJar`](cookie_jar::CookieJar)).
+/// RFC 10025 cookie store ([`CookieStore`](cookie_jar::CookieStore); alias [`CookieJar`](cookie_jar::CookieJar)).
 pub mod cookie_jar;
 
 pub use client::HttpClient;
@@ -231,4 +231,5 @@ const _: fn() = || {
   assert_send_sync::<cookie_jar::CookieStore>();
   assert_send_sync::<cookie_jar::CookieJar>();
   assert_send_sync::<cookie_jar::StoredCookie>();
+  assert_send_sync::<cookie_jar::SameSite>();
 };

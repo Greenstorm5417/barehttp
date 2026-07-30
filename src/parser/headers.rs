@@ -47,7 +47,9 @@ pub fn scan_header_fields(input: &[u8]) -> Result<(Vec<HeaderRef<'_>>, &[u8]), P
 pub fn materialize_headers(refs: &[HeaderRef<'_>]) -> Headers {
   let mut byte_cap = 0usize;
   for h in refs {
-    byte_cap = byte_cap.saturating_add(h.name.len()).saturating_add(h.value.len());
+    byte_cap = byte_cap
+      .saturating_add(h.name.len())
+      .saturating_add(h.value.len());
   }
   let mut buf = BytesMut::with_capacity(byte_cap);
   let mut spans = Vec::with_capacity(refs.len());
@@ -343,6 +345,7 @@ pub fn expect_crlf(input: &[u8]) -> Result<&[u8], ParseError> {
 
 #[cfg(test)]
 mod tests {
+  #![allow(clippy::unwrap_used, clippy::expect_used)]
   use super::*;
   use bytes::Bytes;
 

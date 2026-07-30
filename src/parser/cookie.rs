@@ -2,6 +2,20 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// `SameSite` attribute (RFC 10025). `Default` = attribute absent / unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum SameSite {
+  /// `SameSite=Strict`
+  Strict,
+  /// `SameSite=Lax`
+  Lax,
+  /// `SameSite=None` (requires `Secure` at store time)
+  None,
+  /// Attribute missing or unrecognized; browser UAs enforce like Lax.
+  #[default]
+  Default,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetCookie {
   pub name: String,
@@ -12,6 +26,7 @@ pub struct SetCookie {
   pub path: Option<String>,
   pub secure: bool,
   pub http_only: bool,
+  pub same_site: SameSite,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,8 +96,19 @@ fn days_from_civil(
 }
 
 impl SetCookie {
+  /// Parse one `Set-Cookie` header value (RFC 10025 §5.6).
+  ///
+  /// Returns `None` when the string is ignored (CTLs, empty name+value, etc.).
   pub fn parse(input: &str) -> Option<Self> {
     let input_bytes = input.as_bytes();
+
+    // RFC 10025 §5.6: reject CTL octets excluding HTAB in the set-cookie-string.
+    if input_bytes
+      .iter()
+      .any(|&b| matches!(b, 0x00..=0x08 | 0x0A..=0x1F | 0x7F))
+    {
+      return None;
+    }
 
     let semicolon_pos = input_bytes.iter().position(|&b| b == b';');
 
@@ -90,15 +116,25 @@ impl SetCookie {
 
     let unparsed_attributes = semicolon_pos.map_or(&[][..], |pos| input_bytes.get(pos..).unwrap_or(&[]));
 
-    let equals_pos = name_value_pair.iter().position(|&b| b == b'=')?;
-
-    let name_bytes = name_value_pair.get(..equals_pos)?;
-    let value_bytes = name_value_pair.get(equals_pos.checked_add(1)?..)?;
+    let (name_bytes, value_bytes) = match name_value_pair.iter().position(|&b| b == b'=') {
+      Some(equals_pos) => (
+        name_value_pair.get(..equals_pos)?,
+        name_value_pair.get(equals_pos.checked_add(1)?..)?,
+      ),
+      // No `=`: empty name, whole token is the value (RFC 10025 §5.6).
+      None => (&[][..], name_value_pair),
+    };
 
     let name_trimmed = trim_wsp(name_bytes);
     let value_trimmed = trim_wsp(value_bytes);
 
-    if name_trimmed.is_empty() {
+    // Reject cookies with neither name nor value.
+    if name_trimmed.is_empty() && value_trimmed.is_empty() {
+      return None;
+    }
+
+    // RFC 10025 §5.7: name+value > 4096 octets → ignore.
+    if name_trimmed.len().saturating_add(value_trimmed.len()) > 4096 {
       return None;
     }
 
@@ -116,6 +152,7 @@ impl SetCookie {
       path: attributes.path,
       secure: attributes.secure,
       http_only: attributes.http_only,
+      same_site: attributes.same_site,
     })
   }
 }
@@ -128,6 +165,7 @@ struct CookieAttributes {
   path: Option<String>,
   secure: bool,
   http_only: bool,
+  same_site: SameSite,
 }
 
 fn parse_cookie_attributes(mut input: &[u8]) -> CookieAttributes {
@@ -174,10 +212,24 @@ fn parse_cookie_attributes(mut input: &[u8]) -> CookieAttributes {
       attrs.domain = parse_domain(value_trimmed);
     } else if name_trimmed.eq_ignore_ascii_case(b"path") {
       attrs.path = parse_path(value_trimmed);
+    } else if name_trimmed.eq_ignore_ascii_case(b"samesite") {
+      attrs.same_site = parse_same_site(value_trimmed);
     }
   }
 
   attrs
+}
+
+fn parse_same_site(value: &[u8]) -> SameSite {
+  if value.eq_ignore_ascii_case(b"strict") {
+    SameSite::Strict
+  } else if value.eq_ignore_ascii_case(b"lax") {
+    SameSite::Lax
+  } else if value.eq_ignore_ascii_case(b"none") {
+    SameSite::None
+  } else {
+    SameSite::Default
+  }
 }
 
 fn parse_domain(value: &[u8]) -> Option<String> {
@@ -190,6 +242,11 @@ fn parse_domain(value: &[u8]) -> Option<String> {
   } else {
     value
   };
+
+  // RFC 10025: Domain attribute must be ASCII.
+  if !domain_value.is_ascii() {
+    return None;
+  }
 
   Some(String::from_utf8_lossy(domain_value).to_lowercase())
 }

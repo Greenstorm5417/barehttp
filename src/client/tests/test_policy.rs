@@ -6,6 +6,7 @@ use crate::method::Method;
 use crate::parser::uri::Uri;
 use crate::parser::version::Version;
 use crate::transport::RawResponse;
+use alloc::borrow::Cow;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -44,7 +45,7 @@ fn raw_to_response_for_test(
   } else if let Some(trailers) = decoded_chunked_trailers {
     crate::parser::Response::finish_decoded_body(body_bytes, &mut headers, trailers, usize::MAX).unwrap()
   } else {
-    crate::parser::Response::parse_body_from_bytes(&body_bytes, &mut headers, status_code, version, usize::MAX).unwrap()
+    crate::parser::Response::parse_body_from_owned(body_bytes, &mut headers, status_code, version, usize::MAX).unwrap()
   };
   crate::parser::Response::from_parts(status_code, reason, headers, body, trailers)
 }
@@ -56,8 +57,8 @@ fn process(
   raw: RawResponse,
   current_url: &str,
   method: &Method,
-  body: Option<Vec<u8>>,
-) -> Result<Option<(String, Method, Option<Vec<u8>>)>, Error> {
+  body: &mut Option<Vec<u8>>,
+) -> Result<Option<(String, Method)>, Error> {
   if config.http_status_as_error() && (400..600).contains(&raw.status_code) {
     let response = raw_to_response_for_test(raw, method);
     return Err(Error::HttpStatus(
@@ -166,6 +167,7 @@ fn redirect_method_table_301_302_303() {
     for (method, body, expect_method, drop_body) in cases {
       let mut visited = Vec::new();
       let mut count = 0;
+      let mut body = body.clone();
       let next = process(
         &Config::default(),
         &mut visited,
@@ -173,13 +175,13 @@ fn redirect_method_table_301_302_303() {
         make_redirect_response(status, "/next"),
         "http://a.com",
         method,
-        body.clone(),
+        &mut body,
       )
       .unwrap()
       .expect("expected redirect");
       assert_eq!(next.1, *expect_method, "{method:?} {status} → method");
       if *drop_body {
-        assert!(next.2.is_none(), "{method:?} {status} should drop body");
+        assert!(body.is_none(), "{method:?} {status} should drop body");
       }
     }
   }
@@ -192,6 +194,7 @@ fn redirect_method_table_307_308() {
     for method in [Method::Get, Method::Head] {
       let mut visited = Vec::new();
       let mut count = 0;
+      let mut body = None;
       let next = process(
         &Config::default(),
         &mut visited,
@@ -199,7 +202,7 @@ fn redirect_method_table_307_308() {
         make_redirect_response(status, "/next"),
         "http://a.com",
         &method,
-        None,
+        &mut body,
       )
       .unwrap()
       .expect("expected redirect");
@@ -209,7 +212,7 @@ fn redirect_method_table_307_308() {
     for method in [Method::Post, Method::Put, Method::Patch, Method::Delete] {
       let mut visited = Vec::new();
       let mut count = 0;
-      let body = if method == Method::Delete {
+      let mut body = if method == Method::Delete {
         None
       } else {
         Some(vec![1, 2, 3])
@@ -221,7 +224,7 @@ fn redirect_method_table_307_308() {
         make_redirect_response(status, "/next"),
         "http://a.com",
         &method,
-        body,
+        &mut body,
       )
       .unwrap_err();
       assert!(
@@ -233,11 +236,38 @@ fn redirect_method_table_307_308() {
 }
 
 #[test]
+fn redirect_reuses_owned_body_allocation() {
+  // 307 GET keeps method + body: same Vec allocation must move, not re-copy.
+  let payload = vec![9_u8, 8, 7, 6, 5, 4, 3, 2, 1];
+  let ptr = payload.as_ptr();
+  let len = payload.len();
+  let mut visited = Vec::new();
+  let mut count = 0;
+  let mut body = Some(payload);
+  let next = process(
+    &Config::default(),
+    &mut visited,
+    &mut count,
+    make_redirect_response(307, "/next"),
+    "http://a.com",
+    &Method::Get,
+    &mut body,
+  )
+  .unwrap()
+  .expect("expected redirect");
+  assert_eq!(next.1, Method::Get);
+  let kept = body.expect("307 GET keeps body");
+  assert_eq!(kept.as_ptr(), ptr, "redirect must reuse owned body buffer");
+  assert_eq!(kept.len(), len);
+}
+
+#[test]
 fn non_followable_3xx_is_returned() {
   // 304 and other 3xx (not 301/302/303/307/308) are not followed
   for status in [300_u16, 304, 305, 306, 399] {
     let mut visited = Vec::new();
     let mut count = 0;
+    let mut body = None;
     let mut headers = Headers::new();
     headers.insert("Location", "/next");
     let raw = RawResponse {
@@ -256,7 +286,7 @@ fn non_followable_3xx_is_returned() {
         raw,
         "http://a.com",
         &Method::Get,
-        None,
+        &mut body,
       )
       .unwrap()
       .is_none(),
@@ -269,6 +299,7 @@ fn non_followable_3xx_is_returned() {
 fn get_redirect_stays_get() {
   let mut visited = Vec::new();
   let mut count = 0;
+  let mut body = None;
   let next = process(
     &Config::default(),
     &mut visited,
@@ -276,7 +307,7 @@ fn get_redirect_stays_get() {
     make_redirect_response(302, "/next"),
     "http://a.com",
     &Method::Get,
-    None,
+    &mut body,
   )
   .unwrap()
   .expect("expected redirect");
@@ -287,6 +318,7 @@ fn get_redirect_stays_get() {
 fn redirect_loop_is_detected() {
   let mut visited = Vec::new();
   let mut count = 0;
+  let mut body = None;
   let config = Config::default();
   let raw = make_redirect_response(301, "http://a.com");
 
@@ -297,7 +329,7 @@ fn redirect_loop_is_detected() {
     raw.clone(),
     "http://a.com",
     &Method::Get,
-    None,
+    &mut body,
   )
   .unwrap();
 
@@ -308,7 +340,7 @@ fn redirect_loop_is_detected() {
     raw,
     "http://a.com",
     &Method::Get,
-    None,
+    &mut body,
   )
   .unwrap_err();
   assert!(matches!(err, Error::RedirectLoop));
@@ -319,6 +351,7 @@ fn status_error_when_configured() {
   for status in [404_u16, 500] {
     let mut visited = Vec::new();
     let mut count = 0;
+    let mut body = None;
     let config = Config::builder().http_status_as_error(true).build();
     let mut headers = Headers::new();
     headers.insert("X-Err", "yes");
@@ -337,7 +370,7 @@ fn status_error_when_configured() {
       raw,
       "http://example.com",
       &Method::Get,
-      None,
+      &mut body,
     )
     .unwrap_err();
     match err {
@@ -356,6 +389,7 @@ fn status_error_when_configured() {
 fn status_4xx_is_ok_when_configured_as_response() {
   let mut visited = Vec::new();
   let mut count = 0;
+  let mut body = None;
   let config = Config::builder().http_status_as_error(false).build();
   let raw = RawResponse {
     status_code: 404,
@@ -373,7 +407,7 @@ fn status_4xx_is_ok_when_configured_as_response() {
       raw,
       "http://example.com",
       &Method::Get,
-      None
+      &mut body,
     )
     .unwrap()
     .is_none()
@@ -384,6 +418,7 @@ fn status_4xx_is_ok_when_configured_as_response() {
 fn too_many_redirects_is_error() {
   let mut visited = Vec::new();
   let mut count = 0;
+  let mut body = None;
   let config = Config::builder().max_redirects(2).build();
   let raw = make_redirect_response(301, "/next");
 
@@ -394,7 +429,7 @@ fn too_many_redirects_is_error() {
     raw.clone(),
     "http://a.com",
     &Method::Get,
-    None,
+    &mut body,
   )
   .unwrap();
   process(
@@ -404,7 +439,7 @@ fn too_many_redirects_is_error() {
     raw.clone(),
     "http://b.com",
     &Method::Get,
-    None,
+    &mut body,
   )
   .unwrap();
   let err = process(
@@ -414,7 +449,7 @@ fn too_many_redirects_is_error() {
     raw,
     "http://c.com",
     &Method::Get,
-    None,
+    &mut body,
   )
   .unwrap_err();
   assert!(matches!(err, Error::TooManyRedirects));
@@ -424,6 +459,7 @@ fn too_many_redirects_is_error() {
 fn same_origin_redirect_follows() {
   let mut visited = Vec::new();
   let mut count = 0;
+  let mut body = None;
   let next = process(
     &Config::default(),
     &mut visited,
@@ -431,7 +467,7 @@ fn same_origin_redirect_follows() {
     make_redirect_response(302, "/next"),
     "http://a.com/path",
     &Method::Get,
-    None,
+    &mut body,
   )
   .unwrap()
   .expect("expected redirect");
@@ -442,6 +478,7 @@ fn same_origin_redirect_follows() {
 fn cross_origin_redirect_follows() {
   let mut visited = Vec::new();
   let mut count = 0;
+  let mut body = None;
   let next = process(
     &Config::default(),
     &mut visited,
@@ -449,7 +486,7 @@ fn cross_origin_redirect_follows() {
     make_redirect_response(302, "http://b.com/next"),
     "http://a.com/path",
     &Method::Get,
-    None,
+    &mut body,
   )
   .unwrap()
   .expect("expected redirect");
@@ -460,6 +497,7 @@ fn cross_origin_redirect_follows() {
 fn different_port_redirect_follows() {
   let mut visited = Vec::new();
   let mut count = 0;
+  let mut body = None;
   let next = process(
     &Config::default(),
     &mut visited,
@@ -467,7 +505,7 @@ fn different_port_redirect_follows() {
     make_redirect_response(302, "http://a.com:9090/next"),
     "http://a.com:8080/path",
     &Method::Get,
-    None,
+    &mut body,
   )
   .unwrap()
   .expect("expected redirect");
@@ -505,6 +543,7 @@ fn sanitize_strips_credentials_on_every_hop() {
 fn max_redirects_zero_does_not_follow() {
   let mut visited = Vec::new();
   let mut count = 0;
+  let mut body = None;
   let config = Config::builder().max_redirects(0).build();
   assert!(
     process(
@@ -514,7 +553,7 @@ fn max_redirects_zero_does_not_follow() {
       make_redirect_response(302, "/next"),
       "http://a.com",
       &Method::Get,
-      None,
+      &mut body,
     )
     .unwrap()
     .is_none()
@@ -542,16 +581,19 @@ fn chunked_trailers_reach_response() {
 #[test]
 fn build_request_is_http11_with_host_and_origin_form() {
   let uri = Uri::parse("http://example.com:8080/a/b?q=1").unwrap();
+  let mut host = Cow::Borrowed("example.com");
+  let mut headers = Headers::new();
   let bytes = build_request(
     &uri,
     &Method::Get,
-    "example.com",
+    &mut host,
     8080,
-    &Headers::new(),
+    &mut headers,
     None,
     &Config::default(),
   )
-  .unwrap().to_bytes();
+  .unwrap()
+  .to_bytes();
   let text = String::from_utf8_lossy(&bytes);
   assert!(text.starts_with("GET /a/b?q=1 HTTP/1.1\r\n"));
   assert!(text.contains("Host: example.com:8080\r\n"));
@@ -564,9 +606,10 @@ fn build_request_is_http11_with_host_and_origin_form() {
 fn build_request_sends_connection_close_when_pooling_disabled() {
   let uri = Uri::parse("http://example.com/").unwrap();
   let config = Config::builder().max_idle_per_host(0).build();
+  let mut host = Cow::Borrowed("example.com");
   let mut custom = Headers::new();
   custom.insert("Connection", "keep-alive");
-  let bytes = build_request(&uri, &Method::Get, "example.com", 80, &custom, None, &config)
+  let bytes = build_request(&uri, &Method::Get, &mut host, 80, &mut custom, None, &config)
     .unwrap()
     .to_bytes();
   let text = String::from_utf8_lossy(&bytes);
@@ -577,16 +620,19 @@ fn build_request_sends_connection_close_when_pooling_disabled() {
 #[test]
 fn build_request_default_port_omits_port_in_host() {
   let uri = Uri::parse("http://example.com/path").unwrap();
+  let mut host = Cow::Borrowed("example.com");
+  let mut headers = Headers::new();
   let bytes = build_request(
     &uri,
     &Method::Get,
-    "example.com",
+    &mut host,
     80,
-    &Headers::new(),
+    &mut headers,
     None,
     &Config::default(),
   )
-  .unwrap().to_bytes();
+  .unwrap()
+  .to_bytes();
   let text = String::from_utf8_lossy(&bytes);
   assert!(text.contains("Host: example.com\r\n"));
   assert!(!text.contains("Host: example.com:80"));

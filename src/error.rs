@@ -263,9 +263,7 @@ impl InvalidRequest {
       Self::FormAndBody => "cannot set both form fields and an explicit body",
       Self::CookieOctet => "cookie name or value contains illegal octets",
       // Keep until a tunnel API exists; successful CONNECT must ignore CL/TE (RFC 9112 §9.3.6).
-      Self::ConnectUnsupported => {
-        "CONNECT is unsupported (RFC 9112 authority-form + tunnel; ignore CL/TE on success)"
-      },
+      Self::ConnectUnsupported => "CONNECT is unsupported (RFC 9112 authority-form + tunnel; ignore CL/TE on success)",
     }
   }
 }
