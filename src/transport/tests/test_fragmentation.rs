@@ -48,7 +48,13 @@ fn chunked_body_split_across_reads() {
   let raw = conn.read_raw_response(true).unwrap();
   assert_eq!(raw.status_code, 200);
   assert_eq!(&raw.body_bytes[..], b"Hello World");
-  assert_eq!(raw.decoded_chunked_trailers.as_ref().map(|t| t.len()), Some(0));
+  assert_eq!(
+    raw
+      .decoded_chunked_trailers
+      .as_ref()
+      .map(crate::headers::Headers::len),
+    Some(0)
+  );
 }
 
 #[test]

@@ -226,18 +226,15 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
       let reason = Response::reason_owned(reason_bytes);
       // Compute owned spans (or None) while refs still borrow `buf`, then freeze.
       let wire_spans = Response::try_wire_header_spans(self.buf.get(..consumed).unwrap_or(&[]), &header_refs);
-      let headers = match wire_spans {
-        Some(spans) => {
-          // Adopts the wire header section; no name/value copy.
-          Headers::from_spans(self.buf.split_to(consumed).freeze(), spans)
-        },
-        None => {
-          // Obs-text / non-ASCII value: copy+lossy into a fresh arena, then drop
-          // the wire header section from the receive buffer.
-          let headers = Response::headers_from_refs(&header_refs);
-          let _ = self.buf.split_to(consumed);
-          headers
-        },
+      let headers = if let Some(spans) = wire_spans {
+        // Adopts the wire header section; no name/value copy.
+        Headers::from_spans(self.buf.split_to(consumed).freeze(), spans)
+      } else {
+        // Obs-text / non-ASCII value: copy+lossy into a fresh arena, then drop
+        // the wire header section from the receive buffer.
+        let headers = Response::headers_from_refs(&header_refs);
+        let _ = self.buf.split_to(consumed);
+        headers
       };
 
       let (body_bytes, decoded_chunked_trailers) = if let Some(strategy) = body_strategy {

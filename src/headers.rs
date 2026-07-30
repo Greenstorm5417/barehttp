@@ -74,7 +74,7 @@ impl Hash for Headers {
   ) {
     // Must match `PartialEq`: hash fields only, not the index cache or dead arena bytes.
     self.fields.len().hash(state);
-    for (n, v) in self.iter() {
+    for (n, v) in self {
       n.hash(state);
       v.hash(state);
     }
@@ -292,7 +292,7 @@ impl Headers {
   /// Length of the backing arena (including any dead wire bytes).
   #[cfg(test)]
   #[must_use]
-  pub(crate) fn arena_len(&self) -> usize {
+  pub(crate) const fn arena_len(&self) -> usize {
     self.buf.len()
   }
 
@@ -484,12 +484,11 @@ impl Headers {
     &'a self,
     name: &'a str,
   ) -> impl Iterator<Item = &'a str> + 'a {
-    self.fields.iter().filter_map(move |span| {
-      self
-        .name_str(span)
-        .eq_ignore_ascii_case(name)
-        .then(|| self.value_str(span))
-    })
+    self
+      .fields
+      .iter()
+      .filter(|&span| self.name_str(span).eq_ignore_ascii_case(name))
+      .map(|span| self.value_str(span))
   }
 
   /// Whether any field matches `name` (case-insensitive).
@@ -527,11 +526,11 @@ impl Headers {
       let Self { buf, fields, .. } = self;
       fields.retain(|span| !str_from_buf(buf, span.name_start, span.name_len).eq_ignore_ascii_case(name));
     }
-    if self.fields.len() != before {
-      self.rebuild_index();
-    } else {
+    if self.fields.len() == before {
       // No removal; still promote a deferred index once past the threshold.
       self.ensure_index();
+    } else {
+      self.rebuild_index();
     }
   }
 
@@ -570,7 +569,7 @@ impl Headers {
 
   /// Iterate `(name, value)` pairs in insertion order.
   #[must_use]
-  pub fn iter(&self) -> Iter<'_> {
+  pub const fn iter(&self) -> Iter<'_> {
     Iter { headers: self, idx: 0 }
   }
 
@@ -693,7 +692,7 @@ impl Headers {
     let buf = core::mem::replace(&mut self.buf, Bytes::new());
     let mut mut_buf = match buf.try_into_mut() {
       Ok(b) => b,
-      Err(shared) => self.cow_arena(shared, add),
+      Err(shared) => self.cow_arena(&shared, add),
     };
     let start = mut_buf.len();
     mut_buf.reserve(add);
@@ -707,7 +706,7 @@ impl Headers {
   /// Build a uniquely owned arena from a shared `Bytes` view, reserving `extra`.
   fn cow_arena(
     &mut self,
-    shared: Bytes,
+    shared: &Bytes,
     extra: usize,
   ) -> BytesMut {
     let live: usize = self
@@ -719,8 +718,8 @@ impl Headers {
       // Drop dead status-line / CRLF / rewritten-value bytes; remap spans.
       let mut out = BytesMut::with_capacity(live.saturating_add(extra));
       for span in &mut self.fields {
-        let name = str_from_buf(&shared, span.name_start, span.name_len).as_bytes();
-        let value = str_from_buf(&shared, span.value_start, span.value_len).as_bytes();
+        let name = str_from_buf(shared, span.name_start, span.name_len).as_bytes();
+        let value = str_from_buf(shared, span.value_start, span.value_len).as_bytes();
         let name_start = out.len();
         out.extend_from_slice(name);
         let value_start = out.len();
@@ -737,7 +736,7 @@ impl Headers {
     } else {
       // Already packed: one memcpy of the live view; spans stay put.
       let mut out = BytesMut::with_capacity(shared.len().saturating_add(extra));
-      out.extend_from_slice(&shared);
+      out.extend_from_slice(shared);
       out
     }
   }

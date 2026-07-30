@@ -563,18 +563,15 @@ fn read_ipv6_groups(
       }
     }
 
-    match read_hextet(bytes, pos) {
-      Some(g) => {
-        let Some(slot) = groups.get_mut(i) else {
-          return Err(ParseError::InvalidUri);
-        };
-        *slot = g;
-        i = i.saturating_add(1);
-      },
-      None => {
-        *pos = save;
-        return Ok((i, false));
-      },
+    if let Some(g) = read_hextet(bytes, pos) {
+      let Some(slot) = groups.get_mut(i) else {
+        return Err(ParseError::InvalidUri);
+      };
+      *slot = g;
+      i = i.saturating_add(1);
+    } else {
+      *pos = save;
+      return Ok((i, false));
     }
   }
 
@@ -630,12 +627,11 @@ fn read_embedded_ipv4(
       }
       *pos = pos.saturating_add(1);
     }
-    match read_decimal_octet(bytes, pos) {
-      Some(o) => *slot = o,
-      None => {
-        *pos = start;
-        return None;
-      },
+    if let Some(o) = read_decimal_octet(bytes, pos) {
+      *slot = o;
+    } else {
+      *pos = start;
+      return None;
     }
   }
 

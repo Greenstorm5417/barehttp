@@ -94,7 +94,7 @@ impl Response {
   /// Parse a complete buffered HTTP/1.1 response.
   ///
   /// One-pass header materialize + slice body decode (Callgrind-sensitive). The
-  /// live receive path keeps owned-buffer adoption via [`Self::parse_body_from_owned`]
+  /// live receive path keeps owned-buffer adoption via `parse_body_from_owned`
   /// / wire spans on the connection buffer.
   ///
   /// # Errors
@@ -572,6 +572,10 @@ fn decompress_coding(
 }
 
 /// Like [`decompress_coding`], writing into `out` (cleared; capacity reused).
+///
+/// Not `const`: gzip/zstd paths call non-const decompressors; without those
+/// features clippy would otherwise suggest `const fn`.
+#[allow(clippy::missing_const_for_fn)]
 fn decompress_coding_into(
   coding: &str,
   body: &[u8],

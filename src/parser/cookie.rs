@@ -220,7 +220,7 @@ fn parse_cookie_attributes(mut input: &[u8]) -> CookieAttributes {
   attrs
 }
 
-fn parse_same_site(value: &[u8]) -> SameSite {
+const fn parse_same_site(value: &[u8]) -> SameSite {
   if value.eq_ignore_ascii_case(b"strict") {
     SameSite::Strict
   } else if value.eq_ignore_ascii_case(b"lax") {

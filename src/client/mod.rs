@@ -592,7 +592,7 @@ fn host_from_uri<'a>(uri: &Uri<'a>) -> Cow<'a, str> {
 }
 
 #[inline]
-fn host_omits_port(
+const fn host_omits_port(
   uri: &Uri<'_>,
   port: u16,
 ) -> bool {

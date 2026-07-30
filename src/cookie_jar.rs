@@ -311,7 +311,7 @@ impl CookieStore {
   /// Skips `Secure` cookies unless `uri` uses the `https` scheme (same rule as
   /// store-time rejection of `Secure` over cleartext).
   ///
-  /// SameSite browser cross-site filtering is not applied (no document context).
+  /// `SameSite` browser cross-site filtering is not applied (no document context).
   pub fn request_cookie_header(
     &self,
     uri: &str,
@@ -486,9 +486,7 @@ impl<'a> Iterator for Iter<'a> {
 
   fn next(&mut self) -> Option<&'a StoredCookie> {
     loop {
-      let Some((_, bucket)) = self.guard.by_domain.iter().nth(self.domain_idx) else {
-        return None;
-      };
+      let (_, bucket) = self.guard.by_domain.iter().nth(self.domain_idx)?;
       if let Some(cookie) = bucket.get(self.cookie_idx) {
         self.cookie_idx = self.cookie_idx.saturating_add(1);
         // SAFETY: `guard` is held for `'a` and grants exclusive access to the map.

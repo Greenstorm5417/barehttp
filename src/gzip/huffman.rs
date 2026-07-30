@@ -381,7 +381,7 @@ mod huffman_tests {
   use super::super::bit::BitReader;
   use super::*;
 
-  /// Alphabet with a code longer than ROOT_BITS to force the slow path.
+  /// Alphabet with a code longer than `ROOT_BITS` to force the slow path.
   #[test]
   fn capped_table_decodes_long_codes() {
     // sym0 len=1 (c_lsb=0), sym1 len=10 (c_lsb=1) — see canonical next_code build.
