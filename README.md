@@ -1,5 +1,5 @@
 # barehttp
-
+ 
 Blocking HTTP/1.1 client for `no_std` + `alloc`. Cleartext HTTP; no async.
 Design notes: [philosophy.md](philosophy.md).
 
