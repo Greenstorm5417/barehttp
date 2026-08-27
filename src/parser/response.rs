@@ -2,16 +2,80 @@
 
 extern crate alloc;
 use crate::error::{DecompressError, IntoStringError, ParseError};
-use crate::headers::Headers;
+use crate::headers::{FieldList, Headers};
 use crate::parser::chunked::ChunkedDecoder;
-use crate::parser::headers::{HeaderRef, materialize_headers, scan_header_fields, try_wire_spans};
+use crate::parser::headers::{HeaderRef, for_each_header_field, materialize_headers, try_wire_spans};
 use crate::parser::version::{Version, parse_status_line};
 use alloc::string::String;
 use alloc::vec::Vec;
 use bytes::Bytes;
+use compact_str::CompactString;
 
 #[cfg(feature = "zstd")]
 use ruzstd::decoding::StreamingDecoder;
+
+const INLINE_HEADER_REFS: usize = 16;
+
+/// Stack-first header-ref buffer (heap only past [`INLINE_HEADER_REFS`]).
+pub(crate) struct ScannedHeaderRefs<'a> {
+  inline: [HeaderRef<'a>; INLINE_HEADER_REFS],
+  n: usize,
+  heap: Vec<HeaderRef<'a>>,
+}
+
+impl<'a> ScannedHeaderRefs<'a> {
+  const fn new() -> Self {
+    Self {
+      inline: [HeaderRef { name: &[], value: &[] }; INLINE_HEADER_REFS],
+      n: 0,
+      heap: Vec::new(),
+    }
+  }
+
+  fn as_slice(&self) -> &[HeaderRef<'a>] {
+    if self.heap.is_empty() {
+      self.inline.get(..self.n).unwrap_or(&[])
+    } else {
+      self.heap.as_slice()
+    }
+  }
+
+  fn push(
+    &mut self,
+    h: HeaderRef<'a>,
+  ) {
+    if self.heap.is_empty() && self.n < INLINE_HEADER_REFS {
+      if let Some(slot) = self.inline.get_mut(self.n) {
+        *slot = h;
+        self.n = self.n.saturating_add(1);
+      }
+      return;
+    }
+    if self.heap.is_empty() {
+      self
+        .heap
+        .extend_from_slice(self.inline.get(..INLINE_HEADER_REFS).unwrap_or(&[]));
+    }
+    self.heap.push(h);
+  }
+}
+
+impl<'a> core::ops::Deref for ScannedHeaderRefs<'a> {
+  type Target = [HeaderRef<'a>];
+
+  fn deref(&self) -> &Self::Target {
+    self.as_slice()
+  }
+}
+
+fn collect_header_refs(after_status: &[u8]) -> Result<(ScannedHeaderRefs<'_>, &[u8]), ParseError> {
+  let mut scanned = ScannedHeaderRefs::new();
+  let remaining = for_each_header_field(after_status, |h| {
+    scanned.push(h);
+    Ok(())
+  })?;
+  Ok((scanned, remaining))
+}
 
 /// Parsed HTTP response.
 ///
@@ -30,7 +94,7 @@ use ruzstd::decoding::StreamingDecoder;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Response {
   status_code: u16,
-  reason: String,
+  reason: CompactString,
   headers: Headers,
   body: Bytes,
   trailers: Headers,
@@ -41,14 +105,14 @@ impl Response {
   #[must_use]
   pub(crate) fn from_parts(
     status_code: u16,
-    reason: String,
+    reason: impl Into<CompactString>,
     headers: Headers,
     body: impl Into<Bytes>,
     trailers: Headers,
   ) -> Self {
     Self {
       status_code,
-      reason,
+      reason: reason.into(),
       headers,
       body: body.into(),
       trailers,
@@ -93,24 +157,32 @@ impl Response {
 
   /// Parse a complete buffered HTTP/1.1 response.
   ///
-  /// One-pass header materialize + slice body decode (Callgrind-sensitive). The
-  /// live receive path keeps owned-buffer adoption via `parse_body_from_owned`
-  /// / wire spans on the connection buffer.
+  /// One copy of the wire image: header spans and the body are subslices of the
+  /// same [`Bytes`] (Callgrind-sensitive). The live receive path keeps owned-buffer
+  /// adoption via `parse_body_from_owned` / wire spans on the connection buffer.
   ///
   /// # Errors
   /// [`ParseError`] when the status line, headers, framing, or body are illegal.
   pub fn parse(input: &[u8]) -> Result<Self, ParseError> {
-    // Scan as borrowed views first so framing strategy can use wire bytes
-    // directly (no arena `str_at` on the Content-Length / TE walk), then
-    // materialize with an exact-capacity arena.
-    let (status_code, reason_bytes, refs, version, rest) = Self::scan_headers_only(input)?;
-    let strategy = Self::body_read_strategy_refs(&refs, status_code, version)?;
-    let mut headers = materialize_headers(&refs);
-    let (body_vec, trailer_bytes) = decode_body_bytes(rest, strategy)?;
-    let (body, trailers) = finish_body(&mut headers, body_vec, trailer_bytes, usize::MAX)?;
+    let data = skip_leading_crlf(input);
+    let owned = Bytes::copy_from_slice(data);
+    let (version, status_code, reason_bytes, after_status) = parse_status_line(owned.as_ref())?;
+
+    let (scanned, remaining) = collect_header_refs(after_status)?;
+    let refs = scanned.as_slice();
+
+    let strategy = Self::body_read_strategy_refs(refs, status_code, version)?;
+    let header_end = owned.len().saturating_sub(remaining.len());
+    let header_section = owned.get(..header_end).unwrap_or(&[]);
+    let mut headers = try_wire_spans(header_section, refs).map_or_else(
+      || materialize_headers(refs),
+      |spans| Headers::from_spans(owned.slice(..header_end), spans),
+    );
+    let (decoded, wire_trailers) = decode_body_owned(owned.slice(header_end..), strategy)?;
+    let (body, trailers) = finish_body(&mut headers, decoded, wire_trailers, usize::MAX)?;
     Ok(Self {
       status_code,
-      reason: reason_to_string(reason_bytes),
+      reason: reason_to_compact(reason_bytes),
       headers,
       body,
       trailers,
@@ -223,14 +295,14 @@ impl Response {
   pub(crate) fn try_wire_header_spans(
     section: &[u8],
     refs: &[HeaderRef<'_>],
-  ) -> Option<alloc::vec::Vec<(u32, u32, u32, u32)>> {
+  ) -> Option<FieldList> {
     try_wire_spans(section, refs)
   }
 
   /// Own a reason-phrase byte slice.
   #[must_use]
-  pub(crate) fn reason_owned(reason_bytes: &[u8]) -> String {
-    reason_to_string(reason_bytes)
+  pub(crate) fn reason_owned(reason_bytes: &[u8]) -> CompactString {
+    reason_to_compact(reason_bytes)
   }
 
   /// Status line + header scan as borrowed views (no name/value `String`s yet).
@@ -239,10 +311,10 @@ impl Response {
   /// [`ParseError`] when the status line or header section is illegal.
   pub(crate) fn scan_headers_only(
     input: &[u8]
-  ) -> Result<(u16, &[u8], Vec<HeaderRef<'_>>, Version, &[u8]), ParseError> {
+  ) -> Result<(u16, &[u8], ScannedHeaderRefs<'_>, Version, &[u8]), ParseError> {
     let data = skip_leading_crlf(input);
     let (version, status, reason_bytes, after_status) = parse_status_line(data)?;
-    let (headers, remaining) = scan_header_fields(after_status)?;
+    let (headers, remaining) = collect_header_refs(after_status)?;
     Ok((status, reason_bytes, headers, version, remaining))
   }
 
@@ -720,12 +792,12 @@ fn skip_leading_crlf(input: &[u8]) -> &[u8] {
   data
 }
 
-fn reason_to_string(reason_bytes: &[u8]) -> String {
+fn reason_to_compact(reason_bytes: &[u8]) -> CompactString {
   if reason_bytes.is_ascii() {
     // SAFETY: `is_ascii` guarantees valid UTF-8.
-    return String::from(unsafe { core::str::from_utf8_unchecked(reason_bytes) });
+    return CompactString::from(unsafe { core::str::from_utf8_unchecked(reason_bytes) });
   }
-  String::from_utf8_lossy(reason_bytes).into_owned()
+  CompactString::from(String::from_utf8_lossy(reason_bytes).as_ref())
 }
 
 fn finish_body(
@@ -736,27 +808,6 @@ fn finish_body(
 ) -> Result<(Bytes, Headers), ParseError> {
   let decompressed_body = Response::decompress_body_if_needed(headers, body_vec, max_body)?;
   Ok((decompressed_body, trailers))
-}
-
-fn decode_body_bytes(
-  input: &[u8],
-  strategy: BodyReadStrategy,
-) -> Result<(Bytes, Headers), ParseError> {
-  match strategy {
-    BodyReadStrategy::NoBody => Ok((Bytes::new(), Headers::new())),
-    BodyReadStrategy::ContentLength(len) => {
-      if input.len() < len {
-        return Err(ParseError::UnexpectedEndOfInput);
-      }
-      let body_data = input.get(..len).ok_or(ParseError::UnexpectedEndOfInput)?;
-      if input.len() > len {
-        return Err(ParseError::ExtraDataAfterResponse);
-      }
-      Ok((Bytes::copy_from_slice(body_data), Headers::new()))
-    },
-    BodyReadStrategy::Chunked => decode_chunked(input),
-    BodyReadStrategy::UntilClose => Ok((Bytes::copy_from_slice(input), Headers::new())),
-  }
 }
 
 fn decode_body_owned(
@@ -781,12 +832,6 @@ fn decode_body_owned(
       Ok((input, Headers::new()))
     },
   }
-}
-
-fn decode_chunked(input: &[u8]) -> Result<(Bytes, Headers), ParseError> {
-  // Same framing walk as the owned transport path: empty-trailer fast path,
-  // contiguous `Bytes::slice` reuse when possible, exact-capacity multi-chunk concat.
-  ChunkedDecoder::decode_buffered(Bytes::copy_from_slice(input))
 }
 
 #[cfg(test)]
@@ -888,7 +933,7 @@ mod response_helpers_tests {
     let (code, reason, refs, ver, rest) = Response::scan_headers_only(input).unwrap();
     let headers = Response::headers_from_refs(&refs);
     assert_eq!(code, 200);
-    assert_eq!(reason_to_string(reason), "OK");
+    assert_eq!(reason_to_compact(reason), "OK");
     assert_eq!(ver, Version::HTTP_11);
     assert_eq!(headers.get("host"), Some("a"));
     assert_eq!(headers.get("x-a"), Some("1"));

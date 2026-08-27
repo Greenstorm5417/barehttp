@@ -251,7 +251,7 @@ where
       return Err(Error::TlsNotConfigured);
     }
 
-    let mut current_url = String::from(url);
+    let mut current_url = Cow::Borrowed(url);
     let mut current_method = method;
     // One owned body buffer for the whole redirect chain (send borrows; hops mutate in place).
     let mut current_body = body;
@@ -259,7 +259,7 @@ where
     let mut redirect_count = 0_u32;
 
     loop {
-      let uri = Uri::parse(&current_url).map_err(Error::Parse)?;
+      let uri = Uri::parse(current_url.as_ref()).map_err(Error::Parse)?;
       validate_protocol(config, &uri)?;
 
       // Jar cookies merge in place; redirect sanitize strips Cookie before the next hop.
@@ -285,7 +285,7 @@ where
         if raw.headers.contains(Headers::SET_COOKIE) {
           self
             .cookie_store
-            .store_response_cookies(&current_url, raw.headers.values(Headers::SET_COOKIE))?;
+            .store_response_cookies(current_url.as_ref(), raw.headers.values(Headers::SET_COOKIE))?;
         }
       }
 
@@ -308,7 +308,7 @@ where
         &mut redirect_count,
         &response,
         &uri,
-        &current_url,
+        current_url.as_ref(),
         &current_method,
         &mut current_body,
       )?
@@ -317,7 +317,7 @@ where
       };
 
       sanitize_redirect_headers(&mut current_headers, current_body.is_none());
-      current_url = next_url;
+      current_url = Cow::Owned(next_url);
       current_method = next_method;
     }
   }

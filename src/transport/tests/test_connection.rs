@@ -4,8 +4,9 @@ use crate::parser::version::Version;
 use crate::transport::connection::{Connection, RawResponse};
 use crate::transport::tests::mock_socket::MockSocket;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
+use compact_str::CompactString;
 
 #[test]
 fn send_request_writes_to_socket() {
@@ -167,7 +168,7 @@ fn raw_response_can_be_cloned() {
 
   let response = RawResponse {
     status_code: 200,
-    reason: String::from("OK"),
+    reason: CompactString::from("OK"),
     headers,
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::from(vec![1, 2, 3]),

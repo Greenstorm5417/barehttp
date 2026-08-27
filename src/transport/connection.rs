@@ -3,14 +3,14 @@ use crate::dns::DnsResolver;
 use crate::error::{Error, SocketError};
 use crate::headers::{Headers, WellKnownHeader, well_known_header_bytes};
 use crate::parser::chunked::{ChunkedDecoder, FeedResult};
-use crate::parser::has_complete_headers;
 use crate::parser::uri::{Host, Uri};
 use crate::parser::version::Version;
 use crate::parser::{BodyReadStrategy, Response};
+use crate::parser::{has_complete_headers, header_section_end};
 use crate::socket::BlockingSocket;
 use crate::transport::pool::PooledBuffers;
 use crate::util::IpAddr;
-use alloc::string::String;
+use alloc::borrow::Cow;
 use alloc::vec::Vec;
 use bytes::{Bytes, BytesMut};
 use core::net::SocketAddr;
@@ -20,7 +20,7 @@ use core::time::Duration;
 #[derive(Debug, Clone)]
 pub struct RawResponse {
   pub status_code: u16,
-  pub reason: String,
+  pub reason: compact_str::CompactString,
   pub headers: Headers,
   pub version: Version,
   pub body_bytes: Bytes,
@@ -191,7 +191,7 @@ impl<'a, S: BlockingSocket> Connection<'a, S> {
         }
         // Check after append even when this read completed headers. Only the header
         // section counts toward the limit; body bytes past `\r\n\r\n` do not.
-        if headers_section_len(&self.buf).is_some_and(|hdr_len| hdr_len > max_header_size)
+        if header_section_end(&self.buf).is_some_and(|hdr_len| hdr_len > max_header_size)
           || (!has_complete_headers(&self.buf) && self.buf.len() > max_header_size)
         {
           return Err(Error::ResponseHeaderTooLarge);
@@ -504,9 +504,9 @@ where
   if !reused {
     let authority = uri.authority().ok_or(Error::InvalidUrl)?;
     let port = uri.port_or_default();
-    let host_for_sni = match authority.host() {
-      Host::RegName(name) => String::from(*name),
-      Host::IpAddr(addr) => crate::util::format_ip_for_host(*addr),
+    let host_for_sni: Cow<'_, str> = match authority.host() {
+      Host::RegName(name) => Cow::Borrowed(*name),
+      Host::IpAddr(addr) => Cow::Owned(crate::util::format_ip_for_host(*addr)),
     };
 
     let addresses: Vec<IpAddr> = match authority.host() {
@@ -525,7 +525,7 @@ where
 
     let mut last_error = None;
     for addr in &addresses {
-      match socket.connect(&SocketAddr::new(*addr, port), host_for_sni.as_str()) {
+      match socket.connect(&SocketAddr::new(*addr, port), host_for_sni.as_ref()) {
         Ok(()) => {
           last_error = None;
           break;
@@ -565,13 +565,8 @@ fn duration_ms_u32(d: Option<Duration>) -> Option<u32> {
   Some(u32::try_from(d?.as_millis()).unwrap_or(u32::MAX))
 }
 
-/// Length of the header section including the terminating blank line, if complete.
 fn headers_section_len(data: &[u8]) -> Option<usize> {
-  data
-    .windows(4)
-    .position(|w| w == b"\r\n\r\n")
-    .map(|i| i + 4)
-    .or_else(|| data.windows(2).position(|w| w == b"\n\n").map(|i| i + 2))
+  header_section_end(data)
 }
 
 /// True if any `Connection` field line lists the given option (RFC 9110 list rules).

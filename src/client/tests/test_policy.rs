@@ -10,6 +10,7 @@ use alloc::borrow::Cow;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use compact_str::CompactString;
 extern crate alloc;
 
 fn make_redirect_response(
@@ -20,7 +21,7 @@ fn make_redirect_response(
   headers.insert("Location", location);
   RawResponse {
     status_code: status,
-    reason: String::from("Redirect"),
+    reason: CompactString::from("Redirect"),
     headers,
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::new(),
@@ -139,7 +140,7 @@ fn policy_drops_body_for_head_requests() {
   headers.insert("Content-Length", "10");
   let raw = RawResponse {
     status_code: 200,
-    reason: String::from("OK"),
+    reason: CompactString::from("OK"),
     headers,
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::from_static(b"1234567890"),
@@ -272,7 +273,7 @@ fn non_followable_3xx_is_returned() {
     headers.insert("Location", "/next");
     let raw = RawResponse {
       status_code: status,
-      reason: String::from("x"),
+      reason: CompactString::from("x"),
       headers,
       version: Version::HTTP_11,
       body_bytes: bytes::Bytes::new(),
@@ -357,7 +358,7 @@ fn status_error_when_configured() {
     headers.insert("X-Err", "yes");
     let raw = RawResponse {
       status_code: status,
-      reason: String::from("err"),
+      reason: CompactString::from("err"),
       headers,
       version: Version::HTTP_11,
       body_bytes: bytes::Bytes::from_static(b"fail"),
@@ -393,7 +394,7 @@ fn status_4xx_is_ok_when_configured_as_response() {
   let config = Config::builder().http_status_as_error(false).build();
   let raw = RawResponse {
     status_code: 404,
-    reason: String::from("Not Found"),
+    reason: CompactString::from("Not Found"),
     headers: Headers::new(),
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::new(),
@@ -566,7 +567,7 @@ fn chunked_trailers_reach_response() {
   headers.insert("Transfer-Encoding", "chunked");
   let raw = RawResponse {
     status_code: 200,
-    reason: String::from("OK"),
+    reason: CompactString::from("OK"),
     headers,
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::from_static(b"5\r\nhello\r\n0\r\nX-Trailer: value\r\n\r\n"),

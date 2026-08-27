@@ -5,7 +5,8 @@
 //! [`try_wire_spans`] + [`Headers::from_spans`] adopts a frozen wire section.
 
 use crate::error::ParseError;
-use crate::headers::Headers;
+use crate::headers::{FieldList, FieldSpan, Headers};
+use crate::parser::{find_byte, find_cr_or_lf};
 use alloc::string::String;
 use alloc::vec::Vec;
 use bytes::BytesMut;
@@ -26,6 +27,7 @@ pub struct HeaderRef<'a> {
 ///
 /// # Errors
 /// Malformed fields, obs-fold, or whitespace before the first field.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn scan_header_fields(input: &[u8]) -> Result<(Vec<HeaderRef<'_>>, &[u8]), ParseError> {
   let mut headers = Vec::with_capacity(8);
   let remaining = for_each_header_field(input, |h| {
@@ -52,9 +54,9 @@ pub fn materialize_headers(refs: &[HeaderRef<'_>]) -> Headers {
       .saturating_add(h.value.len());
   }
   let mut buf = BytesMut::with_capacity(byte_cap);
-  let mut spans = Vec::with_capacity(refs.len());
+  let mut spans = FieldList::with_capacity(refs.len());
   for &h in refs {
-    push_span(&mut buf, &mut spans, h);
+    spans.push(push_span(&mut buf, h));
   }
   Headers::from_spans(buf.freeze(), spans)
 }
@@ -70,7 +72,7 @@ pub fn materialize_headers(refs: &[HeaderRef<'_>]) -> Headers {
 pub(crate) fn try_wire_spans(
   section: &[u8],
   refs: &[HeaderRef<'_>],
-) -> Option<Vec<(u32, u32, u32, u32)>> {
+) -> Option<FieldList> {
   // Names are token charset (ASCII). Values with obs-text are not valid UTF-8;
   // the Headers arena requires UTF-8 for `str` views, so fall back to copy+lossy.
   if refs.iter().any(|h| !h.value.is_ascii()) {
@@ -79,12 +81,12 @@ pub(crate) fn try_wire_spans(
 
   let base = section.as_ptr() as usize;
   let section_len = section.len();
-  let mut spans = Vec::with_capacity(refs.len());
+  let mut spans = FieldList::with_capacity(refs.len());
 
   for h in refs {
     let name_start = subslice_offset(base, section_len, h.name)?;
     let value_start = subslice_offset(base, section_len, h.value)?;
-    spans.push((
+    spans.push(FieldSpan::from_offsets(
       usize_as_u32(name_start),
       usize_as_u32(h.name.len()),
       usize_as_u32(value_start),
@@ -133,9 +135,9 @@ pub fn parse_header_fields(input: &[u8]) -> Result<(Headers, &[u8]), ParseError>
   // Start small — typical responses are far under 256 B of name+value bytes.
   // `BytesMut::with_capacity(256)` over-allocated on every parse of a few fields.
   let mut buf = BytesMut::with_capacity(64);
-  let mut spans = Vec::with_capacity(8);
+  let mut spans = FieldList::new();
   let remaining = for_each_header_field(input, |h| {
-    push_span(&mut buf, &mut spans, h);
+    spans.push(push_span(&mut buf, h));
     Ok(())
   })?;
   if spans.is_empty() {
@@ -152,9 +154,8 @@ fn usize_as_u32(n: usize) -> u32 {
 #[inline]
 fn push_span(
   buf: &mut BytesMut,
-  spans: &mut Vec<(u32, u32, u32, u32)>,
   h: HeaderRef<'_>,
-) {
+) -> FieldSpan {
   let name_start = usize_as_u32(buf.len());
   // Token charset was validated in [`for_each_header_field`] → ASCII UTF-8.
   buf.extend_from_slice(h.name);
@@ -170,11 +171,11 @@ fn push_span(
     buf.extend_from_slice(lossy.as_bytes());
     usize_as_u32(lossy.len())
   };
-  spans.push((name_start, name_len, value_start, value_len));
+  FieldSpan::from_offsets(name_start, name_len, value_start, value_len)
 }
 
 /// Shared field-line scanner. `on_field` runs once per header before the blank line.
-fn for_each_header_field<'a, F>(
+pub(crate) fn for_each_header_field<'a, F>(
   input: &'a [u8],
   mut on_field: F,
 ) -> Result<&'a [u8], ParseError>
@@ -205,7 +206,7 @@ where
       break;
     }
 
-    let Some(colon_pos) = remaining.iter().position(|&b| b == b':') else {
+    let Some(colon_pos) = find_byte(remaining, b':') else {
       return Err(ParseError::InvalidHeaderName);
     };
 
@@ -237,10 +238,7 @@ where
       }
     }
 
-    let line_end = remaining
-      .iter()
-      .position(|&b| b == b'\r' || b == b'\n')
-      .unwrap_or(remaining.len());
+    let line_end = find_cr_or_lf(remaining).unwrap_or(remaining.len());
 
     let mut value_slice = remaining
       .get(..line_end)
@@ -296,36 +294,55 @@ where
   Ok(remaining)
 }
 
+#[allow(clippy::indexing_slicing)] // 256-entry table fill; indices are token bytes
+const fn token_char_lut() -> [u8; 256] {
+  let mut t = [0u8; 256];
+  t[b'!' as usize] = 1;
+  t[b'#' as usize] = 1;
+  t[b'$' as usize] = 1;
+  t[b'%' as usize] = 1;
+  t[b'&' as usize] = 1;
+  t[b'\'' as usize] = 1;
+  t[b'*' as usize] = 1;
+  t[b'+' as usize] = 1;
+  t[b'-' as usize] = 1;
+  t[b'.' as usize] = 1;
+  let mut c = b'0';
+  while c <= b'9' {
+    t[c as usize] = 1;
+    c += 1;
+  }
+  c = b'A';
+  while c <= b'Z' {
+    t[c as usize] = 1;
+    c += 1;
+  }
+  t[b'^' as usize] = 1;
+  t[b'_' as usize] = 1;
+  t[b'`' as usize] = 1;
+  c = b'a';
+  while c <= b'z' {
+    t[c as usize] = 1;
+    c += 1;
+  }
+  t[b'|' as usize] = 1;
+  t[b'~' as usize] = 1;
+  t
+}
+
+const TOKEN_CHAR: [u8; 256] = token_char_lut();
+
 /// RFC 9110 token character (header names).
 #[inline]
+#[allow(clippy::indexing_slicing)] // `u8` index into a 256-entry table
 pub const fn is_token_char(b: u8) -> bool {
-  matches!(
-    b,
-    b'!'
-      | b'#'
-      | b'$'
-      | b'%'
-      | b'&'
-      | b'\''
-      | b'*'
-      | b'+'
-      | b'-'
-      | b'.'
-      | b'0'..=b'9'
-      | b'A'..=b'Z'
-      | b'^'
-      | b'_'
-      | b'`'
-      | b'a'..=b'z'
-      | b'|'
-      | b'~'
-  )
+  TOKEN_CHAR[b as usize] != 0
 }
 
 /// RFC 9110 field-vchar / obs-text, plus HTAB and SP (field-content).
 #[inline]
 const fn is_field_vchar_or_ws(b: u8) -> bool {
-  matches!(b, 0x09 | 0x20..=0x7e | 0x80..=0xff)
+  b == 0x09 || (b >= 0x20 && b != 0x7F)
 }
 
 /// Consume a CRLF (or lone LF). Bare CR is an error.

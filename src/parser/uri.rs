@@ -1,8 +1,8 @@
-use core::net::{Ipv4Addr, Ipv6Addr};
-use core::str::FromStr;
-
 use crate::error::ParseError;
 use crate::util::IpAddr;
+use alloc::borrow::Cow;
+use core::net::{Ipv4Addr, Ipv6Addr};
+use core::str::FromStr;
 
 /// Parsed HTTP URI (absolute-form or origin-form used by the client).
 ///
@@ -158,9 +158,9 @@ impl<'a> Uri<'a> {
     let authority = self.authority.as_ref().ok_or(ParseError::InvalidUri)?;
     let port = self.port_or_default();
 
-    let host_str = match &authority.host {
-      Host::RegName(name) => alloc::string::String::from(*name),
-      Host::IpAddr(addr) => crate::util::format_ip_for_host(*addr),
+    let host_str: Cow<'_, str> = match &authority.host {
+      Host::RegName(name) => Cow::Borrowed(*name),
+      Host::IpAddr(addr) => Cow::Owned(crate::util::format_ip_for_host(*addr)),
     };
 
     if (self.scheme.eq_ignore_ascii_case("http") && port == 80)

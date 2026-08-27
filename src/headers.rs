@@ -33,8 +33,8 @@ pub struct Headers {
   /// dead bytes). `Clone` bumps the arena refcount; mutation copy-on-writes only
   /// when the arena is shared (unique mutates in place via [`BytesMut`]).
   buf: Bytes,
-  /// Insertion-ordered fields as offsets into `buf`.
-  fields: Vec<FieldSpan>,
+  /// Insertion-ordered fields as offsets into `buf` (inline until [`INLINE_FIELDS`]).
+  fields: FieldList,
   /// FNV-1a of ASCII-lowercased name → index of the first matching field.
   /// Shared via [`Arc`] so `Clone` keeps O(1) lookups without deep-copying the map
   /// (mutation uses [`Arc::make_mut`]). Lookups always re-check
@@ -45,11 +45,260 @@ pub struct Headers {
 
 /// Name/value span into [`Headers::buf`] (`u32` offsets; header sections are << 4 GiB).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct FieldSpan {
+pub(crate) struct FieldSpan {
   name_start: u32,
   name_len: u32,
   value_start: u32,
   value_len: u32,
+}
+
+impl FieldSpan {
+  #[inline]
+  pub(crate) const fn from_offsets(
+    name_start: u32,
+    name_len: u32,
+    value_start: u32,
+    value_len: u32,
+  ) -> Self {
+    Self {
+      name_start,
+      name_len,
+      value_start,
+      value_len,
+    }
+  }
+
+  const fn empty() -> Self {
+    Self::from_offsets(0, 0, 0, 0)
+  }
+}
+
+/// Typical responses have a handful of fields; keep those off the heap.
+/// Matches [`INDEX_THRESHOLD`] so the side-index still starts at the same count.
+const INLINE_FIELDS: usize = 8;
+
+#[inline]
+#[allow(clippy::cast_lossless)]
+const fn u8_as_usize(n: u8) -> usize {
+  // `From` is not const-stable; u8 → usize is lossless.
+  n as usize
+}
+
+/// Insertion-ordered field spans: inline until [`INLINE_FIELDS`], then a heap [`Vec`].
+///
+/// `len == HEAP` means `heap` is live (including an empty reserved `Vec` from
+/// [`FieldList::with_capacity`]).
+#[derive(Debug, Clone)]
+pub(crate) struct FieldList {
+  inline: [FieldSpan; INLINE_FIELDS],
+  len: u8,
+  heap: Vec<FieldSpan>,
+}
+
+/// Marker: `heap` is the source of truth (not `inline[..len]`).
+const HEAP: u8 = u8::MAX;
+
+impl Default for FieldList {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl FieldList {
+  pub(crate) const fn new() -> Self {
+    Self {
+      inline: [FieldSpan::empty(); INLINE_FIELDS],
+      len: 0,
+      heap: Vec::new(),
+    }
+  }
+
+  pub(crate) fn with_capacity(capacity: usize) -> Self {
+    if capacity > INLINE_FIELDS {
+      Self {
+        inline: [FieldSpan::empty(); INLINE_FIELDS],
+        len: HEAP,
+        heap: Vec::with_capacity(capacity),
+      }
+    } else {
+      Self::new()
+    }
+  }
+
+  #[inline]
+  const fn on_heap(&self) -> bool {
+    self.len == HEAP
+  }
+
+  #[inline]
+  pub(crate) const fn len(&self) -> usize {
+    if self.on_heap() {
+      self.heap.len()
+    } else {
+      u8_as_usize(self.len)
+    }
+  }
+
+  #[inline]
+  pub(crate) const fn is_empty(&self) -> bool {
+    self.len() == 0
+  }
+
+  #[inline]
+  fn as_slice(&self) -> &[FieldSpan] {
+    if self.on_heap() {
+      self.heap.as_slice()
+    } else {
+      self.inline.get(..usize::from(self.len)).unwrap_or(&[])
+    }
+  }
+
+  #[inline]
+  fn as_mut_slice(&mut self) -> &mut [FieldSpan] {
+    if self.on_heap() {
+      self.heap.as_mut_slice()
+    } else {
+      let n = usize::from(self.len);
+      self.inline.get_mut(..n).unwrap_or(&mut [])
+    }
+  }
+
+  #[inline]
+  pub(crate) fn get(
+    &self,
+    i: usize,
+  ) -> Option<&FieldSpan> {
+    self.as_slice().get(i)
+  }
+
+  #[inline]
+  fn get_mut(
+    &mut self,
+    i: usize,
+  ) -> Option<&mut FieldSpan> {
+    self.as_mut_slice().get_mut(i)
+  }
+
+  #[inline]
+  fn iter(&self) -> core::slice::Iter<'_, FieldSpan> {
+    self.as_slice().iter()
+  }
+
+  #[inline]
+  fn iter_mut(&mut self) -> core::slice::IterMut<'_, FieldSpan> {
+    self.as_mut_slice().iter_mut()
+  }
+
+  fn spill(&mut self) {
+    if self.on_heap() {
+      return;
+    }
+    let n = usize::from(self.len);
+    self.heap.reserve(n.saturating_add(4));
+    self
+      .heap
+      .extend_from_slice(self.inline.get(..n).unwrap_or(&[]));
+    self.len = HEAP;
+  }
+
+  pub(crate) fn push(
+    &mut self,
+    span: FieldSpan,
+  ) {
+    if !self.on_heap() && usize::from(self.len) < INLINE_FIELDS {
+      if let Some(slot) = self.inline.get_mut(usize::from(self.len)) {
+        *slot = span;
+        self.len = self.len.saturating_add(1);
+      }
+      return;
+    }
+    self.spill();
+    self.heap.push(span);
+  }
+
+  fn remove(
+    &mut self,
+    i: usize,
+  ) {
+    if self.on_heap() {
+      if i < self.heap.len() {
+        let _ = self.heap.remove(i);
+      }
+      return;
+    }
+    let n = usize::from(self.len);
+    if i >= n {
+      return;
+    }
+    let mut src = i.saturating_add(1);
+    while src < n {
+      let val = self.inline.get(src).copied().unwrap_or(FieldSpan::empty());
+      if let Some(dst) = self.inline.get_mut(src.saturating_sub(1)) {
+        *dst = val;
+      }
+      src = src.saturating_add(1);
+    }
+    self.len = self.len.saturating_sub(1);
+  }
+
+  fn retain<F: FnMut(&FieldSpan) -> bool>(
+    &mut self,
+    mut keep: F,
+  ) {
+    if self.on_heap() {
+      self.heap.retain(keep);
+      return;
+    }
+    let n = usize::from(self.len);
+    let mut w = 0usize;
+    let mut r = 0usize;
+    while r < n {
+      let span = self.inline.get(r).copied().unwrap_or(FieldSpan::empty());
+      if keep(&span) {
+        if let Some(slot) = self.inline.get_mut(w) {
+          *slot = span;
+        }
+        w = w.saturating_add(1);
+      }
+      r = r.saturating_add(1);
+    }
+    self.len = u8::try_from(w).unwrap_or(0);
+  }
+}
+
+impl core::iter::FromIterator<FieldSpan> for FieldList {
+  fn from_iter<I: IntoIterator<Item = FieldSpan>>(iter: I) -> Self {
+    let mut list = Self::new();
+    for span in iter {
+      list.push(span);
+    }
+    list
+  }
+}
+
+impl<'a> IntoIterator for &'a FieldList {
+  type Item = &'a FieldSpan;
+  type IntoIter = core::slice::Iter<'a, FieldSpan>;
+
+  fn into_iter(self) -> Self::IntoIter {
+    self.iter()
+  }
+}
+
+impl<'a> IntoIterator for &'a mut FieldList {
+  type Item = &'a mut FieldSpan;
+  type IntoIter = core::slice::IterMut<'a, FieldSpan>;
+
+  fn into_iter(self) -> Self::IntoIter {
+    self.iter_mut()
+  }
+}
+
+#[cfg(test)]
+impl FieldList {
+  const fn is_inline(&self) -> bool {
+    !self.on_heap()
+  }
 }
 
 impl PartialEq for Headers {
@@ -181,7 +430,7 @@ static WELL_KNOWN: phf::Map<&'static str, WellKnownHeader> = phf::phf_map! {
 const WELL_KNOWN_MAX_LEN: usize = 32;
 
 /// Below this field count, skip the side-index (linear scan is cheaper).
-const INDEX_THRESHOLD: usize = 8;
+const INDEX_THRESHOLD: usize = INLINE_FIELDS;
 
 /// Case-insensitive lookup of a well-known header name (`&str`).
 #[must_use]
@@ -234,7 +483,7 @@ impl Headers {
   pub const fn new() -> Self {
     Self {
       buf: Bytes::new(),
-      fields: Vec::new(),
+      fields: FieldList::new(),
       index: None,
     }
   }
@@ -244,7 +493,7 @@ impl Headers {
   pub fn with_capacity(capacity: usize) -> Self {
     Self {
       buf: Bytes::new(),
-      fields: Vec::with_capacity(capacity),
+      fields: FieldList::with_capacity(capacity),
       // Deferred after batch fill; built on set/remove/insert past [`INDEX_THRESHOLD`].
       index: None,
     }
@@ -270,23 +519,11 @@ impl Headers {
   /// deferred. Mutation copy-on-writes (packing live spans when the arena is
   /// shared and has dead bytes) via [`BytesMut`].
   #[must_use]
-  pub(crate) fn from_spans(
+  pub(crate) const fn from_spans(
     buf: Bytes,
-    fields: Vec<(u32, u32, u32, u32)>,
+    fields: FieldList,
   ) -> Self {
-    Self {
-      buf,
-      fields: fields
-        .into_iter()
-        .map(|(name_start, name_len, value_start, value_len)| FieldSpan {
-          name_start,
-          name_len,
-          value_start,
-          value_len,
-        })
-        .collect(),
-      index: None,
-    }
+    Self { buf, fields, index: None }
   }
 
   /// Length of the backing arena (including any dead wire bytes).
@@ -793,27 +1030,30 @@ impl<'a> IntoIterator for &'a Headers {
 #[derive(Debug)]
 pub struct IntoIter {
   buf: Bytes,
-  fields: alloc::vec::IntoIter<FieldSpan>,
+  fields: FieldList,
+  idx: usize,
 }
 
 impl Iterator for IntoIter {
   type Item = (String, String);
 
   fn next(&mut self) -> Option<Self::Item> {
-    let span = self.fields.next()?;
+    let span = *self.fields.get(self.idx)?;
+    self.idx = self.idx.saturating_add(1);
     let name = str_from_buf(&self.buf, span.name_start, span.name_len);
     let value = str_from_buf(&self.buf, span.value_start, span.value_len);
     Some((String::from(name), String::from(value)))
   }
 
   fn size_hint(&self) -> (usize, Option<usize>) {
-    self.fields.size_hint()
+    let rem = self.fields.len().saturating_sub(self.idx);
+    (rem, Some(rem))
   }
 }
 
 impl ExactSizeIterator for IntoIter {
   fn len(&self) -> usize {
-    self.fields.len()
+    self.fields.len().saturating_sub(self.idx)
   }
 }
 
@@ -824,7 +1064,8 @@ impl IntoIterator for Headers {
   fn into_iter(self) -> Self::IntoIter {
     IntoIter {
       buf: self.buf,
-      fields: self.fields.into_iter(),
+      fields: self.fields,
+      idx: 0,
     }
   }
 }
@@ -846,6 +1087,19 @@ fn str_from_buf(
 mod tests {
   #![allow(clippy::unwrap_used, clippy::expect_used)]
   use super::*;
+
+  #[test]
+  fn typical_field_counts_stay_inline() {
+    let mut h = Headers::new();
+    for i in 0..INLINE_FIELDS {
+      h.insert(alloc::format!("H{i}"), "v");
+    }
+    assert!(h.fields.is_inline());
+    assert_eq!(h.len(), INLINE_FIELDS);
+    h.insert("overflow", "v");
+    assert!(!h.fields.is_inline());
+    assert_eq!(h.len(), INLINE_FIELDS.saturating_add(1));
+  }
 
   #[test]
   fn set_replaces_all_case_insensitive_values() {
@@ -1052,12 +1306,13 @@ mod tests {
 
     let mut a = Headers::from_spans(
       buf,
-      alloc::vec![(
+      core::iter::once(FieldSpan::from_offsets(
         usize_to_u32(name_start),
         usize_to_u32(4),
         usize_to_u32(value_start),
         usize_to_u32("example.com".len()),
-      )],
+      ))
+      .collect(),
     );
     let _keep_shared = a.clone();
     let before = a.arena_len();

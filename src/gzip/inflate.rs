@@ -12,6 +12,21 @@ use alloc::vec::Vec;
 /// Sliding window size (RFC 1951 §2).
 const WINDOW: usize = 32_768;
 
+/// Heuristic output capacity. Tiny members stay small; typical HTTP gzip is
+/// well under 32:1, so larger members skip realloc during literal/match copies.
+#[inline]
+fn inflate_out_capacity(
+  data_len: usize,
+  max_out: usize,
+) -> usize {
+  let scaled = if data_len < 48 {
+    data_len.saturating_mul(4).max(64)
+  } else {
+    data_len.saturating_mul(32).max(256)
+  };
+  scaled.min(max_out).min(WINDOW.saturating_mul(2))
+}
+
 /// Stack buffer for consecutive Huffman literals before one `extend`.
 const LIT_BATCH: usize = 64;
 
@@ -123,10 +138,7 @@ pub(super) fn inflate_owned(
 ) -> Result<(Vec<u8>, usize), DecompressError> {
   let mut bits = BitReader::new(data);
   // Heuristic capacity: prefer avoiding realloc churn on typical HTTP bodies.
-  let guess = max_out
-    .min(data.len().saturating_mul(4).max(64))
-    .min(WINDOW.saturating_mul(2));
-  let mut out = Vec::with_capacity(guess);
+  let mut out = Vec::with_capacity(inflate_out_capacity(data.len(), max_out));
   // Lazy: fixed/stored-only members never touch the dynamic Huffman pool.
   let mut huff_pool: Option<HuffmanPool> = None;
   loop {
@@ -164,9 +176,7 @@ pub(super) fn inflate(
 ) -> Result<usize, DecompressError> {
   let mut bits = BitReader::new(data);
   // Heuristic capacity: prefer avoiding realloc churn on typical HTTP bodies.
-  let guess = max_out
-    .min(data.len().saturating_mul(4).max(64))
-    .min(WINDOW.saturating_mul(2));
+  let guess = inflate_out_capacity(data.len(), max_out);
   // Fresh buffer: `with_capacity` matches [`inflate_owned`].
   // Reused buffer: clear + reserve keeps pooled capacity.
   if out.capacity() == 0 {

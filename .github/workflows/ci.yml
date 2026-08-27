@@ -106,6 +106,9 @@ jobs:
         run: |
           cargo check --locked --target thumbv7em-none-eabi --no-default-features
           cargo check --locked --target thumbv7em-none-eabi --features gzip
+          cargo check --locked --target thumbv7em-none-eabi --features cookie-jar
+          cargo check --locked --target thumbv7em-none-eabi --features zstd
+          cargo check --locked --target thumbv7em-none-eabi --all-features
 
   miri:
     name: Miri

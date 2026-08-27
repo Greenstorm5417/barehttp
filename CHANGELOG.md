@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-27
+
+### Changed
+
+- Parse and connection paths keep typical header field lists inline (heap `Vec` only from the 9th field); the header scanner uses a stack buffer of refs instead of allocating on every response.
+- Buffered `Response::parse` adopts one wire `Bytes`; header spans and the body are subslices (no packed-arena or body copy).
+- SWAR byte scans for header-section end / CR/LF; token-char LUT.
+- Gzip inflater reserves a tighter output buffer for larger members.
+- Request URL is borrowed until a redirect; connect SNI for a DNS name is borrowed (IP literals still allocate). URI recomposition no longer copies the hostname into an extra `String` before `format!`.
+- Embedded CI/release checks `cookie-jar`, `zstd`, and `--all-features` on `thumbv7em-none-eabi` (still `no_std` + `alloc`).
+
 ## [0.1.0] - 2026-07-29
 
 First crates.io minor after `0.0.1`. Cargo treats `0.0.x → 0.1.0` as a major/breaking bump ([SemVer Compatibility](https://doc.rust-lang.org/cargo/reference/semver.html)).
