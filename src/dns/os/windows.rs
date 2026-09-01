@@ -59,16 +59,16 @@ pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
       && let Some(addr) = NonNull::new(info.ai_addr.cast::<SOCKADDR_IN>())
     {
       // SAFETY: AF_INET node; `ai_addr` is an OS-aligned `SOCKADDR_IN` of `addr_len` bytes.
-      let sockaddr = unsafe { addr.as_ref() };
-      addresses.push(IpAddr::V4(Ipv4Addr::from(sockaddr.sin_addr.S_un.S_addr.to_ne_bytes())));
+      // `IN_ADDR.S_un.S_addr` is the IPv4 view, written by getaddrinfo.
+      let ipv4 = unsafe { addr.as_ref().sin_addr.S_un.S_addr };
+      addresses.push(IpAddr::V4(Ipv4Addr::from(ipv4.to_ne_bytes())));
     } else if info.ai_family == i32::from(AF_INET6)
       && addr_len >= size_of::<SOCKADDR_IN6>()
       && let Some(addr) = NonNull::new(info.ai_addr.cast::<SOCKADDR_IN6>())
     {
       // SAFETY: AF_INET6 node; `ai_addr` is an OS-aligned `SOCKADDR_IN6` of `addr_len` bytes.
-      let sockaddr = unsafe { addr.as_ref() };
-      // IN6_ADDR.u is a union; Byte is the octet view.
-      let octets = sockaddr.sin6_addr.u.Byte;
+      // `IN6_ADDR.u.Byte` is the octet view, written by getaddrinfo.
+      let octets = unsafe { addr.as_ref().sin6_addr.u.Byte };
       addresses.push(IpAddr::V6(Ipv6Addr::from(octets)));
     }
 
