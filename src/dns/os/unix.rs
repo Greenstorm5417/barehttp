@@ -6,6 +6,18 @@ use core::net::{Ipv4Addr, Ipv6Addr};
 use core::ptr;
 use libc::{AF_INET, AF_INET6, addrinfo, sockaddr_in, sockaddr_in6};
 
+/// Owns a `getaddrinfo` linked list until `freeaddrinfo`.
+struct AddrInfoList(*mut addrinfo);
+
+impl Drop for AddrInfoList {
+  fn drop(&mut self) {
+    if !self.0.is_null() {
+      // SAFETY: `self.0` is a successful `getaddrinfo` list; freed exactly once here.
+      unsafe { libc::freeaddrinfo(self.0) };
+    }
+  }
+}
+
 pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
   let host_c = host_cstring(host)?;
 
@@ -20,36 +32,34 @@ pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
     ai_next: ptr::null_mut(),
   };
 
-  let mut result: *mut addrinfo = ptr::null_mut();
+  let mut raw: *mut addrinfo = ptr::null_mut();
 
-  // SAFETY: `host_c` is a NUL-terminated CString; `hints`/`result` are valid for getaddrinfo.
-  let ret = unsafe { libc::getaddrinfo(host_c.as_ptr(), ptr::null(), &raw const hints, &raw mut result) };
+  // SAFETY: `host_c` is a NUL-terminated CString; `hints`/`raw` are valid for getaddrinfo.
+  let ret = unsafe { libc::getaddrinfo(host_c.as_ptr(), ptr::null(), &raw const hints, &raw mut raw) };
 
   if ret != 0 {
     return Err(DnsError::ResolutionFailed(ret));
   }
 
+  // POSIX: `ret == 0` means `raw` is a getaddrinfo-owned list (empty list is still owned).
+  let list = AddrInfoList(raw);
   let mut addresses = Vec::new();
-  let mut current = result;
+  let mut current = list.0;
 
-  // SAFETY: `result` is a getaddrinfo-owned linked list until `freeaddrinfo`; each `ai_addr`
-  // is valid for its `ai_family` when non-null. Freed exactly once after the walk.
-  unsafe {
-    while !current.is_null() {
-      let info = &*current;
-
-      if info.ai_family == AF_INET && !info.ai_addr.is_null() {
-        let sockaddr = ptr::read_unaligned(info.ai_addr.cast::<sockaddr_in>());
-        addresses.push(IpAddr::V4(Ipv4Addr::from(sockaddr.sin_addr.s_addr.to_ne_bytes())));
-      } else if info.ai_family == AF_INET6 && !info.ai_addr.is_null() {
-        let sockaddr = ptr::read_unaligned(info.ai_addr.cast::<sockaddr_in6>());
-        addresses.push(IpAddr::V6(Ipv6Addr::from(sockaddr.sin6_addr.s6_addr)));
-      }
-
-      current = info.ai_next;
+  // codeql[rust/access-invalid-pointer]: getaddrinfo wrote a valid list into `raw` when ret==0.
+  // SAFETY: `current` is null or a remaining node of `list` until Drop; `as_ref` is the null check.
+  while let Some(info) = unsafe { current.as_ref() } {
+    if info.ai_family == AF_INET && !info.ai_addr.is_null() {
+      // SAFETY: AF_INET + non-null `ai_addr` is a `sockaddr_in` (possibly unaligned).
+      let sockaddr = unsafe { ptr::read_unaligned(info.ai_addr.cast::<sockaddr_in>()) };
+      addresses.push(IpAddr::V4(Ipv4Addr::from(sockaddr.sin_addr.s_addr.to_ne_bytes())));
+    } else if info.ai_family == AF_INET6 && !info.ai_addr.is_null() {
+      // SAFETY: AF_INET6 + non-null `ai_addr` is a `sockaddr_in6` (possibly unaligned).
+      let sockaddr = unsafe { ptr::read_unaligned(info.ai_addr.cast::<sockaddr_in6>()) };
+      addresses.push(IpAddr::V6(Ipv6Addr::from(sockaddr.sin6_addr.s6_addr)));
     }
 
-    libc::freeaddrinfo(result);
+    current = info.ai_next;
   }
 
   if addresses.is_empty() {
