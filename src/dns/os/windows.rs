@@ -2,21 +2,20 @@ use crate::dns::os::host_cstring;
 use crate::error::DnsError;
 use crate::util::IpAddr;
 use alloc::vec::Vec;
+use core::mem::size_of;
 use core::net::{Ipv4Addr, Ipv6Addr};
-use core::ptr;
+use core::ptr::{self, NonNull};
 use windows_sys::Win32::Networking::WinSock::{
   ADDRINFOA, AF_INET, AF_INET6, SOCKADDR_IN, SOCKADDR_IN6, WSAGetLastError, freeaddrinfo, getaddrinfo,
 };
 
 /// Owns a `getaddrinfo` linked list until `freeaddrinfo`.
-struct AddrInfoList(*mut ADDRINFOA);
+struct AddrInfoList(NonNull<ADDRINFOA>);
 
 impl Drop for AddrInfoList {
   fn drop(&mut self) {
-    if !self.0.is_null() {
-      // SAFETY: `self.0` is a successful `getaddrinfo` list; freed exactly once here.
-      unsafe { freeaddrinfo(self.0) };
-    }
+    // SAFETY: `self.0` is a successful `getaddrinfo` list; freed exactly once here.
+    unsafe { freeaddrinfo(self.0.as_ptr()) };
   }
 }
 
@@ -46,26 +45,34 @@ pub fn resolve_host(host: &str) -> Result<Vec<IpAddr>, DnsError> {
   }
 
   // WinSock: `ret == 0` means `raw` is a getaddrinfo-owned list (empty list is still owned).
-  let list = AddrInfoList(raw);
+  let list = AddrInfoList(NonNull::new(raw).ok_or(DnsError::NoAddressesFound)?);
   let mut addresses = Vec::new();
-  let mut current = list.0;
+  let mut current = Some(list.0);
 
-  // codeql[rust/access-invalid-pointer]: getaddrinfo wrote a valid list into `raw` when ret==0.
-  // SAFETY: `current` is null or a remaining node of `list` until Drop; `as_ref` is the null check.
-  while let Some(info) = unsafe { current.as_ref() } {
-    if info.ai_family == i32::from(AF_INET) && !info.ai_addr.is_null() {
-      // SAFETY: AF_INET + non-null `ai_addr` is a `SOCKADDR_IN` (possibly unaligned).
-      let sockaddr = unsafe { ptr::read_unaligned(info.ai_addr.cast::<SOCKADDR_IN>()) };
+  while let Some(node) = current {
+    // SAFETY: `node` is a remaining `getaddrinfo` node until Drop.
+    let info = unsafe { node.as_ref() };
+    let addr_len = usize::try_from(info.ai_addrlen).unwrap_or(0);
+
+    if info.ai_family == i32::from(AF_INET)
+      && addr_len >= size_of::<SOCKADDR_IN>()
+      && let Some(addr) = NonNull::new(info.ai_addr.cast::<SOCKADDR_IN>())
+    {
+      // SAFETY: AF_INET node; `ai_addr` is an OS-aligned `SOCKADDR_IN` of `addr_len` bytes.
+      let sockaddr = unsafe { addr.as_ref() };
       addresses.push(IpAddr::V4(Ipv4Addr::from(sockaddr.sin_addr.S_un.S_addr.to_ne_bytes())));
-    } else if info.ai_family == i32::from(AF_INET6) && !info.ai_addr.is_null() {
-      // SAFETY: AF_INET6 + non-null `ai_addr` is a `SOCKADDR_IN6` (possibly unaligned).
-      let sockaddr = unsafe { ptr::read_unaligned(info.ai_addr.cast::<SOCKADDR_IN6>()) };
+    } else if info.ai_family == i32::from(AF_INET6)
+      && addr_len >= size_of::<SOCKADDR_IN6>()
+      && let Some(addr) = NonNull::new(info.ai_addr.cast::<SOCKADDR_IN6>())
+    {
+      // SAFETY: AF_INET6 node; `ai_addr` is an OS-aligned `SOCKADDR_IN6` of `addr_len` bytes.
+      let sockaddr = unsafe { addr.as_ref() };
       // IN6_ADDR.u is a union; Byte is the octet view.
       let octets = sockaddr.sin6_addr.u.Byte;
       addresses.push(IpAddr::V6(Ipv6Addr::from(octets)));
     }
 
-    current = info.ai_next;
+    current = NonNull::new(info.ai_next);
   }
 
   if addresses.is_empty() {
