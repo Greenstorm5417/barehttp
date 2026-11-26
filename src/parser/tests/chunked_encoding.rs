@@ -26,7 +26,7 @@ fn test_chunked_zero_size_terminator() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert!(response.body().is_empty());
+  assert_eq!(response.body(), []);
 }
 
 #[test]

@@ -2,7 +2,9 @@ pub mod connection;
 pub mod pool;
 
 pub use connection::RawResponse;
-pub use pool::{ConnectionPool, PoolKey, PooledBuffers};
+#[cfg(test)]
+pub use pool::PoolKey;
+pub use pool::{ConnectionPool, PoolKeyRef};
 
 #[cfg(test)]
 mod tests;

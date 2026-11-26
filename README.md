@@ -59,7 +59,7 @@ Optional / larger surfaces stay in modules: [`config`], [`request_builder`], and
 - Connection pooling (`Config::max_idle_per_host` default 3; `0` disables; `max_idle_age` default 15s)
 - Response body size limit (`Config::max_response_body_size`, default ~10 MiB)
 - Optional Cargo features: `gzip` exposes `barehttp::gzip` (hand-rolled RFC 1951/1952); `zstd` is Accept-Encoding + decode only; `cookie-jar` gates the cookie module
-- Runtime deps (always on, kept out of the public API): `bytes` (internal body / wire buffers), `phf` (well-known header name map), `compact_str` (SSO header strings), `hashbrown` (header side-index / pool). Platform: `libc` / `windows-sys`.
+- Runtime deps (always on, kept out of the public API): `bytes` (internal body / wire buffers), `compact_str` (SSO header strings), `hashbrown` (connection pool). Platform: `libc` / `windows-sys`.
 - Request builder: `.form` / `.body` then `.call()`, or `.send(bytes)`; per-request `.timeout_read` / `.timeout_write` / `.timeout_connect`
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.

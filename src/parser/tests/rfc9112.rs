@@ -113,7 +113,7 @@ fn serialize_with_headers(
   path: &str,
   headers: &Headers,
   body: Option<&[u8]>,
-) -> Result<bytes::Bytes, ParseError> {
+) -> Result<alloc::vec::Vec<u8>, ParseError> {
   Ok(serialize_request(method, path, None, headers, body)?.to_bytes())
 }
 

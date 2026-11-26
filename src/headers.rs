@@ -1,15 +1,13 @@
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
-use bytes::{Bytes, BytesMut};
 use core::hash::{Hash, Hasher};
-use hashbrown::HashMap;
 
 /// Ordered list of `(name, value)` header fields.
 ///
-/// Names and values live in a shared [`Bytes`] arena as UTF-8 sub-slices (offsets).
-/// A lowercase-hash → first-index map, when present, backs [`Self::get`] /
-/// [`Self::contains`]; iteration and multi-value order follow insertion order.
+/// Names and values live in one packed UTF-8 byte arena (offsets per field).
+/// Lookups scan fields linearly with a length prefilter (no side index: for
+/// realistic field counts it is as fast and costs no memory). Iteration and
+/// multi-value order follow insertion order.
 ///
 /// # String policy
 ///
@@ -26,30 +24,23 @@ use hashbrown::HashMap;
 /// headers.insert("Content-Type", "text/plain");
 /// assert_eq!(headers.get("content-type"), Some("text/plain"));
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct Headers {
-  /// Contiguous UTF-8 name/value bytes. On the connection path this may be a
-  /// frozen slice of the receive buffer (status line / CRLFs / OWS may remain as
-  /// dead bytes). `Clone` bumps the arena refcount; mutation copy-on-writes only
-  /// when the arena is shared (unique mutates in place via [`BytesMut`]).
-  buf: Bytes,
+  /// Contiguous UTF-8 name/value bytes (no CRLF / `": "` / status-line dead
+  /// bytes). Parsed responses get an exact-capacity arena; inserts grow it
+  /// amortized in place (no refcount / copy-on-write bookkeeping).
+  buf: Vec<u8>,
   /// Insertion-ordered fields as offsets into `buf` (inline until [`INLINE_FIELDS`]).
   fields: FieldList,
-  /// FNV-1a of ASCII-lowercased name → index of the first matching field.
-  /// Shared via [`Arc`] so `Clone` keeps O(1) lookups without deep-copying the map
-  /// (mutation uses [`Arc::make_mut`]). Lookups always re-check
-  /// [`eq_ignore_ascii_case`](str::eq_ignore_ascii_case) so hash collisions fall
-  /// back to a linear scan.
-  index: Option<Arc<HashMap<u64, usize>>>,
 }
 
 /// Name/value span into [`Headers::buf`] (`u32` offsets; header sections are << 4 GiB).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct FieldSpan {
-  name_start: u32,
-  name_len: u32,
-  value_start: u32,
-  value_len: u32,
+  pub(crate) name_start: u32,
+  pub(crate) name_len: u32,
+  pub(crate) value_start: u32,
+  pub(crate) value_len: u32,
 }
 
 impl FieldSpan {
@@ -71,10 +62,37 @@ impl FieldSpan {
   const fn empty() -> Self {
     Self::from_offsets(0, 0, 0, 0)
   }
+
+  /// Name bytes when the span's offsets are relative to `base`.
+  #[inline]
+  pub(crate) fn name_in<'a>(
+    &self,
+    base: &'a [u8],
+  ) -> &'a [u8] {
+    sub(base, self.name_start, self.name_len)
+  }
+
+  /// Value bytes when the span's offsets are relative to `base`.
+  #[inline]
+  pub(crate) fn value_in<'a>(
+    &self,
+    base: &'a [u8],
+  ) -> &'a [u8] {
+    sub(base, self.value_start, self.value_len)
+  }
+}
+
+#[inline]
+fn sub(
+  base: &[u8],
+  start: u32,
+  len: u32,
+) -> &[u8] {
+  let s = start as usize;
+  base.get(s..s.saturating_add(len as usize)).unwrap_or(&[])
 }
 
 /// Typical responses have a handful of fields; keep those off the heap.
-/// Matches [`INDEX_THRESHOLD`] so the side-index still starts at the same count.
 const INLINE_FIELDS: usize = 8;
 
 #[inline]
@@ -180,13 +198,56 @@ impl FieldList {
   }
 
   #[inline]
-  fn iter(&self) -> core::slice::Iter<'_, FieldSpan> {
+  pub(crate) fn iter(&self) -> core::slice::Iter<'_, FieldSpan> {
     self.as_slice().iter()
   }
 
   #[inline]
-  fn iter_mut(&mut self) -> core::slice::IterMut<'_, FieldSpan> {
+  pub(crate) fn iter_mut(&mut self) -> core::slice::IterMut<'_, FieldSpan> {
     self.as_mut_slice().iter_mut()
+  }
+
+  /// Append inline without spilling; `false` when the inline array is full.
+  #[inline]
+  pub(crate) fn try_push_inline(
+    &mut self,
+    span: FieldSpan,
+  ) -> bool {
+    if self.on_heap() {
+      return false;
+    }
+    match self.inline.get_mut(usize::from(self.len)) {
+      Some(slot) => {
+        *slot = span;
+        self.len += 1;
+        true
+      },
+      None => false,
+    }
+  }
+
+  /// Move an inline list to one exact heap `Vec` with `extra` more spans.
+  pub(crate) fn spill_exact(
+    &mut self,
+    extra_a: &[FieldSpan],
+    extra_b: &[FieldSpan],
+  ) {
+    if self.on_heap() {
+      self.heap.extend_from_slice(extra_a);
+      self.heap.extend_from_slice(extra_b);
+      return;
+    }
+    let n = usize::from(self.len);
+    let total = n
+      .saturating_add(extra_a.len())
+      .saturating_add(extra_b.len());
+    self.heap.reserve_exact(total);
+    self
+      .heap
+      .extend_from_slice(self.inline.get(..n).unwrap_or(&[]));
+    self.heap.extend_from_slice(extra_a);
+    self.heap.extend_from_slice(extra_b);
+    self.len = HEAP;
   }
 
   fn spill(&mut self) {
@@ -301,12 +362,38 @@ impl FieldList {
   }
 }
 
+impl Clone for Headers {
+  /// Clones only live name/value bytes: a clone never carries dead bytes from
+  /// replaced values or a response body stored in the arena tail.
+  fn clone(&self) -> Self {
+    let live: usize = self
+      .fields
+      .iter()
+      .map(|s| (s.name_len as usize).saturating_add(s.value_len as usize))
+      .sum();
+    if live == self.buf.len() {
+      return self.clone_raw();
+    }
+    let mut buf = Vec::with_capacity(live);
+    let mut fields = self.fields.clone();
+    for span in &mut fields {
+      let name = span.name_in(&self.buf);
+      let value = span.value_in(&self.buf);
+      span.name_start = usize_to_u32(buf.len());
+      buf.extend_from_slice(name);
+      span.value_start = usize_to_u32(buf.len());
+      buf.extend_from_slice(value);
+    }
+    Self { buf, fields }
+  }
+}
+
 impl PartialEq for Headers {
   fn eq(
     &self,
     other: &Self,
   ) -> bool {
-    // Index is a cache; equality is defined by ordered fields only.
+    // Equality is defined by ordered fields only (not arena layout).
     if self.fields.len() != other.fields.len() {
       return false;
     }
@@ -321,7 +408,7 @@ impl Hash for Headers {
     &self,
     state: &mut H,
   ) {
-    // Must match `PartialEq`: hash fields only, not the index cache or dead arena bytes.
+    // Must match `PartialEq`: hash fields only, not dead / tail arena bytes.
     self.fields.len().hash(state);
     for (n, v) in self {
       n.hash(state);
@@ -358,7 +445,7 @@ impl ExactSizeIterator for Iter<'_> {
   }
 }
 
-/// Common header names with a compile-time `phf` lookup (lowercase keys).
+/// Common header names with a branch-only case-insensitive lookup.
 ///
 /// Framing and wire code match names against this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -411,27 +498,6 @@ impl WellKnownHeader {
   }
 }
 
-/// Lowercase well-known names → [`WellKnownHeader`] (compile-time PHF).
-static WELL_KNOWN: phf::Map<&'static str, WellKnownHeader> = phf::phf_map! {
-  "accept" => WellKnownHeader::Accept,
-  "accept-encoding" => WellKnownHeader::AcceptEncoding,
-  "connection" => WellKnownHeader::Connection,
-  "content-encoding" => WellKnownHeader::ContentEncoding,
-  "content-length" => WellKnownHeader::ContentLength,
-  "content-type" => WellKnownHeader::ContentType,
-  "cookie" => WellKnownHeader::Cookie,
-  "host" => WellKnownHeader::Host,
-  "set-cookie" => WellKnownHeader::SetCookie,
-  "te" => WellKnownHeader::Te,
-  "transfer-encoding" => WellKnownHeader::TransferEncoding,
-  "user-agent" => WellKnownHeader::UserAgent,
-};
-
-const WELL_KNOWN_MAX_LEN: usize = 32;
-
-/// Below this field count, skip the side-index (linear scan is cheaper).
-const INDEX_THRESHOLD: usize = INLINE_FIELDS;
-
 /// Case-insensitive lookup of a well-known header name (`&str`).
 #[must_use]
 pub fn well_known_header(name: &str) -> Option<WellKnownHeader> {
@@ -439,36 +505,34 @@ pub fn well_known_header(name: &str) -> Option<WellKnownHeader> {
 }
 
 /// Case-insensitive lookup of a well-known header name (raw bytes).
+///
+/// Length switch + one `eq_ignore_ascii_case` (no hashing, no lowercase copy).
 #[must_use]
 pub fn well_known_header_bytes(name: &[u8]) -> Option<WellKnownHeader> {
-  if name.len() > WELL_KNOWN_MAX_LEN || name.is_empty() {
-    return None;
+  let (want, hdr): (&[u8], WellKnownHeader) = match name.len() {
+    2 => (b"te", WellKnownHeader::Te),
+    4 => (b"host", WellKnownHeader::Host),
+    6 => match name.first().copied().map(|b| b.to_ascii_lowercase()) {
+      Some(b'a') => (b"accept", WellKnownHeader::Accept),
+      _ => (b"cookie", WellKnownHeader::Cookie),
+    },
+    10 => match name.first().copied().map(|b| b.to_ascii_lowercase()) {
+      Some(b'c') => (b"connection", WellKnownHeader::Connection),
+      Some(b's') => (b"set-cookie", WellKnownHeader::SetCookie),
+      _ => (b"user-agent", WellKnownHeader::UserAgent),
+    },
+    12 => (b"content-type", WellKnownHeader::ContentType),
+    14 => (b"content-length", WellKnownHeader::ContentLength),
+    15 => (b"accept-encoding", WellKnownHeader::AcceptEncoding),
+    16 => (b"content-encoding", WellKnownHeader::ContentEncoding),
+    17 => (b"transfer-encoding", WellKnownHeader::TransferEncoding),
+    _ => return None,
+  };
+  if name.eq_ignore_ascii_case(want) {
+    Some(hdr)
+  } else {
+    None
   }
-  let mut buf = [0u8; WELL_KNOWN_MAX_LEN];
-  for (i, &b) in name.iter().enumerate() {
-    // Reject non-ASCII early — well-known names are ASCII tokens only.
-    if !b.is_ascii() {
-      return None;
-    }
-    if let Some(slot) = buf.get_mut(i) {
-      *slot = b.to_ascii_lowercase();
-    }
-  }
-  let key_bytes = buf.get(..name.len())?;
-  // SAFETY: every byte was checked `is_ascii` then lowercased.
-  let key = unsafe { core::str::from_utf8_unchecked(key_bytes) };
-  WELL_KNOWN.get(key).copied()
-}
-
-/// FNV-1a over ASCII-lowercased bytes (index key; not a stored lowercase string).
-#[inline]
-fn ascii_lower_hash(name: &str) -> u64 {
-  let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-  for &b in name.as_bytes() {
-    hash ^= u64::from(b.to_ascii_lowercase());
-    hash = hash.wrapping_mul(0x0100_0000_01b3);
-  }
-  hash
 }
 
 #[inline]
@@ -482,9 +546,8 @@ impl Headers {
   #[must_use]
   pub const fn new() -> Self {
     Self {
-      buf: Bytes::new(),
+      buf: Vec::new(),
       fields: FieldList::new(),
-      index: None,
     }
   }
 
@@ -492,10 +555,8 @@ impl Headers {
   #[must_use]
   pub fn with_capacity(capacity: usize) -> Self {
     Self {
-      buf: Bytes::new(),
+      buf: Vec::new(),
       fields: FieldList::with_capacity(capacity),
-      // Deferred after batch fill; built on set/remove/insert past [`INDEX_THRESHOLD`].
-      index: None,
     }
   }
 
@@ -511,26 +572,52 @@ impl Headers {
     headers.into_iter().collect()
   }
 
-  /// Adopt a parent arena and field spans (offsets into `buf`).
+  /// Adopt a packed arena and field spans (offsets into `buf`).
   ///
-  /// Used by the parser materialize path and by the connection path when the
-  /// receive buffer's header section is frozen into `buf` (zero-copy). Spans may
-  /// leave dead bytes (status line, CRLFs, OWS) in the arena. Side-index stays
-  /// deferred. Mutation copy-on-writes (packing live spans when the arena is
-  /// shared and has dead bytes) via [`BytesMut`].
+  /// Used by the parser: one exact-capacity arena per header section.
   #[must_use]
   pub(crate) const fn from_spans(
-    buf: Bytes,
+    buf: Vec<u8>,
     fields: FieldList,
   ) -> Self {
-    Self { buf, fields, index: None }
+    Self { buf, fields }
   }
 
-  /// Length of the backing arena (including any dead wire bytes).
+  /// Length of the backing arena (including any dead or tail bytes).
   #[cfg(test)]
   #[must_use]
   pub(crate) const fn arena_len(&self) -> usize {
     self.buf.len()
+  }
+
+  /// Whole backing arena (live fields, dead bytes, and any response-body tail).
+  #[inline]
+  #[must_use]
+  pub(crate) fn arena(&self) -> &[u8] {
+    &self.buf
+  }
+
+  /// Append-only access to the arena tail (a response body stored after the
+  /// packed fields). Callers must never truncate below the current length.
+  #[inline]
+  pub(crate) const fn arena_tail_mut(&mut self) -> &mut Vec<u8> {
+    &mut self.buf
+  }
+
+  /// Give up the arena allocation (field spans are discarded).
+  #[must_use]
+  pub(crate) fn into_arena(self) -> Vec<u8> {
+    self.buf
+  }
+
+  /// Byte-exact clone, including dead / tail bytes (for an owner that keeps
+  /// data in the tail, e.g. a response body).
+  #[must_use]
+  pub(crate) fn clone_raw(&self) -> Self {
+    Self {
+      buf: self.buf.clone(),
+      fields: self.fields.clone(),
+    }
   }
 
   /// Consume into owned `(name, value)` pairs as [`String`].
@@ -551,11 +638,7 @@ impl Headers {
     self.push_str(name.as_ref(), value.as_ref());
   }
 
-  /// Append an already-owned field without touching the side-index.
-  ///
-  /// Hot path for wire materialize: leaves `index` unset. Lookups stay linear
-  /// until a mutating API ([`Self::set`] / [`Self::remove`] / [`Self::insert`])
-  /// builds past [`INDEX_THRESHOLD`].
+  /// Append an already-owned field.
   #[inline]
   pub(crate) fn push_owned(
     &mut self,
@@ -566,55 +649,14 @@ impl Headers {
     self.fields.push(pair);
   }
 
-  /// Rebuild the lowercase-hash → first-index map from `fields` (source of truth).
-  ///
-  /// With few fields, leaves the map unset: a linear scan costs less than building
-  /// a [`HashMap`] for the usual 2–4 header response.
-  pub(crate) fn rebuild_index(&mut self) {
-    if self.fields.len() < INDEX_THRESHOLD {
-      self.index = None;
-      return;
-    }
-    let Self { buf, fields, index } = self;
-    let map = Arc::make_mut(index.get_or_insert_with(|| Arc::new(HashMap::with_capacity(fields.len()))));
-    map.clear();
-    map.reserve(fields.len());
-    for (i, span) in fields.iter().enumerate() {
-      let key = ascii_lower_hash(str_from_buf(buf, span.name_start, span.name_len));
-      map.entry(key).or_insert(i);
-    }
-  }
-
-  /// Build the side-index on first mutating use when past [`INDEX_THRESHOLD`].
-  ///
-  /// No-op when already present or the field count is still small.
-  /// (`get`/`contains` stay `&self` + `Sync`, so they linear-scan while deferred.)
-  #[inline]
-  fn ensure_index(&mut self) {
-    if self.index.is_none() && self.fields.len() >= INDEX_THRESHOLD {
-      self.rebuild_index();
-    }
-  }
-
   #[inline]
   fn push_str(
     &mut self,
     name: &str,
     value: &str,
   ) {
-    let idx = self.fields.len();
     let span = self.append_pair(name, value);
-    if let Some(map) = self.index.as_mut() {
-      let key = ascii_lower_hash(name);
-      Arc::make_mut(map).entry(key).or_insert(idx);
-      self.fields.push(span);
-    } else {
-      // No index yet (small / deferred). Keep linear until we cross the threshold.
-      self.fields.push(span);
-      if self.fields.len() >= INDEX_THRESHOLD {
-        self.rebuild_index();
-      }
-    }
+    self.fields.push(span);
   }
 
   /// Replace every value for `name` (case-insensitive) with a single value.
@@ -623,24 +665,21 @@ impl Headers {
     name: impl AsRef<str>,
     value: impl AsRef<str>,
   ) {
-    self.ensure_index();
     let name_ref = name.as_ref();
     let value_ref = value.as_ref();
     let mut first: Option<usize> = None;
-    let mut removed = false;
     let mut i = 0usize;
     while i < self.fields.len() {
       let is_match = self
         .fields
         .get(i)
-        .is_some_and(|span| self.name_str(span).eq_ignore_ascii_case(name_ref));
+        .is_some_and(|span| self.name_is(span, name_ref));
       if is_match {
         if first.is_none() {
           first = Some(i);
           i = i.saturating_add(1);
         } else {
           self.fields.remove(i);
-          removed = true;
         }
       } else {
         i = i.saturating_add(1);
@@ -653,21 +692,9 @@ impl Headers {
         slot.value_start = value_start;
         slot.value_len = value_len;
       }
-      if removed {
-        // Indices after removals shifted — rebuild.
-        self.rebuild_index();
-      }
-      // else: same first-index slot; name bytes (and lowercase hash) unchanged.
     } else {
-      let idx = self.fields.len();
-      let key = ascii_lower_hash(name_ref);
       let pair = self.append_pair(name_ref, value_ref);
       self.fields.push(pair);
-      if let Some(map) = self.index.as_mut() {
-        Arc::make_mut(map).entry(key).or_insert(idx);
-      } else if self.fields.len() >= INDEX_THRESHOLD {
-        self.rebuild_index();
-      }
     }
   }
 
@@ -677,24 +704,10 @@ impl Headers {
     &self,
     name: &str,
   ) -> Option<&str> {
-    if let Some(map) = self.index.as_ref() {
-      let h = ascii_lower_hash(name);
-      match map.get(&h) {
-        Some(&idx) => {
-          if let Some(span) = self.fields.get(idx)
-            && self.name_str(span).eq_ignore_ascii_case(name)
-          {
-            return Some(self.value_str(span));
-          }
-          // Hash collision with a different name — fall through to linear scan.
-        },
-        None => return None,
-      }
-    }
     self
       .fields
       .iter()
-      .find(|span| self.name_str(span).eq_ignore_ascii_case(name))
+      .find(|span| self.name_is(span, name))
       .map(|span| self.value_str(span))
   }
 
@@ -706,7 +719,7 @@ impl Headers {
   ) -> Vec<&str> {
     let mut out = Vec::new();
     for span in &self.fields {
-      if self.name_str(span).eq_ignore_ascii_case(name) {
+      if self.name_is(span, name) {
         out.push(self.value_str(span));
       }
     }
@@ -714,8 +727,7 @@ impl Headers {
   }
 
   /// Iterate values for `name` without allocating (case-insensitive, insertion order).
-  /// Used by `cookie-jar` store path; kept available for unit tests when that feature is off.
-  #[cfg_attr(not(feature = "cookie-jar"), allow(dead_code))]
+  /// Used by the connection persistence check and the `cookie-jar` store path.
   #[inline]
   pub(crate) fn values<'a>(
     &'a self,
@@ -724,7 +736,7 @@ impl Headers {
     self
       .fields
       .iter()
-      .filter(|&span| self.name_str(span).eq_ignore_ascii_case(name))
+      .filter(|&span| self.name_is(span, name))
       .map(|span| self.value_str(span))
   }
 
@@ -734,23 +746,7 @@ impl Headers {
     &self,
     name: &str,
   ) -> bool {
-    if let Some(map) = self.index.as_ref() {
-      let h = ascii_lower_hash(name);
-      match map.get(&h) {
-        Some(&idx) => {
-          if let Some(span) = self.fields.get(idx)
-            && self.name_str(span).eq_ignore_ascii_case(name)
-          {
-            return true;
-          }
-        },
-        None => return false,
-      }
-    }
-    self
-      .fields
-      .iter()
-      .any(|span| self.name_str(span).eq_ignore_ascii_case(name))
+    self.fields.iter().any(|span| self.name_is(span, name))
   }
 
   /// Remove every field matching `name` (case-insensitive).
@@ -758,17 +754,8 @@ impl Headers {
     &mut self,
     name: &str,
   ) {
-    let before = self.fields.len();
-    {
-      let Self { buf, fields, .. } = self;
-      fields.retain(|span| !str_from_buf(buf, span.name_start, span.name_len).eq_ignore_ascii_case(name));
-    }
-    if self.fields.len() == before {
-      // No removal; still promote a deferred index once past the threshold.
-      self.ensure_index();
-    } else {
-      self.rebuild_index();
-    }
+    let Self { buf, fields } = self;
+    fields.retain(|span| !name_matches(buf, span, name));
   }
 
   /// Append to `Cookie` (`; `-joined), or insert if absent. No-op when `value` is empty.
@@ -784,16 +771,22 @@ impl Headers {
     if let Some(idx) = self
       .fields
       .iter()
-      .position(|span| self.name_str(span).eq_ignore_ascii_case(Self::COOKIE))
+      .position(|span| self.name_is(span, Self::COOKIE))
     {
-      // Snapshot old value bytes before COW (cannot borrow arena across `extend_parts`).
-      let old_bytes = self
-        .fields
-        .get(idx)
-        .map(|s| self.value_str(s).as_bytes().to_vec());
-      if let Some(old) = old_bytes {
-        let add = old.len().saturating_add(2).saturating_add(value.len());
-        let value_start = self.extend_parts(&[&old, b"; ", value.as_bytes()]);
+      if let Some(span) = self.fields.get(idx).copied() {
+        let old_start = span.value_start as usize;
+        let old_end = old_start.saturating_add(span.value_len as usize);
+        let add = (span.value_len as usize)
+          .saturating_add(2)
+          .saturating_add(value.len());
+        let value_start = usize_to_u32(self.buf.len());
+        self.buf.reserve(add);
+        // Old value already lives in the arena: copy within (no temp Vec).
+        if old_end <= self.buf.len() {
+          self.buf.extend_from_within(old_start..old_end);
+        }
+        self.buf.extend_from_slice(b"; ");
+        self.buf.extend_from_slice(value.as_bytes());
         if let Some(slot) = self.fields.get_mut(idx) {
           slot.value_start = value_start;
           slot.value_len = usize_to_u32(add);
@@ -847,6 +840,17 @@ impl Headers {
   pub const TRANSFER_ENCODING: &'static str = "Transfer-Encoding";
   /// `User-Agent`
   pub const USER_AGENT: &'static str = "User-Agent";
+
+  /// Case-insensitive name match; length is checked from the span first so
+  /// non-matching fields cost a compare, not a slice + byte loop.
+  #[inline]
+  fn name_is(
+    &self,
+    span: &FieldSpan,
+    name: &str,
+  ) -> bool {
+    name_matches(&self.buf, span, name)
+  }
 
   #[inline]
   fn name_str(
@@ -913,69 +917,26 @@ impl Headers {
   }
 
   /// Extend the arena; returns the start offset of the appended bytes.
-  ///
-  /// Copy-on-write only when `buf` is shared. Shared + dead wire bytes: pack
-  /// live name/value spans into a tight buffer (cheaper than memcpy of the full
-  /// section). Shared + already packed: one memcpy of the live view. Unique:
-  /// mutate in place via [`Bytes::try_into_mut`].
   fn extend_parts(
     &mut self,
     parts: &[&[u8]],
   ) -> u32 {
+    let start = usize_to_u32(self.buf.len());
     let add: usize = parts.iter().map(|p| p.len()).sum();
     if add == 0 {
-      return usize_to_u32(self.buf.len());
+      return start;
     }
-    let buf = core::mem::replace(&mut self.buf, Bytes::new());
-    let mut mut_buf = match buf.try_into_mut() {
-      Ok(b) => b,
-      Err(shared) => self.cow_arena(&shared, add),
-    };
-    let start = mut_buf.len();
-    mut_buf.reserve(add);
-    for part in parts {
-      mut_buf.extend_from_slice(part);
-    }
-    self.buf = mut_buf.freeze();
-    usize_to_u32(start)
-  }
-
-  /// Build a uniquely owned arena from a shared `Bytes` view, reserving `extra`.
-  fn cow_arena(
-    &mut self,
-    shared: &Bytes,
-    extra: usize,
-  ) -> BytesMut {
-    let live: usize = self
-      .fields
-      .iter()
-      .map(|s| (s.name_len as usize).saturating_add(s.value_len as usize))
-      .sum();
-    if live < shared.len() {
-      // Drop dead status-line / CRLF / rewritten-value bytes; remap spans.
-      let mut out = BytesMut::with_capacity(live.saturating_add(extra));
-      for span in &mut self.fields {
-        let name = str_from_buf(shared, span.name_start, span.name_len).as_bytes();
-        let value = str_from_buf(shared, span.value_start, span.value_len).as_bytes();
-        let name_start = out.len();
-        out.extend_from_slice(name);
-        let value_start = out.len();
-        out.extend_from_slice(value);
-        *span = FieldSpan {
-          name_start: usize_to_u32(name_start),
-          name_len: usize_to_u32(name.len()),
-          value_start: usize_to_u32(value_start),
-          value_len: usize_to_u32(value.len()),
-        };
-      }
-      // Field indices unchanged → existing side-index stays valid.
-      out
+    if self.buf.capacity() == 0 {
+      // First field: a little headroom so a typical request builder's handful of
+      // headers lands in one allocation instead of 3–4 doubling steps.
+      self.buf.reserve(add.max(96));
     } else {
-      // Already packed: one memcpy of the live view; spans stay put.
-      let mut out = BytesMut::with_capacity(shared.len().saturating_add(extra));
-      out.extend_from_slice(shared);
-      out
+      self.buf.reserve(add);
     }
+    for part in parts {
+      self.buf.extend_from_slice(part);
+    }
+    start
   }
 }
 
@@ -997,7 +958,6 @@ where
     for (name, value) in pairs {
       out.push_owned(name.as_ref(), value.as_ref());
     }
-    out.rebuild_index();
     out
   }
 }
@@ -1029,7 +989,7 @@ impl<'a> IntoIterator for &'a Headers {
 /// Owning iterator over `(name, value)` pairs from [`Headers`].
 #[derive(Debug)]
 pub struct IntoIter {
-  buf: Bytes,
+  buf: Vec<u8>,
   fields: FieldList,
   idx: usize,
 }
@@ -1071,8 +1031,17 @@ impl IntoIterator for Headers {
 }
 
 #[inline]
+fn name_matches(
+  buf: &[u8],
+  span: &FieldSpan,
+  name: &str,
+) -> bool {
+  span.name_len as usize == name.len() && span.name_in(buf).eq_ignore_ascii_case(name.as_bytes())
+}
+
+#[inline]
 fn str_from_buf(
-  buf: &Bytes,
+  buf: &[u8],
   start: u32,
   len: u32,
 ) -> &str {
@@ -1180,11 +1149,10 @@ mod tests {
   fn hash_matches_field_equality() {
     let mut a = Headers::new();
     a.insert("Host", "example.com");
-    // Cross the index threshold so `a` has a side-index cache.
-    for i in 0..INDEX_THRESHOLD {
+    for i in 0..INLINE_FIELDS {
       a.insert(alloc::format!("X-{i}"), "1");
     }
-    // `b` built via FromIterator also rebuilds an index — Hash must still match Eq.
+    // Different arena layout (rebuilt via FromIterator) — Hash must still match Eq.
     let b: Headers = a.iter().collect();
     assert_eq!(a, b);
     assert_eq!(hash_value(&a), hash_value(&b));
@@ -1226,34 +1194,20 @@ mod tests {
   }
 
   #[test]
-  fn insert_after_small_materialize_keeps_lookups() {
-    // Rebuild skips the side-index below the threshold; insert must not leave a
-    // partial map that shadows earlier fields.
+  fn many_fields_lookup_linear() {
     let mut h = Headers::with_capacity(4);
-    h.push_owned("Host", "a");
-    h.push_owned("X-A", "1");
-    h.rebuild_index();
-    assert_eq!(h.get("host"), Some("a"));
-    h.insert("X-B", "2");
-    assert_eq!(h.get("host"), Some("a"));
-    assert_eq!(h.get("x-a"), Some("1"));
-    assert_eq!(h.get("x-b"), Some("2"));
-  }
-
-  #[test]
-  fn deferred_index_after_batch_push_owned() {
-    // Wire materialize leaves index unset; get/contains still work (linear).
-    let mut h = Headers::with_capacity(INDEX_THRESHOLD);
-    for i in 0..INDEX_THRESHOLD {
+    for i in 0..40 {
       h.push_owned(alloc::format!("X-{i}"), "1");
     }
-    assert!(h.index.is_none());
+    h.insert("Host", "a");
     assert_eq!(h.get("x-0"), Some("1"));
-    assert!(h.contains("x-7"));
-    // First mutating API past the threshold builds the index.
+    assert!(h.contains("x-39"));
+    assert_eq!(h.get("HOST"), Some("a"));
     h.set("x-0", "2");
-    assert!(h.index.is_some());
     assert_eq!(h.get("x-0"), Some("2"));
+    h.remove("x-5");
+    assert!(!h.contains("x-5"));
+    assert_eq!(h.len(), 40);
   }
 
   #[test]
@@ -1273,54 +1227,6 @@ mod tests {
     a.set("Host", "other.example");
     assert_eq!(a.get("host"), Some("other.example"));
     assert_eq!(b.get("host"), Some("example.com"));
-  }
-
-  #[test]
-  fn clone_shares_side_index_cache() {
-    let mut a = Headers::new();
-    for i in 0..INDEX_THRESHOLD {
-      a.insert(alloc::format!("X-{i}"), "1");
-    }
-    assert!(a.index.is_some());
-    let b = a.clone();
-    assert!(b.index.is_some());
-    // Same Arc — clone must not deep-copy the map (Drop/Callgrind sensitive).
-    assert!(Arc::ptr_eq(a.index.as_ref().unwrap(), b.index.as_ref().unwrap()));
-    assert_eq!(b.get("x-0"), Some("1"));
-    assert_eq!(a, b);
-  }
-
-  #[test]
-  fn shared_mutation_packs_dead_arena_bytes() {
-    // Simulate a wire section: dead prefix + live name/value (shared via clone).
-    let mut wire = BytesMut::new();
-    wire.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
-    let name_start = wire.len();
-    wire.extend_from_slice(b"Host");
-    let value_start = wire.len();
-    wire.extend_from_slice(b"example.com");
-    wire.extend_from_slice(b"\r\n\r\n");
-    let buf = wire.freeze();
-    let live = "Host".len() + "example.com".len();
-    assert!(buf.len() > live);
-
-    let mut a = Headers::from_spans(
-      buf,
-      core::iter::once(FieldSpan::from_offsets(
-        usize_to_u32(name_start),
-        usize_to_u32(4),
-        usize_to_u32(value_start),
-        usize_to_u32("example.com".len()),
-      ))
-      .collect(),
-    );
-    let _keep_shared = a.clone();
-    let before = a.arena_len();
-    a.set("Host", "other.example");
-    // Packed live fields + new value only — no status line / CRLFs retained.
-    assert!(a.arena_len() < before);
-    assert_eq!(a.get("host"), Some("other.example"));
-    assert_eq!(a.iter().next(), Some(("Host", "other.example")));
   }
 
   #[test]
@@ -1369,5 +1275,24 @@ mod tests {
       prop_assert_eq!(h.get(&probe), Some(value.as_str()));
       prop_assert!(h.contains(&probe));
     });
+  }
+}
+
+#[cfg(test)]
+mod clone_tests {
+  #![allow(clippy::unwrap_used)]
+  use super::*;
+
+  #[test]
+  fn clone_drops_dead_and_tail_bytes() {
+    let mut h = Headers::new();
+    h.insert("A", "1");
+    h.set("A", "2222");
+    h.arena_tail_mut().extend_from_slice(b"BODY-BYTES");
+    let c = h.clone();
+    assert_eq!(c.get("a"), Some("2222"));
+    assert_eq!(c.arena_len(), "A".len() + "2222".len());
+    assert_eq!(h.clone_raw().arena_len(), h.arena_len());
+    assert_eq!(c, h);
   }
 }

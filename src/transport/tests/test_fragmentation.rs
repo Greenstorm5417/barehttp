@@ -12,7 +12,7 @@ fn read_ref(response: &str) -> (u16, Vec<u8>) {
   let mut socket = MockSocket::with_response(response);
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
   let raw = conn.read_raw_response(true).expect("unfragmented");
-  (raw.status_code, raw.body_bytes.to_vec())
+  (raw.status_code, raw.body().to_vec())
 }
 
 fn assert_matches_ref(
@@ -25,7 +25,7 @@ fn assert_matches_ref(
     .read_raw_response(true)
     .unwrap_or_else(|e| panic!("fragmented read failed for split of {response:?}: {e:?}"));
   assert_eq!(raw.status_code, want_status);
-  assert_eq!(raw.body_bytes.as_ref(), want_body.as_slice());
+  assert_eq!(raw.body(), want_body.as_slice());
 }
 
 #[test]
@@ -36,7 +36,7 @@ fn content_length_body_one_byte_reads() {
 
   let raw = conn.read_raw_response(true).unwrap();
   assert_eq!(raw.status_code, 200);
-  assert_eq!(&raw.body_bytes[..], b"Hello World");
+  assert_eq!(raw.body(), b"Hello World");
 }
 
 #[test]
@@ -47,7 +47,7 @@ fn chunked_body_split_across_reads() {
 
   let raw = conn.read_raw_response(true).unwrap();
   assert_eq!(raw.status_code, 200);
-  assert_eq!(&raw.body_bytes[..], b"Hello World");
+  assert_eq!(raw.body(), b"Hello World");
   assert_eq!(
     raw
       .decoded_chunked_trailers
@@ -80,7 +80,7 @@ fn headers_incomplete_until_final_crlf() {
   let mut socket = MockSocket::with_max_read(response, 2);
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
   let raw = conn.read_raw_response(true).unwrap();
-  assert_eq!(&raw.body_bytes[..], b"ping");
+  assert_eq!(raw.body(), b"ping");
 }
 
 #[test]
@@ -116,8 +116,8 @@ fn large_chunked_stream_byte_at_a_time() {
   let raw = conn
     .read_raw_response(true)
     .expect("fragmented chunked read");
-  assert!(raw.body_bytes.starts_with(b"chunk-00"));
-  assert!(raw.body_bytes.ends_with(b"chunk-19"));
+  assert!(raw.body().starts_with(b"chunk-00"));
+  assert!(raw.body().ends_with(b"chunk-19"));
   assert!(raw.decoded_chunked_trailers.is_some());
 }
 

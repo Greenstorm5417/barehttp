@@ -17,7 +17,7 @@ fn test_body_content_length_zero() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert!(response.body().is_empty());
+  assert_eq!(response.body(), []);
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn test_body_1xx_status_no_body() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert!(response.body().is_empty());
+  assert_eq!(response.body(), []);
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn test_body_204_no_content_ignores_body() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert!(response.body().is_empty());
+  assert_eq!(response.body(), []);
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn test_body_304_not_modified_no_body() {
   let result = Response::parse(input);
   assert!(result.is_ok());
   let response = result.unwrap();
-  assert!(response.body().is_empty());
+  assert_eq!(response.body(), []);
 }
 
 #[test]

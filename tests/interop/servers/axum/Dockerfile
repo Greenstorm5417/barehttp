@@ -1,11 +1,11 @@
 # Pinned builder; interop server only (not the barehttp MSRV).
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.100-trixie AS builder
 WORKDIR /app
 COPY Cargo.toml ./
 COPY src ./src
 RUN cargo build --release
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 RUN apt-get update \
   && apt-get install -y --no-install-recommends wget ca-certificates \
   && rm -rf /var/lib/apt/lists/*

@@ -62,7 +62,7 @@ fn short_reads_still_assemble_full_content_length() {
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
   let raw = conn.read_raw_response(true).unwrap();
-  assert_eq!(&raw.body_bytes[..], b"HelloWorld");
+  assert_eq!(raw.body(), b"HelloWorld");
   assert!(conn.is_reusable());
 }
 
@@ -228,5 +228,5 @@ fn data_step_splits_across_buffer_sized_reads() {
 
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
   let raw = conn.read_raw_response(true).unwrap();
-  assert_eq!(&raw.body_bytes[..], body);
+  assert_eq!(raw.body(), body);
 }

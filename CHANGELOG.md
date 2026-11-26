@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **One heap allocation per typical GET.** Loopback `GET` (dhat): 23 → 1 client
+  allocations and ~9.1 KB → ~200 B allocated per request; peak live heap 9.3 KB → 0.75 KB.
+- Request head is written straight into a 4 KiB in-`Connection` scratch buffer
+  (heap only when larger). The caller's `Headers` are never mutated: Host,
+  `Connection: close`, default `User-Agent` / `Accept` / `Accept-Encoding`, and
+  jar cookies are layered on while writing. The head is validated and sized
+  before DNS/connect.
+- Response head is read into the same scratch; the only header copy packs live
+  name/value bytes into one exact-capacity arena (no status line / CRLF dead bytes).
+  Small identity-coded bodies (≤ 64 KiB) are read from the socket directly into
+  that arena's tail, so a typical response is a single allocation.
+  Larger / encoded bodies get one exact buffer (`into_bytes` stays zero-copy).
+- Chunked bodies decode **in place** (payload compacted over consumed framing):
+  no second wire + decoded copy; read sizes follow the pending chunk.
+- Single-pass header scanner: slice patterns (no per-byte bounds checks), SWAR
+  CTL/line-end search, spans written straight into the final field list (exact
+  heap size past 8 fields, no regrowth). `Response::parse`: −25–28 % instructions
+  (Callgrind), 1 allocation (was 2–4).
+- `Headers`: `Vec` arena (no `Bytes` copy-on-write churn); side index removed
+  (length-prefiltered linear lookups are as fast at realistic field counts and
+  cost no memory); `Clone` copies only live bytes.
+- Well-known header names: length switch instead of PHF (`phf` dependency removed).
+- URI parser: class-table runs instead of per-byte peek/advance (−32–45 %).
+- Connection pool: borrowed-key lookups (no per-request key `String`s); idle
+  sockets no longer hold receive buffers. IP literals format on the stack for
+  Host / SNI / cookie matching. Empty cookie jars short-circuit.
+- Gzip: slice-by-8 CRC-32; output sized exactly from the member `ISIZE` trailer
+  (bounded by the limit and DEFLATE's max ratio); decompressed bodies trimmed
+  before hand-off. −15 % instructions.
+
+### Tooling
+
+- CI/release actions: `actions/checkout` v7, `actions/cache` v6,
+  `actions/upload-artifact` v7, `dtolnay/rust-toolchain` (2026-11-15),
+  `taiki-e/install-action` v2.90.10, `Swatinem/rust-cache` v2.9.3,
+  `kani-github-action` v1.1 (SHA-pinned where they were before).
+- Tools: nextest 0.9.152, cargo-llvm-cov 0.9.2, cargo-deny 0.22.1,
+  cargo-semver-checks 0.51.0, Kani 0.68.0, Gungraun + runner 0.20.0
+  (`client_requests` feature → `cachegrind`; `ValgrindTool` → `Tool`; baseline
+  cache keys versioned so 0.19 baselines are not compared).
+- Dependencies refreshed to latest compatible releases (`bytes` 1.12.2,
+  `hashbrown` 0.17.2, `ruzstd` 0.9.1, `libc` 0.2.191; dev: `proptest` 1.12,
+  `flate2` 1.1.11, `trybuild` 1.0.125, …); lockfiles updated.
+- Clean on Rust 1.100 clippy `-D warnings` (test asserts, `#[deprecated(since)]`);
+  redundant `package.homepage` removed; unused `Unicode-3.0` license allowance dropped.
+- Docker interop images: nginx 1.30, caddy 2.11, python 3.15, node 26,
+  haproxy 3.4 (httpd stays 2.4); axum server built on `rust:1.100-trixie` /
+  `debian:trixie-slim`. MSRV stays 1.90.
+
 ## [0.1.1] - 2026-08-27
 
 ### Changed

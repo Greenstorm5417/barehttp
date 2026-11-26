@@ -10,18 +10,6 @@ pub struct ChunkedDecoder {
   trailers: Headers,
 }
 
-/// Framing layout of a complete buffered chunked message (no payload copy).
-struct BufferedLayout {
-  /// Decoded payload length (sum of chunk sizes).
-  payload_len: usize,
-  /// When the whole payload is one contiguous span in the wire buffer.
-  contiguous: Option<(usize, usize)>,
-  /// Non-contiguous payload spans (empty when `contiguous` is `Some` or body empty).
-  ranges: Vec<(usize, usize)>,
-  /// Byte offset of the trailer section (after the final `0…\r\n` size line).
-  trailer_at: usize,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DecodeState {
   ChunkSize,
@@ -30,6 +18,17 @@ enum DecodeState {
   ChunkDataCrlf,
   TrailerSection,
   Complete,
+}
+
+/// One framing step of [`ChunkedDecoder::step`] (offsets relative to its input).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Step {
+  /// Payload bytes at `input[start..start + len]`; resume at `start + len`.
+  Data { start: usize, len: usize },
+  /// Need more input; the first `consumed` bytes are fully processed.
+  NeedMore { consumed: usize },
+  /// Message complete; the message ends at `input[..end]`.
+  Done { end: usize },
 }
 
 /// Outcome of [`ChunkedDecoder::feed`].
@@ -106,92 +105,110 @@ impl ChunkedDecoder {
     input: &'a [u8],
     mut output: Option<&mut alloc::vec::Vec<u8>>,
   ) -> Result<FeedResult<'a>, ParseError> {
-    let mut remaining = input;
-
+    let mut base = 0usize;
     loop {
+      match self.step(input.get(base..).unwrap_or(&[]))? {
+        Step::Data { start, len } => {
+          let at = base.saturating_add(start);
+          if let Some(out) = output.as_deref_mut() {
+            out.extend_from_slice(input.get(at..at.saturating_add(len)).unwrap_or(&[]));
+          }
+          base = at.saturating_add(len);
+        },
+        Step::NeedMore { consumed } => {
+          return Ok(FeedResult::NeedMore {
+            consumed: base.saturating_add(consumed),
+          });
+        },
+        Step::Done { end } => {
+          return Ok(FeedResult::Done {
+            rest: input.get(base.saturating_add(end)..).unwrap_or(&[]),
+          });
+        },
+      }
+    }
+  }
+
+  /// Payload bytes still owed by the current chunk (0 outside chunk data).
+  #[must_use]
+  pub(crate) const fn pending_data(&self) -> usize {
+    match self.state {
+      DecodeState::ChunkData(left) => left,
+      _ => 0,
+    }
+  }
+
+  /// Advance framing over `input` until payload, more input, or completion.
+  ///
+  /// Never copies: payload is reported as an offset range so callers can move
+  /// it wherever they like (e.g. compact in place over consumed framing).
+  ///
+  /// # Errors
+  /// [`ParseError`] on illegal framing.
+  pub(crate) fn step(
+    &mut self,
+    input: &[u8],
+  ) -> Result<Step, ParseError> {
+    let mut pos = 0usize;
+    loop {
+      let remaining = input.get(pos..).unwrap_or(&[]);
       match self.state {
         DecodeState::ChunkSize => {
           if remaining.is_empty() {
-            return Ok(FeedResult::NeedMore {
-              consumed: input.len().saturating_sub(remaining.len()),
-            });
+            return Ok(Step::NeedMore { consumed: pos });
           }
           match Self::parse_chunk_size(remaining) {
             Ok((size, rest)) => {
-              remaining = rest;
+              pos = input.len().saturating_sub(rest.len());
               self.state = if size == 0 {
                 DecodeState::TrailerSection
               } else {
-                // Cap reserve so a forged huge chunk size cannot OOM before framing checks.
-                if let Some(out) = output.as_deref_mut() {
-                  const RESERVE_CAP: usize = 64 * 1024;
-                  out.reserve(size.min(RESERVE_CAP));
-                }
                 DecodeState::ChunkData(size)
               };
             },
             Err(ParseError::UnexpectedEndOfInput | ParseError::MissingCrlf) => {
-              return Ok(FeedResult::NeedMore {
-                consumed: input.len().saturating_sub(remaining.len()),
-              });
+              return Ok(Step::NeedMore { consumed: pos });
             },
             Err(e) => return Err(e),
           }
         },
         DecodeState::ChunkData(left) => {
           if remaining.is_empty() {
-            return Ok(FeedResult::NeedMore {
-              consumed: input.len().saturating_sub(remaining.len()),
-            });
+            return Ok(Step::NeedMore { consumed: pos });
           }
           let take = left.min(remaining.len());
-          let data = remaining
-            .get(..take)
-            .ok_or(ParseError::UnexpectedEndOfInput)?;
-          if let Some(out) = output.as_deref_mut() {
-            out.extend_from_slice(data);
-          }
-          remaining = remaining
-            .get(take..)
-            .ok_or(ParseError::UnexpectedEndOfInput)?;
           let next = left.saturating_sub(take);
-          if next > 0 {
-            self.state = DecodeState::ChunkData(next);
-            return Ok(FeedResult::NeedMore {
-              consumed: input.len().saturating_sub(remaining.len()),
-            });
-          }
-          self.state = DecodeState::ChunkDataCrlf;
+          self.state = if next > 0 {
+            DecodeState::ChunkData(next)
+          } else {
+            DecodeState::ChunkDataCrlf
+          };
+          return Ok(Step::Data { start: pos, len: take });
         },
         DecodeState::ChunkDataCrlf => match expect_crlf(remaining) {
           Ok(rest) => {
-            remaining = rest;
+            pos = input.len().saturating_sub(rest.len());
             self.state = DecodeState::ChunkSize;
           },
           Err(ParseError::MissingCrlf) => {
-            return Ok(FeedResult::NeedMore {
-              consumed: input.len().saturating_sub(remaining.len()),
-            });
+            return Ok(Step::NeedMore { consumed: pos });
           },
           Err(e) => return Err(e),
         },
         DecodeState::TrailerSection => {
-          // Incomplete edge: the whole trailer section (through the terminating blank
-          // line) must be present before `parse_header_fields` runs — trailers are not
-          // streamed field-by-field. Payload chunks above are single-pass.
+          // The whole trailer section (through its blank line) must be present
+          // before it is parsed — trailers are not streamed field-by-field.
           if !trailer_section_looks_complete(remaining) {
-            return Ok(FeedResult::NeedMore {
-              consumed: input.len().saturating_sub(remaining.len()),
-            });
+            return Ok(Step::NeedMore { consumed: pos });
           }
           let (trailers, rest) = parse_header_fields(remaining)?;
           self.trailers = trailers;
           self.state = DecodeState::Complete;
-          return Ok(FeedResult::Done { rest });
+          return Ok(Step::Done {
+            end: input.len().saturating_sub(rest.len()),
+          });
         },
-        DecodeState::Complete => {
-          return Ok(FeedResult::Done { rest: remaining });
-        },
+        DecodeState::Complete => return Ok(Step::Done { end: pos }),
       }
     }
   }
@@ -215,51 +232,68 @@ impl ChunkedDecoder {
     }
   }
 
-  /// Decode a complete buffered chunked body from owned wire bytes.
+  /// Decode a complete buffered chunked body from borrowed wire bytes.
   ///
-  /// Single-chunk (and empty) payloads reuse `input` via [`Bytes::slice`] — no
-  /// body-sized `Vec`. Multi-chunk copies once into an exact-capacity buffer.
-  /// Trailers are parsed in the same framing walk.
+  /// Two framing walks (no copies, no span list): count the payload, then copy
+  /// it into one exact-capacity buffer. Trailers are parsed once.
   ///
   /// # Errors
   /// [`ParseError`] on incomplete or illegal framing, or bytes after the message.
-  #[allow(clippy::needless_pass_by_value)] // owned `Bytes` so contiguous payloads can `slice`
-  pub fn decode_buffered(input: Bytes) -> Result<(Bytes, Headers), ParseError> {
-    let layout = Self::buffered_layout(input.as_ref())?;
+  pub fn decode_buffered(input: &[u8]) -> Result<(Bytes, Headers), ParseError> {
+    let (payload_len, trailer_at) = Self::walk_buffered(input, |_, _| {})?;
     let trailer_section = input
-      .get(layout.trailer_at..)
+      .get(trailer_at..)
       .ok_or(ParseError::UnexpectedEndOfInput)?;
     let (trailers, rest) = parse_header_fields(trailer_section)?;
     if !rest.is_empty() {
       return Err(ParseError::ExtraDataAfterResponse);
     }
-
-    let body = if layout.payload_len == 0 {
-      Bytes::new()
-    } else if let Some((start, end)) = layout.contiguous {
-      input.slice(start..end)
-    } else {
-      let mut out = Vec::with_capacity(layout.payload_len);
-      for (start, end) in layout.ranges {
-        let span = input
-          .get(start..end)
-          .ok_or(ParseError::UnexpectedEndOfInput)?;
-        out.extend_from_slice(span);
-      }
-      debug_assert_eq!(out.len(), layout.payload_len);
-      Bytes::from(out)
-    };
-    Ok((body, trailers))
+    if payload_len == 0 {
+      return Ok((Bytes::new(), trailers));
+    }
+    let mut out = Vec::with_capacity(payload_len);
+    Self::walk_buffered(input, |start, end| {
+      out.extend_from_slice(input.get(start..end).unwrap_or(&[]));
+    })?;
+    debug_assert_eq!(out.len(), payload_len);
+    Ok((Bytes::from(out), trailers))
   }
 
-  /// Walk chunk framing once: sizes, payload spans, trailer offset (no copy).
-  fn buffered_layout(input: &[u8]) -> Result<BufferedLayout, ParseError> {
+  /// Payload length of a complete buffered chunked message (framing walk only).
+  ///
+  /// # Errors
+  /// [`ParseError`] on incomplete or illegal framing.
+  pub(crate) fn buffered_payload_len(input: &[u8]) -> Result<usize, ParseError> {
+    Ok(Self::walk_buffered(input, |_, _| {})?.0)
+  }
+
+  /// Decode a complete buffered chunked message, appending the payload to `out`
+  /// (capacity reserved by the caller). Returns the trailers.
+  ///
+  /// # Errors
+  /// [`ParseError`] on incomplete or illegal framing, or bytes after the message.
+  pub(crate) fn decode_buffered_into(
+    input: &[u8],
+    out: &mut Vec<u8>,
+  ) -> Result<Headers, ParseError> {
+    let (_, trailer_at) = Self::walk_buffered(input, |start, end| {
+      out.extend_from_slice(input.get(start..end).unwrap_or(&[]));
+    })?;
+    let (trailers, rest) = parse_header_fields(input.get(trailer_at..).unwrap_or(&[]))?;
+    if !rest.is_empty() {
+      return Err(ParseError::ExtraDataAfterResponse);
+    }
+    Ok(trailers)
+  }
+
+  /// Walk chunk framing once; `on_span(start, end)` per data chunk. Returns the
+  /// payload length and the trailer-section offset.
+  fn walk_buffered<F: FnMut(usize, usize)>(
+    input: &[u8],
+    mut on_span: F,
+  ) -> Result<(usize, usize), ParseError> {
     let mut remaining = input;
     let mut payload_len = 0usize;
-    let mut contiguous: Option<(usize, usize)> = None;
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    let mut multi = false;
-
     loop {
       let (size, after_size) = match Self::parse_chunk_size(remaining) {
         Ok(v) => v,
@@ -270,57 +304,25 @@ impl ChunkedDecoder {
       };
 
       if size == 0 {
-        let trailer_at = input.len().saturating_sub(after_size.len());
         if !trailer_section_looks_complete(after_size) {
           return Err(ParseError::UnexpectedEndOfInput);
         }
-        return Ok(BufferedLayout {
-          payload_len,
-          contiguous: if multi {
-            None
-          } else {
-            contiguous
-          },
-          ranges: if multi {
-            ranges
-          } else {
-            Vec::new()
-          },
-          trailer_at,
-        });
+        return Ok((payload_len, input.len().saturating_sub(after_size.len())));
       }
 
-      if after_size.len() < size {
-        return Err(ParseError::UnexpectedEndOfInput);
-      }
       let after_payload = after_size
         .get(size..)
         .ok_or(ParseError::UnexpectedEndOfInput)?;
       let start = input.len().saturating_sub(after_size.len());
-      let end = start.saturating_add(size);
-
       match expect_crlf(after_payload) {
         Ok(rest) => remaining = rest,
         Err(ParseError::MissingCrlf) => return Err(ParseError::UnexpectedEndOfInput),
         Err(e) => return Err(e),
       }
-
       payload_len = payload_len
         .checked_add(size)
         .ok_or(ParseError::InvalidChunkSize)?;
-
-      if multi {
-        ranges.push((start, end));
-      } else if contiguous.is_none() {
-        contiguous = Some((start, end));
-      } else {
-        // Second data chunk: promote first span into `ranges` and continue scattered.
-        multi = true;
-        if let Some((s, e)) = contiguous.take() {
-          ranges.push((s, e));
-        }
-        ranges.push((start, end));
-      }
+      on_span(start, start.saturating_add(size));
     }
   }
 
@@ -415,10 +417,9 @@ fn trailer_section_looks_complete(data: &[u8]) -> bool {
 mod tests {
   #![allow(clippy::unwrap_used, clippy::expect_used, clippy::shadow_reuse, clippy::panic)]
 
-  use super::{ChunkedDecoder, FeedResult};
+  use super::{ChunkedDecoder, FeedResult, Step};
   use crate::error::ParseError;
   use alloc::vec::Vec;
-  use bytes::Bytes;
 
   #[test]
   fn feed_byte_at_a_time_decodes() {
@@ -433,7 +434,7 @@ mod tests {
           pending.drain(..consumed);
         },
         FeedResult::Done { rest } => {
-          assert!(rest.is_empty());
+          assert_eq!(rest, []);
           assert_eq!(out, b"Hello World");
           return;
         },
@@ -489,7 +490,7 @@ mod tests {
         .unwrap()
       {
         FeedResult::Done { rest } => {
-          assert!(rest.is_empty());
+          assert_eq!(rest, []);
           assert_eq!(offset + (buf.len() - offset), wire.len());
           return;
         },
@@ -512,23 +513,37 @@ mod tests {
   }
 
   #[test]
-  fn decode_buffered_single_chunk_reuses_bytes_storage() {
-    let wire = Bytes::from(Vec::from(&b"5\r\nHello\r\n0\r\n\r\n"[..]));
-    let parent = wire.clone();
-    let (body, trailers) = ChunkedDecoder::decode_buffered(wire).unwrap();
+  fn decode_buffered_single_chunk_exact_alloc() {
+    let (body, trailers) = ChunkedDecoder::decode_buffered(b"5\r\nHello\r\n0\r\n\r\n").unwrap();
     assert_eq!(body.as_ref(), b"Hello");
     assert!(trailers.is_empty());
-    // Contiguous payload → `Bytes::slice` into the same allocation (no Vec rebuild).
-    let p0 = parent.as_ptr() as usize;
-    let p1 = p0.saturating_add(parent.len());
-    let c0 = body.as_ptr() as usize;
-    let c1 = c0.saturating_add(body.len());
-    assert!(c0 >= p0 && c1 <= p1);
+  }
+
+  #[test]
+  fn step_reports_spans_without_copying() {
+    let wire = b"3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n";
+    let mut d = ChunkedDecoder::new();
+    let mut pos = 0usize;
+    let mut got = Vec::new();
+    loop {
+      match d.step(wire.get(pos..).unwrap()).unwrap() {
+        Step::Data { start, len } => {
+          got.extend_from_slice(wire.get(pos + start..pos + start + len).unwrap());
+          pos += start + len;
+        },
+        Step::NeedMore { .. } => panic!("complete input"),
+        Step::Done { end } => {
+          assert_eq!(pos + end, wire.len());
+          break;
+        },
+      }
+    }
+    assert_eq!(got, b"abcde");
   }
 
   #[test]
   fn decode_buffered_multi_chunk_exact_concat() {
-    let wire = Bytes::from(Vec::from(&b"5\r\nHello\r\n6\r\n World\r\n0\r\nX-T: v\r\n\r\n"[..]));
+    let wire = b"5\r\nHello\r\n6\r\n World\r\n0\r\nX-T: v\r\n\r\n";
     let (body, trailers) = ChunkedDecoder::decode_buffered(wire).unwrap();
     assert_eq!(body.as_ref(), b"Hello World");
     assert_eq!(trailers.get("x-t"), Some("v"));
@@ -537,23 +552,22 @@ mod tests {
   #[test]
   fn decode_buffered_matches_decode_chunk() {
     let wire = b"5\r\nHello\r\n6\r\n World\r\n0\r\nX-T: v\r\n\r\n";
-    let (body, trailers) = ChunkedDecoder::decode_buffered(Bytes::copy_from_slice(wire)).unwrap();
+    let (body, trailers) = ChunkedDecoder::decode_buffered(wire).unwrap();
     let mut decoder = ChunkedDecoder::new();
     let mut out = Vec::new();
     let rest = decoder.decode_chunk(wire, &mut out).unwrap();
-    assert!(rest.is_empty());
+    assert_eq!(rest, []);
     assert_eq!(body.as_ref(), out.as_slice());
     assert_eq!(trailers.get("x-t"), decoder.take_trailers().get("x-t"));
   }
 
   #[test]
   fn decode_buffered_empty_and_rejects_extra() {
-    let empty = Bytes::from(Vec::from(&b"0\r\n\r\n"[..]));
-    let (body, _) = ChunkedDecoder::decode_buffered(empty).unwrap();
+    let (body, _) = ChunkedDecoder::decode_buffered(b"0\r\n\r\n").unwrap();
     assert!(body.is_empty());
 
     // Extra framed data after the terminating blank line (same shape as RFC smuggling cases).
-    let extra = Bytes::from(Vec::from(&b"0\r\n\r\n5\r\nHello\r\n0\r\n\r\n"[..]));
+    let extra = b"0\r\n\r\n5\r\nHello\r\n0\r\n\r\n";
     assert!(matches!(
       ChunkedDecoder::decode_buffered(extra),
       Err(ParseError::ExtraDataAfterResponse)

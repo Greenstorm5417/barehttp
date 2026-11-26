@@ -7,7 +7,7 @@
 
 use barehttp::Response;
 use gungraun::client_requests::cachegrind as cr;
-use gungraun::{Cachegrind, LibraryBenchmarkConfig, ValgrindTool, library_benchmark, library_benchmark_group, main};
+use gungraun::{Cachegrind, LibraryBenchmarkConfig, Tool, library_benchmark, library_benchmark_group, main};
 use std::hint::black_box;
 
 #[path = "support.rs"]
@@ -16,7 +16,7 @@ mod support;
 fn cachegrind_config() -> LibraryBenchmarkConfig {
   let mut cfg = LibraryBenchmarkConfig::default();
   cfg
-    .default_tool(ValgrindTool::Cachegrind)
+    .default_tool(Tool::Cachegrind)
     .tool(Cachegrind::with_args(["--instr-at-start=no"]));
   cfg
 }

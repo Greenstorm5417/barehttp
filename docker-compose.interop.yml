@@ -6,7 +6,7 @@ name: barehttp-interop
 
 services:
   nginx:
-    image: nginx:1.27-alpine
+    image: nginx:1.30-alpine
     ports:
       - "18080:80"
     volumes:
@@ -33,7 +33,7 @@ services:
       retries: 30
 
   caddy:
-    image: caddy:2.8-alpine
+    image: caddy:2.11-alpine
     ports:
       - "18082:80"
     volumes:
@@ -46,7 +46,7 @@ services:
       retries: 30
 
   python:
-    image: python:3.12-alpine
+    image: python:3.15-alpine
     ports:
       - "18083:8080"
     volumes:
@@ -60,7 +60,7 @@ services:
       retries: 30
 
   node:
-    image: node:22-alpine
+    image: node:26-alpine
     ports:
       - "18084:8080"
     volumes:
@@ -88,7 +88,7 @@ services:
       start_period: 20s
 
   haproxy:
-    image: haproxy:2.9-alpine
+    image: haproxy:3.4-alpine
     ports:
       - "18086:80"
     volumes:

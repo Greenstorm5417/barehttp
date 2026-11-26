@@ -215,7 +215,7 @@ fn send_then_read_after_fragmented_writes() {
   conn.send_request(REQUEST, &[]).unwrap();
   let raw = conn.read_raw_response(true).unwrap();
   assert_eq!(raw.status_code, 200);
-  assert!(raw.body_bytes.is_empty());
+  assert_eq!(raw.body(), b"");
 }
 
 /// `HttpClient` retries `Error::Socket` only after a failed hop on a reused pooled

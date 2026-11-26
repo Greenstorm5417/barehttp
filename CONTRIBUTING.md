@@ -102,13 +102,13 @@ interop (unless compose is up), fuzz crate, benches.
 
 Release / nightly only. Pinned images in `docker-compose.interop.yml`:
 
-- `nginx:1.27-alpine` → `:18080`
+- `nginx:1.30-alpine` → `:18080`
 - `httpd:2.4-alpine` → `:18081`
-- `caddy:2.8-alpine` → `:18082`
-- `python:3.12-alpine` → `:18083`
-- `node:22-alpine` → `:18084`
-- Axum (`rust:1.85-bookworm` build) → `:18085`
-- `haproxy:2.9-alpine` (fronts nginx) → `:18086`
+- `caddy:2.11-alpine` → `:18082`
+- `python:3.15-alpine` → `:18083`
+- `node:26-alpine` → `:18084`
+- Axum (`rust:1.100-trixie` build) → `:18085`
+- `haproxy:3.4-alpine` (fronts nginx) → `:18086`
 
 ```bash
 bash scripts/run-interop.sh

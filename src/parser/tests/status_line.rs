@@ -9,7 +9,7 @@ fn status_line_ok_cases() {
 
   let empty_reason = Response::parse(b"HTTP/1.1 204 \r\n\r\n").unwrap();
   assert_eq!(empty_reason.status_code(), 204);
-  assert!(empty_reason.reason().is_empty());
+  assert_eq!(empty_reason.reason(), "");
 
   let spaced = Response::parse(b"HTTP/1.1 500 Internal  Server  Error\r\n\r\n").unwrap();
   assert_eq!(spaced.reason(), "Internal  Server  Error");

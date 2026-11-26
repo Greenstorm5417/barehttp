@@ -293,11 +293,8 @@ impl<'a> Parser<'a> {
   }
 
   fn parse_authority(&mut self) -> Result<Authority<'a>, ParseError> {
-    // Reject userinfo — credentials in URLs are not supported
-    if self.find_char_in_authority(b'@') {
-      return Err(ParseError::InvalidUri);
-    }
-
+    // Userinfo (`user@host`) is rejected by the grammar itself: `@` is not a
+    // reg-name / port character, so it is left over and fails the end check.
     let host = self.parse_host()?;
 
     let port = if self.peek() == Some(b':') {
@@ -310,35 +307,13 @@ impl<'a> Parser<'a> {
     Ok(Authority { host, port })
   }
 
-  fn find_char_in_authority(
-    &self,
-    target: u8,
-  ) -> bool {
-    let mut pos = self.pos;
-    let bytes = self.input.as_bytes();
-    while let Some(&ch) = bytes.get(pos) {
-      match ch {
-        b'/' | b'?' | b'#' => return false,
-        _ if ch == target => return true,
-        _ => pos = pos.saturating_add(1),
-      }
-    }
-    false
-  }
-
   fn parse_host(&mut self) -> Result<Host<'a>, ParseError> {
     if self.peek() == Some(b'[') {
       return self.parse_ip_literal();
     }
 
     let start = self.pos;
-    while let Some(ch) = self.peek() {
-      match ch {
-        b':' | b'/' | b'?' | b'#' => break,
-        _ if is_reg_name_char(ch) => self.advance(),
-        _ => break,
-      }
-    }
+    self.advance_by(self.run(REG_NAME));
 
     let host_str = self.slice_from(start);
     if host_str.is_empty() {
@@ -397,35 +372,33 @@ impl<'a> Parser<'a> {
 
   fn parse_path_abempty(&mut self) -> &'a str {
     let start = self.pos;
-
-    while self.peek() == Some(b'/') {
-      self.advance();
-      while let Some(ch) = self.peek() {
-        if is_pchar(ch) {
-          self.advance();
-        } else {
-          break;
-        }
-      }
+    // path-abempty = *( "/" segment ): '/' and pchar runs, starting with '/'.
+    if self.peek() == Some(b'/') {
+      self.advance_by(self.run(PATH));
     }
-
     self.slice_from(start)
+  }
+
+  /// Length of the run of bytes from `pos` whose class has any bit of `mask`.
+  #[inline]
+  fn run(
+    &self,
+    mask: u8,
+  ) -> usize {
+    let rest = self.input.as_bytes().get(self.pos..).unwrap_or(&[]);
+    rest
+      .iter()
+      .position(|&b| uri_class(b) & mask == 0)
+      .unwrap_or(rest.len())
   }
 
   fn parse_query(&mut self) -> Result<&'a str, ParseError> {
     let start = self.pos;
-
-    while let Some(ch) = self.peek() {
-      match ch {
-        b'#' => break,
-        _ if is_pchar(ch) || ch == b'/' || ch == b'?' => {
-          self.advance();
-        },
-        _ => return Err(ParseError::InvalidUri),
-      }
+    self.advance_by(self.run(QUERY));
+    match self.peek() {
+      None | Some(b'#') => Ok(self.slice_from(start)),
+      Some(_) => Err(ParseError::InvalidUri),
     }
-
-    Ok(self.slice_from(start))
   }
 }
 
@@ -446,6 +419,46 @@ const fn is_pchar(ch: u8) -> bool {
 
 const fn is_reg_name_char(ch: u8) -> bool {
   is_unreserved(ch) || is_sub_delim(ch) || ch == b'%'
+}
+
+/// Class bit: RFC 3986 reg-name character.
+const REG_NAME: u8 = 1;
+/// Class bit: path-abempty character (`pchar` or `/`).
+const PATH: u8 = 2;
+/// Class bit: query character (`pchar`, `/`, or `?`).
+const QUERY: u8 = 4;
+
+const fn uri_class_table() -> [u8; 256] {
+  let mut t = [0u8; 256];
+  let mut i = 0usize;
+  while i < 256 {
+    #[allow(clippy::cast_possible_truncation)] // i < 256
+    let b = i as u8;
+    let mut c = 0u8;
+    if is_reg_name_char(b) {
+      c |= REG_NAME;
+    }
+    if is_pchar(b) || b == b'/' {
+      c |= PATH;
+    }
+    if is_pchar(b) || b == b'/' || b == b'?' {
+      c |= QUERY;
+    }
+    #[allow(clippy::indexing_slicing)] // i < 256
+    {
+      t[i] = c;
+    }
+    i += 1;
+  }
+  t
+}
+
+static URI_CLASS: [u8; 256] = uri_class_table();
+
+#[inline]
+#[allow(clippy::indexing_slicing)] // `u8` index into a 256-entry table
+fn uri_class(b: u8) -> u8 {
+  URI_CLASS[b as usize]
 }
 
 /// True when `host` is only digits/dots and contains a `.` (cheap IPv4 gate).

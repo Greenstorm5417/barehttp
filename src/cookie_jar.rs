@@ -332,11 +332,22 @@ impl CookieStore {
       return String::new();
     };
 
+    let cookies = self.cookies.lock();
+    // Empty jar (the common case for most clients): no host formatting, no clock.
+    if cookies.by_domain.is_empty() {
+      return String::new();
+    }
+
     // One host normalization for map keys + domain match; path stays borrowed.
-    // Skip alloc when the URI host is already lowercase (common case).
+    // Skip alloc when the URI host is already lowercase (common case); IP
+    // literals format on the stack.
+    let ip_buf;
     let host_lower: Cow<'_, str> = match auth.host() {
       Host::RegName(name) => ascii_host_key(name),
-      Host::IpAddr(addr) => Cow::Owned(crate::util::format_ip_for_host(*addr)),
+      Host::IpAddr(addr) => {
+        ip_buf = crate::util::IpHostBuf::new(*addr);
+        Cow::Borrowed(ip_buf.as_str())
+      },
     };
     let request_path = if uri.path().is_empty() {
       "/"
@@ -346,7 +357,6 @@ impl CookieStore {
     let is_secure = uri.scheme().eq_ignore_ascii_case("https");
     let now = crate::util::now_unix_secs();
 
-    let cookies = self.cookies.lock();
     let mut matching = Vec::new();
 
     // Host-only cookies live under the exact host key; Domain cookies under a
@@ -971,11 +981,7 @@ mod tests {
         alloc::vec!["gone=1; Expires=Thu, 01 Jan 1970 00:00:00 GMT".to_string()],
       )
       .expect("uri");
-    assert!(
-      store
-        .request_cookie_header("http://example.com/")
-        .is_empty()
-    );
+    assert_eq!(store.request_cookie_header("http://example.com/"), "");
   }
 
   #[test]
@@ -1000,11 +1006,7 @@ mod tests {
     store
       .store_response_cookies("http://example.com/", alloc::vec!["id=1; Max-Age=0".to_string()])
       .expect("uri");
-    assert!(
-      store
-        .request_cookie_header("http://example.com/")
-        .is_empty()
-    );
+    assert_eq!(store.request_cookie_header("http://example.com/"), "");
   }
 
   #[test]
@@ -1013,11 +1015,7 @@ mod tests {
     store
       .store_response_cookies("http://example.com/", alloc::vec!["x=1; Domain=com".to_string()])
       .expect("uri");
-    assert!(
-      store
-        .request_cookie_header("http://example.com/")
-        .is_empty()
-    );
+    assert_eq!(store.request_cookie_header("http://example.com/"), "");
     assert_eq!(store.iter().len(), 0);
   }
 

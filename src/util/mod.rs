@@ -43,6 +43,92 @@ fn encode(
 
 pub use core::net::IpAddr;
 
+/// `uri-host` text for an IP literal, formatted on the stack (IPv6 bracketed).
+///
+/// Longest form is `[` + 39-char IPv6 + `]` = 41 bytes.
+#[derive(Clone, Copy)]
+pub struct IpHostBuf {
+  buf: [u8; 48],
+  len: u8,
+}
+
+impl IpHostBuf {
+  /// Format `addr` like [`format_ip_for_host`] without allocating.
+  #[must_use]
+  pub fn new(addr: IpAddr) -> Self {
+    use core::fmt::Write as _;
+    let mut out = Self { buf: [0; 48], len: 0 };
+    // Cannot fail: 48 bytes fits every IPv4 / bracketed IPv6 rendering.
+    let _ = match addr {
+      IpAddr::V4(v4) => write!(out, "{v4}"),
+      IpAddr::V6(v6) => write!(out, "[{v6}]"),
+    };
+    out
+  }
+
+  /// Formatted host text.
+  #[must_use]
+  pub fn as_str(&self) -> &str {
+    let bytes = self.buf.get(..usize::from(self.len)).unwrap_or(&[]);
+    // SAFETY: only `fmt::Write::write_str` appends here, and it copies whole `&str`s.
+    unsafe { core::str::from_utf8_unchecked(bytes) }
+  }
+}
+
+impl core::fmt::Write for IpHostBuf {
+  fn write_str(
+    &mut self,
+    s: &str,
+  ) -> core::fmt::Result {
+    let start = usize::from(self.len);
+    let end = start.checked_add(s.len()).ok_or(core::fmt::Error)?;
+    let dst = self.buf.get_mut(start..end).ok_or(core::fmt::Error)?;
+    dst.copy_from_slice(s.as_bytes());
+    self.len = u8::try_from(end).map_err(|_| core::fmt::Error)?;
+    Ok(())
+  }
+}
+
+impl core::fmt::Debug for IpHostBuf {
+  fn fmt(
+    &self,
+    f: &mut core::fmt::Formatter<'_>,
+  ) -> core::fmt::Result {
+    core::fmt::Debug::fmt(self.as_str(), f)
+  }
+}
+
+/// Hop hostname: borrowed reg-name, or a stack-formatted IP literal.
+#[derive(Debug, Clone, Copy)]
+pub enum HostText<'a> {
+  /// Registered name, borrowed from the URI.
+  Name(&'a str),
+  /// IP literal text (IPv6 bracketed).
+  Ip(IpHostBuf),
+}
+
+impl HostText<'_> {
+  /// Host text for this hop.
+  #[must_use]
+  pub fn as_str(&self) -> &str {
+    match self {
+      Self::Name(n) => n,
+      Self::Ip(b) => b.as_str(),
+    }
+  }
+}
+
+/// Host of `uri` without allocating (empty name when there is no authority).
+#[must_use]
+pub fn host_text<'a>(uri: &crate::parser::uri::Uri<'a>) -> HostText<'a> {
+  use crate::parser::uri::Host;
+  match uri.authority().map(crate::parser::uri::Authority::host) {
+    Some(Host::RegName(name)) => HostText::Name(name),
+    Some(Host::IpAddr(addr)) => HostText::Ip(IpHostBuf::new(*addr)),
+    None => HostText::Name(""),
+  }
+}
+
 /// Host / authority form: IPv6 literals need brackets.
 #[must_use]
 pub fn format_ip_for_host(addr: IpAddr) -> alloc::string::String {

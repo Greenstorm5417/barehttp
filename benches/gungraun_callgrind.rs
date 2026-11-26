@@ -80,9 +80,8 @@ mod gzip_benches {
 #[cfg(feature = "gzip")]
 use gzip_benches::decompress as gzip_decompress;
 
-/// Buffered `Response::parse` pays for the Headers arena (vs old CompactString).
-/// `headers_get` improved ~3× for that trade; keep a wider Ir/cycles gate here so
-/// Callgrind does not treat the intentional architecture shift as a regression.
+/// Buffered `Response::parse`: single-pass scan + one packed arena (small bodies
+/// in its tail). Wider gate kept for allocator-noise headroom on tiny inputs.
 fn parse_regression_config() -> LibraryBenchmarkConfig {
   let mut cfg = LibraryBenchmarkConfig::default();
   cfg.tool(
@@ -94,10 +93,9 @@ fn parse_regression_config() -> LibraryBenchmarkConfig {
 }
 
 fn hot_regression_config() -> LibraryBenchmarkConfig {
-  // URI / headers_get stay well under 5%. Tiny fixed-Huffman gzip members are
-  // still a few percent above the pre-arena inflate baseline after post-pass CRC
-  // + push path restores; keep a slightly wider gate so micro noise does not
-  // block release while large-body inflate stays near the old numbers.
+  // URI / gzip stay well under 5%. `headers_get` is a linear, length-prefiltered
+  // scan (no side index): a few percent of noise on the 34-field fixture is
+  // expected, so keep a slightly wider gate.
   let mut cfg = LibraryBenchmarkConfig::default();
   cfg.tool(
     Callgrind::default()

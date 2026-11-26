@@ -117,7 +117,7 @@ pub fn decompress_raw_deflate(
   max_out: usize,
 ) -> Result<Vec<u8>, DecompressError> {
   let mut none = inflate::RunningChecksum::None;
-  let (out, _) = inflate::inflate_owned(data, max_out, &mut none)?;
+  let (out, _) = inflate::inflate_owned(data, max_out, &mut none, None)?;
   Ok(out)
 }
 
@@ -128,6 +128,6 @@ pub(crate) fn decompress_raw_deflate_into(
   out: &mut Vec<u8>,
 ) -> Result<(), DecompressError> {
   let mut none = inflate::RunningChecksum::None;
-  let _ = inflate::inflate(data, max_out, &mut none, out)?;
+  let _ = inflate::inflate(data, max_out, &mut none, out, None)?;
   Ok(())
 }

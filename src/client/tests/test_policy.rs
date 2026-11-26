@@ -6,7 +6,7 @@ use crate::method::Method;
 use crate::parser::uri::Uri;
 use crate::parser::version::Version;
 use crate::transport::RawResponse;
-use alloc::borrow::Cow;
+use crate::util::HostText;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -25,6 +25,7 @@ fn make_redirect_response(
     headers,
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::new(),
+    body_tail: None,
     decoded_chunked_trailers: None,
   }
 }
@@ -33,22 +34,7 @@ fn raw_to_response_for_test(
   raw: RawResponse,
   method: &Method,
 ) -> crate::parser::Response {
-  let RawResponse {
-    status_code,
-    reason,
-    mut headers,
-    version,
-    body_bytes,
-    decoded_chunked_trailers,
-  } = raw;
-  let (body, trailers) = if method == &Method::Head {
-    (bytes::Bytes::new(), Headers::new())
-  } else if let Some(trailers) = decoded_chunked_trailers {
-    crate::parser::Response::finish_decoded_body(body_bytes, &mut headers, trailers, usize::MAX).unwrap()
-  } else {
-    crate::parser::Response::parse_body_from_owned(body_bytes, &mut headers, status_code, version, usize::MAX).unwrap()
-  };
-  crate::parser::Response::from_parts(status_code, reason, headers, body, trailers)
+  crate::client::raw_to_response(raw, method, usize::MAX).unwrap()
 }
 
 fn process(
@@ -144,6 +130,7 @@ fn policy_drops_body_for_head_requests() {
     headers,
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::from_static(b"1234567890"),
+    body_tail: None,
     decoded_chunked_trailers: None,
   };
   let resp = raw_to_response_for_test(raw, &Method::Head);
@@ -277,6 +264,7 @@ fn non_followable_3xx_is_returned() {
       headers,
       version: Version::HTTP_11,
       body_bytes: bytes::Bytes::new(),
+      body_tail: None,
       decoded_chunked_trailers: None,
     };
     assert!(
@@ -362,6 +350,7 @@ fn status_error_when_configured() {
       headers,
       version: Version::HTTP_11,
       body_bytes: bytes::Bytes::from_static(b"fail"),
+      body_tail: None,
       decoded_chunked_trailers: None,
     };
     let err = process(
@@ -398,6 +387,7 @@ fn status_4xx_is_ok_when_configured_as_response() {
     headers: Headers::new(),
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::new(),
+    body_tail: None,
     decoded_chunked_trailers: None,
   };
   assert!(
@@ -571,6 +561,7 @@ fn chunked_trailers_reach_response() {
     headers,
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::from_static(b"5\r\nhello\r\n0\r\nX-Trailer: value\r\n\r\n"),
+    body_tail: None,
     decoded_chunked_trailers: None,
   };
   let resp = raw_to_response_for_test(raw, &Method::Get);
@@ -582,19 +573,12 @@ fn chunked_trailers_reach_response() {
 #[test]
 fn build_request_is_http11_with_host_and_origin_form() {
   let uri = Uri::parse("http://example.com:8080/a/b?q=1").unwrap();
-  let mut host = Cow::Borrowed("example.com");
-  let mut headers = Headers::new();
-  let bytes = build_request(
-    &uri,
-    &Method::Get,
-    &mut host,
-    8080,
-    &mut headers,
-    None,
-    &Config::default(),
-  )
-  .unwrap()
-  .to_bytes();
+  let host = HostText::Name("example.com");
+  let headers = Headers::new();
+  let config = Config::default();
+  let bytes = build_request(&uri, &Method::Get, &host, 8080, &headers, None, &config, "")
+    .unwrap()
+    .to_vec();
   let text = String::from_utf8_lossy(&bytes);
   assert!(text.starts_with("GET /a/b?q=1 HTTP/1.1\r\n"));
   assert!(text.contains("Host: example.com:8080\r\n"));
@@ -607,12 +591,12 @@ fn build_request_is_http11_with_host_and_origin_form() {
 fn build_request_sends_connection_close_when_pooling_disabled() {
   let uri = Uri::parse("http://example.com/").unwrap();
   let config = Config::builder().max_idle_per_host(0).build();
-  let mut host = Cow::Borrowed("example.com");
+  let host = HostText::Name("example.com");
   let mut custom = Headers::new();
   custom.insert("Connection", "keep-alive");
-  let bytes = build_request(&uri, &Method::Get, &mut host, 80, &mut custom, None, &config)
+  let bytes = build_request(&uri, &Method::Get, &host, 80, &custom, None, &config, "")
     .unwrap()
-    .to_bytes();
+    .to_vec();
   let text = String::from_utf8_lossy(&bytes);
   assert!(text.contains("Connection: close\r\n"));
   assert!(!text.contains("keep-alive"));
@@ -621,20 +605,35 @@ fn build_request_sends_connection_close_when_pooling_disabled() {
 #[test]
 fn build_request_default_port_omits_port_in_host() {
   let uri = Uri::parse("http://example.com/path").unwrap();
-  let mut host = Cow::Borrowed("example.com");
-  let mut headers = Headers::new();
-  let bytes = build_request(
-    &uri,
-    &Method::Get,
-    &mut host,
-    80,
-    &mut headers,
-    None,
-    &Config::default(),
-  )
-  .unwrap()
-  .to_bytes();
+  let host = HostText::Name("example.com");
+  let headers = Headers::new();
+  let config = Config::default();
+  let bytes = build_request(&uri, &Method::Get, &host, 80, &headers, None, &config, "")
+    .unwrap()
+    .to_vec();
   let text = String::from_utf8_lossy(&bytes);
   assert!(text.contains("Host: example.com\r\n"));
   assert!(!text.contains("Host: example.com:80"));
+}
+
+#[test]
+fn build_request_leaves_caller_headers_untouched() {
+  let uri = Uri::parse("http://[::1]:8080/x").unwrap();
+  let host = crate::util::host_text(&uri);
+  let mut headers = Headers::new();
+  headers.insert("Host", "stale.example");
+  headers.insert("Cookie", "a=1");
+  let before = headers.clone();
+  let config = Config::builder().max_idle_per_host(0).build();
+  let text = String::from_utf8(
+    build_request(&uri, &Method::Get, &host, 8080, &headers, None, &config, "jar=2")
+      .unwrap()
+      .to_vec(),
+  )
+  .unwrap();
+  assert!(text.starts_with("GET /x HTTP/1.1\r\nHost: [::1]:8080\r\n"), "{text}");
+  assert!(text.contains("Cookie: a=1; jar=2\r\n"));
+  assert!(text.contains("Connection: close\r\n"));
+  assert!(!text.contains("stale.example"));
+  assert_eq!(headers, before);
 }

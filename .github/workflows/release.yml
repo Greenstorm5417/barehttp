@@ -32,11 +32,11 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  NEXTEST_VERSION: "0.9.140"
+  NEXTEST_VERSION: "0.9.152"
   CARGO_FUZZ_VERSION: "0.13.2"
-  LLVM_COV_VERSION: "0.8.7"
-  CARGO_DENY_VERSION: "0.20.2"
-  CARGO_SEMVER_CHECKS_VERSION: "0.49.0"
+  LLVM_COV_VERSION: "0.9.2"
+  CARGO_DENY_VERSION: "0.22.1"
+  CARGO_SEMVER_CHECKS_VERSION: "0.51.0"
   FUZZ_MAX_TOTAL_TIME: ${{ github.event.inputs.fuzz_seconds || '300' }}
   COVERAGE_FAIL_UNDER: "70"
   # Do NOT set BAREHTTP_INTEROP globally: interop_client is gzip-gated and would
@@ -65,23 +65,23 @@ jobs:
           - name: all
             args: --all-features
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: stable
           components: clippy
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
         with:
           tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-features-${{ matrix.name }}
 
@@ -106,18 +106,18 @@ jobs:
     name: Embedded
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: stable
           targets: thumbv7em-none-eabi
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
@@ -137,18 +137,18 @@ jobs:
     name: Miri
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install nightly + miri
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: nightly
           components: miri
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
@@ -169,12 +169,12 @@ jobs:
     name: Fuzz (long)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install nightly
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: nightly
 
@@ -182,12 +182,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang
 
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
         with:
           tool: cargo-fuzz@${{ env.CARGO_FUZZ_VERSION }}
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: fuzz -> target
 
@@ -198,7 +198,7 @@ jobs:
         run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: Cache fuzz corpora
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             fuzz/corpus
@@ -223,7 +223,7 @@ jobs:
 
       - name: Upload fuzz crashes (if any)
         if: ${{ failure() || hashFiles('fuzz/artifacts/**/*') != '' }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts-${{ github.sha }}
           path: fuzz/artifacts
@@ -233,17 +233,17 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: stable
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
         with:
           tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
 
@@ -254,28 +254,28 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: stable
           components: llvm-tools-preview
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
         with:
           tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
         with:
           tool: cargo-llvm-cov@${{ env.LLVM_COV_VERSION }}
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-coverage
 
@@ -290,7 +290,7 @@ jobs:
 
       - name: Upload coverage artifacts
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: release-coverage-${{ github.sha }}
           path: |
@@ -303,17 +303,17 @@ jobs:
     name: API compile tests (trybuild)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: stable
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-ui
 
@@ -330,18 +330,18 @@ jobs:
     name: Stable checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: stable
           components: rustfmt
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
@@ -378,22 +378,22 @@ jobs:
     name: Package + packaged tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: stable
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
         with:
           tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-package
 
@@ -427,18 +427,18 @@ jobs:
     name: cargo-semver-checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: stable
 
       - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
         with:
           tool: cargo-semver-checks@${{ env.CARGO_SEMVER_CHECKS_VERSION }}
 
@@ -469,12 +469,12 @@ jobs:
     name: Benches (full)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: stable
 
@@ -482,12 +482,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y valgrind
 
       - name: Install gungraun-runner
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
         with:
-          tool: gungraun-runner@0.19.4
+          tool: gungraun-runner@0.20.0
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
@@ -496,15 +496,15 @@ jobs:
         run: mkdir -p target/tests/target target/tests/trybuild
 
       - name: Cache Gungraun baselines
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             target/gungraun
             .gungraun
-          key: gungraun-release-${{ runner.os }}-${{ hashFiles('benches/**', 'src/**', 'Cargo.lock') }}
+          key: gungraun-v0.20-release-${{ runner.os }}-${{ hashFiles('benches/**', 'src/**', 'Cargo.lock') }}
           restore-keys: |
-            gungraun-release-${{ runner.os }}-
-            gungraun-${{ runner.os }}-
+            gungraun-v0.20-release-${{ runner.os }}-
+            gungraun-v0.20-${{ runner.os }}-
 
       - name: Compile all benches
         run: cargo bench --locked --no-run --all-features
@@ -541,7 +541,7 @@ jobs:
 
       - name: Upload bench reports
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: release-benches-${{ github.sha }}
           path: |
@@ -555,22 +555,22 @@ jobs:
     name: MSRV (1.90)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install Rust 1.90
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: "1.90"
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
         with:
           tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
@@ -592,22 +592,22 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: stable
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
         with:
           tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Quiet rust-cache trybuild ENOENT
         if: always()
@@ -633,18 +633,18 @@ jobs:
           - san: leak
             flags: -Zsanitizer=leak
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install nightly + rust-src
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: nightly
           components: rust-src
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: sanitizer-${{ matrix.san }}
 
@@ -672,9 +672,9 @@ jobs:
     # cannot explode loop unwinding (symbolic_short_hex hit 700+ iters / 19+ min).
     env:
       # Bump together with the cache key suffix and kani-version input below.
-      KANI_VERSION: "0.67.0"
+      KANI_VERSION: "0.68.0"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -682,7 +682,7 @@ jobs:
       # multi-minute cold install. Key on the pinned version only (not the whole
       # workflow file) so unrelated YAML edits do not bust the ~1GB cache.
       - name: Cache Kani toolchain
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.kani
@@ -698,10 +698,10 @@ jobs:
       - name: Clear cached Kani cargo bins
         run: rm -f "${CARGO_HOME:-$HOME/.cargo}/bin/kani" "${CARGO_HOME:-$HOME/.cargo}/bin/cargo-kani"
 
-      # Action installs rustc + kani-verifier; MSRV 1.90 fits Kani 0.67's rustc 1.93.
-      # --jobs needs --output-format=terse on Kani 0.67; ubuntu-latest is 4 vCPU.
+      # Action installs rustc + kani-verifier; MSRV 1.90 fits Kani 0.68's toolchain (nightly-2026-08-21).
+      # --jobs needs --output-format=terse on Kani 0.67+; ubuntu-latest is 4 vCPU.
       - name: Install and run Kani
-        uses: model-checking/kani-github-action@2534b7aeb3c6b4b0a5ecc3981bb3e63d47b5b126 # v1
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
         with:
           kani-version: ${{ env.KANI_VERSION }}
           args: "--all-features --jobs 4 --output-format terse"
@@ -710,22 +710,22 @@ jobs:
     name: Docker interop
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 2026-08-05
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 2026-11-15
         with:
           toolchain: stable
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
         with:
           tool: nextest@${{ env.NEXTEST_VERSION }}
 
       - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-interop
 
@@ -742,7 +742,7 @@ jobs:
 
       - name: Upload interop logs
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: interop-logs-${{ github.sha }}
           path: |

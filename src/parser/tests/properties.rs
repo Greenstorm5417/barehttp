@@ -46,7 +46,7 @@ fn chunked_feed_byte_at_a_time_matches_full() {
   let mut full_out = Vec::new();
   let mut full = ChunkedDecoder::new();
   match full.feed(wire, Some(&mut full_out)).unwrap() {
-    FeedResult::Done { rest } => assert!(rest.is_empty()),
+    FeedResult::Done { rest } => assert_eq!(rest, []),
     FeedResult::NeedMore { .. } => panic!("full feed incomplete"),
   }
 
@@ -61,7 +61,7 @@ fn chunked_feed_byte_at_a_time_matches_full() {
         let _ = held.drain(..consumed);
       },
       FeedResult::Done { rest } => {
-        assert!(rest.is_empty());
+        assert_eq!(rest, []);
         done = true;
         break;
       },
@@ -91,7 +91,7 @@ fn chunked_two_fragment_feed_matches_full() {
         let _ = held.drain(..consumed);
         held.extend_from_slice(&wire[i..]);
         match dec.feed(&held, Some(&mut out)).unwrap() {
-          FeedResult::Done { rest } => assert!(rest.is_empty()),
+          FeedResult::Done { rest } => assert_eq!(rest, []),
           FeedResult::NeedMore { .. } => panic!("split {i} still needs more"),
         }
       },
