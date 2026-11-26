@@ -116,14 +116,7 @@ pub fn parse_status_line(input: &[u8]) -> Result<(Version, u16, &[u8], &[u8]), c
   }
   let rest4 = rest3.get(1..).ok_or(ParseError::InvalidWhitespace)?;
 
-  let mut i = 0;
-  while i < rest4.len() {
-    let ch = rest4.get(i).copied();
-    if ch == Some(b'\r') || ch == Some(b'\n') {
-      break;
-    }
-    i += 1;
-  }
+  let i = crate::parser::find_cr_or_lf(rest4).unwrap_or(rest4.len());
 
   let reason = rest4.get(..i).ok_or(ParseError::InvalidReasonPhrase)?;
   let rest5 = rest4.get(i..).ok_or(ParseError::InvalidReasonPhrase)?;

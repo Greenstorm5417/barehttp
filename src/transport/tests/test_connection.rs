@@ -46,7 +46,7 @@ fn read_response_with_content_length() {
   let raw = result.unwrap();
   assert_eq!(raw.status_code, 200);
   assert_eq!(raw.reason, "OK");
-  assert_eq!(&raw.body_bytes[..], b"Hello");
+  assert_eq!(raw.body(), b"Hello");
 }
 
 #[test]
@@ -60,7 +60,7 @@ fn read_response_no_body_expectation_ignores_content() {
   assert!(result.is_ok());
   let raw = result.unwrap();
   assert_eq!(raw.status_code, 200);
-  assert!(raw.body_bytes.is_empty(), "NoBody expectation should skip reading body");
+  assert!(raw.body().is_empty(), "NoBody expectation should skip reading body");
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn read_response_chunked_encoding() {
   assert!(result.is_ok());
   let raw = result.unwrap();
   assert_eq!(raw.status_code, 200);
-  assert_eq!(&raw.body_bytes[..], b"Hello");
+  assert_eq!(raw.body(), b"Hello");
   assert!(raw.decoded_chunked_trailers.is_some());
 }
 
@@ -89,7 +89,7 @@ fn read_response_204_no_content() {
   assert!(result.is_ok());
   let raw = result.unwrap();
   assert_eq!(raw.status_code, 204);
-  assert!(raw.body_bytes.is_empty());
+  assert_eq!(raw.body(), b"");
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn read_response_304_not_modified() {
   assert!(result.is_ok());
   let raw = result.unwrap();
   assert_eq!(raw.status_code, 304);
-  assert!(raw.body_bytes.is_empty());
+  assert_eq!(raw.body(), b"");
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn read_response_with_multiple_headers() {
   assert_eq!(raw.status_code, 200);
   assert_eq!(raw.headers.get("Content-Type"), Some("text/plain"));
   assert_eq!(raw.headers.get("Content-Length"), Some("2"));
-  assert_eq!(&raw.body_bytes[..], b"OK");
+  assert_eq!(raw.body(), b"OK");
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn read_response_empty_body_with_content_length_zero() {
   assert!(result.is_ok());
   let raw = result.unwrap();
   assert_eq!(raw.status_code, 200);
-  assert!(raw.body_bytes.is_empty());
+  assert_eq!(raw.body(), b"");
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn read_response_handles_body_in_header_buffer() {
 
   assert!(result.is_ok());
   let raw = result.unwrap();
-  assert_eq!(&raw.body_bytes[..], b"Hello World");
+  assert_eq!(raw.body(), b"Hello World");
 }
 
 #[test]
@@ -172,6 +172,7 @@ fn raw_response_can_be_cloned() {
     headers,
     version: Version::HTTP_11,
     body_bytes: bytes::Bytes::from(vec![1, 2, 3]),
+    body_tail: None,
     decoded_chunked_trailers: None,
   };
 
@@ -179,7 +180,7 @@ fn raw_response_can_be_cloned() {
   assert_eq!(response.status_code, 200);
   assert_eq!(cloned.status_code, 200);
   assert_eq!(cloned.reason, "OK");
-  assert_eq!(&cloned.body_bytes[..], &[1, 2, 3]);
+  assert_eq!(cloned.body(), &[1, 2, 3]);
 }
 
 #[test]
@@ -193,7 +194,7 @@ fn read_response_1xx_informational_skipped() {
   assert!(result.is_ok());
   let raw = result.unwrap();
   assert_eq!(raw.status_code, 200);
-  assert_eq!(&raw.body_bytes[..], b"Hello");
+  assert_eq!(raw.body(), b"Hello");
 }
 
 #[test]
@@ -221,7 +222,7 @@ fn read_response_large_body_content_length() {
 
   assert!(result.is_ok());
   let raw = result.unwrap();
-  assert_eq!(raw.body_bytes.len(), 10000);
+  assert_eq!(raw.body().len(), 10000);
 }
 
 #[test]
@@ -234,7 +235,7 @@ fn read_response_chunked_multiple_chunks() {
 
   assert!(result.is_ok());
   let raw = result.unwrap();
-  assert_eq!(&raw.body_bytes[..], b"TestChunk");
+  assert_eq!(raw.body(), b"TestChunk");
   assert!(raw.decoded_chunked_trailers.is_some());
 }
 
@@ -338,7 +339,7 @@ fn header_limit_ignores_body_bytes_past_complete_headers() {
 
   let result = conn.read_raw_response(true);
   assert!(result.is_ok());
-  assert_eq!(result.unwrap().body_bytes.len(), 100);
+  assert_eq!(result.unwrap().body().len(), 100);
 }
 
 #[test]
@@ -349,7 +350,7 @@ fn chunked_read_keeps_payload_that_looks_like_terminator() {
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
 
   let raw = conn.read_raw_response(true).unwrap();
-  assert_eq!(&raw.body_bytes[..], b"0\r\n\r\nHello");
+  assert_eq!(raw.body(), b"0\r\n\r\nHello");
   assert!(raw.decoded_chunked_trailers.is_some());
 }
 
@@ -360,17 +361,16 @@ fn chunked_read_decodes_trailers_on_wire() {
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
 
   let raw = conn.read_raw_response(true).unwrap();
-  assert_eq!(&raw.body_bytes[..], b"hello");
+  assert_eq!(raw.body(), b"hello");
   let trailers = raw.decoded_chunked_trailers.expect("decoded trailers");
   assert_eq!(trailers.get("X-Trailer"), Some("value"));
 }
 
 #[test]
-fn read_response_headers_adopt_wire_section_zero_copy() {
-  // Arena must be the frozen header section (status line + fields + blank line),
-  // not a packed name/value copy. Body may share the same allocation.
+fn read_response_packs_headers_and_owns_exact_body() {
+  // One allocation: packed live name/value bytes (no status line / CRLF /
+  // ": " dead bytes) followed directly by the small Content-Length body.
   let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nHello";
-  let header_section_len = response.find("\r\n\r\n").unwrap() + 4;
   let mut socket = MockSocket::with_response(response);
   let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
 
@@ -378,13 +378,37 @@ fn read_response_headers_adopt_wire_section_zero_copy() {
   assert_eq!(raw.status_code, 200);
   assert_eq!(raw.headers.get("content-type"), Some("text/plain"));
   assert_eq!(raw.headers.get("content-length"), Some("5"));
-  assert_eq!(&raw.body_bytes[..], b"Hello");
-  assert_eq!(raw.headers.arena_len(), header_section_len);
+  assert_eq!(raw.body(), b"Hello");
+  assert!(raw.body_bytes.is_empty());
+  let live = "Content-Type".len() + "text/plain".len() + "Content-Length".len() + "5".len();
+  assert_eq!(raw.body_tail, Some((u32::try_from(live).unwrap(), 5)));
+  assert_eq!(raw.headers.arena_len(), live + 5);
+  assert_eq!(raw.headers.arena().as_ptr().wrapping_add(live), raw.body().as_ptr());
 
-  // Mutation COW must not corrupt the body Bytes that may share the allocation.
+  // A clone of the headers drops the body tail.
+  assert_eq!(raw.headers.clone().arena_len(), live);
   raw.headers.set("Content-Type", "application/json");
   assert_eq!(raw.headers.get("content-type"), Some("application/json"));
-  assert_eq!(&raw.body_bytes[..], b"Hello");
+  assert_eq!(raw.body(), b"Hello");
+}
+
+#[test]
+fn large_or_encoded_bodies_get_their_own_buffer() {
+  let big = alloc::vec![b'x'; crate::parser::TAIL_BODY_MAX + 1];
+  let mut wire = alloc::format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", big.len()).into_bytes();
+  wire.extend_from_slice(&big);
+  let mut socket = MockSocket::with_read_sizes(&wire, &[]);
+  let mut conn = Connection::new(&mut socket, 8192, usize::MAX);
+  let raw = conn.read_raw_response(true).unwrap();
+  assert_eq!(raw.body_tail, None);
+  assert_eq!(raw.body(), big.as_slice());
+
+  let enc = b"HTTP/1.1 200 OK\r\nContent-Encoding: identity\r\nContent-Length: 2\r\n\r\nok";
+  let mut enc_socket = MockSocket::with_read_sizes(enc, &[]);
+  let mut enc_conn = Connection::new(&mut enc_socket, 8192, usize::MAX);
+  let enc_raw = enc_conn.read_raw_response(true).unwrap();
+  assert_eq!(enc_raw.body_tail, None);
+  assert_eq!(enc_raw.body(), b"ok");
 }
 
 #[test]

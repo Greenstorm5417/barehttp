@@ -129,7 +129,7 @@ pub(super) fn decompress_member_owned(
   // updates during inflate help the streaming/`into` path; on tiny members
   // (Callgrind `hello`) they add call overhead for no memory win.
   let mut none = RunningChecksum::None;
-  let (out, consumed) = inflate::inflate_owned(deflate, max_out, &mut none)?;
+  let (out, consumed) = inflate::inflate_owned(deflate, max_out, &mut none, isize_hint(data))?;
   let trailer_off = i
     .checked_add(consumed)
     .ok_or(DecompressError::InvalidInput)?;
@@ -151,11 +151,20 @@ pub(super) fn decompress_member(
   }
   let (deflate, i) = member_deflate(data)?;
   let mut crc = RunningChecksum::crc();
-  let consumed = inflate::inflate(deflate, max_out, &mut crc, out)?;
+  let consumed = inflate::inflate(deflate, max_out, &mut crc, out, isize_hint(data))?;
   let trailer_off = i
     .checked_add(consumed)
     .ok_or(DecompressError::InvalidInput)?;
   check_trailer(data, trailer_off, out, crc)
+}
+
+/// Uncompressed size from the member trailer (`ISIZE`, last 4 bytes), as a
+/// capacity hint only — the real trailer is still verified after inflate.
+fn isize_hint(data: &[u8]) -> Option<usize> {
+  let tail = data.len().checked_sub(4)?;
+  let b = data.get(tail..)?;
+  let n = u32::from_le_bytes([*b.first()?, *b.get(1)?, *b.get(2)?, *b.get(3)?]);
+  usize::try_from(n).ok()
 }
 
 fn skip_cstr(

@@ -2,9 +2,9 @@
 
 extern crate alloc;
 use crate::error::{DecompressError, IntoStringError, ParseError};
-use crate::headers::{FieldList, Headers};
+use crate::headers::Headers;
 use crate::parser::chunked::ChunkedDecoder;
-use crate::parser::headers::{HeaderRef, for_each_header_field, materialize_headers, try_wire_spans};
+use crate::parser::headers::{ScannedFields, pack_fields, pack_fields_with_tail, scan_fields};
 use crate::parser::version::{Version, parse_status_line};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -14,67 +14,55 @@ use compact_str::CompactString;
 #[cfg(feature = "zstd")]
 use ruzstd::decoding::StreamingDecoder;
 
-const INLINE_HEADER_REFS: usize = 16;
-
-/// Stack-first header-ref buffer (heap only past [`INLINE_HEADER_REFS`]).
-pub(crate) struct ScannedHeaderRefs<'a> {
-  inline: [HeaderRef<'a>; INLINE_HEADER_REFS],
-  n: usize,
-  heap: Vec<HeaderRef<'a>>,
+/// Status line + scanned header fields of a response head (views into the input).
+#[derive(Debug)]
+pub(crate) struct ScannedHead<'a> {
+  pub(crate) version: Version,
+  pub(crate) status_code: u16,
+  pub(crate) reason: &'a [u8],
+  /// Header section bytes the field spans are relative to.
+  pub(crate) section: &'a [u8],
+  pub(crate) fields: ScannedFields,
+  /// Bytes of `input` through the blank line (leading CRLFs included).
+  pub(crate) consumed: usize,
 }
 
-impl<'a> ScannedHeaderRefs<'a> {
-  const fn new() -> Self {
-    Self {
-      inline: [HeaderRef { name: &[], value: &[] }; INLINE_HEADER_REFS],
-      n: 0,
-      heap: Vec::new(),
-    }
+impl ScannedHead<'_> {
+  /// Copy header names/values into one exact arena (the only header copy).
+  pub(crate) fn into_headers(self) -> Headers {
+    pack_fields(self.section, self.fields)
   }
 
-  fn as_slice(&self) -> &[HeaderRef<'a>] {
-    if self.heap.is_empty() {
-      self.inline.get(..self.n).unwrap_or(&[])
-    } else {
-      self.heap.as_slice()
-    }
+  /// Like [`Self::into_headers`] with room for a `tail`-byte body after the fields.
+  pub(crate) fn into_headers_with_tail(
+    self,
+    tail: usize,
+  ) -> Headers {
+    pack_fields_with_tail(self.section, self.fields, tail)
   }
 
-  fn push(
-    &mut self,
-    h: HeaderRef<'a>,
-  ) {
-    if self.heap.is_empty() && self.n < INLINE_HEADER_REFS {
-      if let Some(slot) = self.inline.get_mut(self.n) {
-        *slot = h;
-        self.n = self.n.saturating_add(1);
-      }
-      return;
-    }
-    if self.heap.is_empty() {
-      self
-        .heap
-        .extend_from_slice(self.inline.get(..INLINE_HEADER_REFS).unwrap_or(&[]));
-    }
-    self.heap.push(h);
+  /// A `Content-Encoding` field is present (the body may be decompressed).
+  pub(crate) fn has_content_encoding(&self) -> bool {
+    self
+      .fields
+      .pairs(self.section)
+      .any(|(n, _)| n.eq_ignore_ascii_case(b"content-encoding"))
   }
 }
 
-impl<'a> core::ops::Deref for ScannedHeaderRefs<'a> {
-  type Target = [HeaderRef<'a>];
+/// Largest body stored in the header arena's tail (one allocation per
+/// response). Bigger bodies get their own buffer so [`Response::into_bytes`]
+/// stays a zero-copy hand-off.
+pub(crate) const TAIL_BODY_MAX: usize = 64 * 1024;
 
-  fn deref(&self) -> &Self::Target {
-    self.as_slice()
-  }
-}
-
-fn collect_header_refs(after_status: &[u8]) -> Result<(ScannedHeaderRefs<'_>, &[u8]), ParseError> {
-  let mut scanned = ScannedHeaderRefs::new();
-  let remaining = for_each_header_field(after_status, |h| {
-    scanned.push(h);
-    Ok(())
-  })?;
-  Ok((scanned, remaining))
+/// Where a [`Response`] keeps its body bytes.
+#[derive(Debug)]
+enum Body {
+  /// `headers.arena()[start..start + len]` (small bodies share the header
+  /// allocation; explicit length so later arena appends never leak in).
+  Tail(u32, u32),
+  /// Separate buffer (large / decompressed / caller-built bodies).
+  Bytes(Bytes),
 }
 
 /// Parsed HTTP response.
@@ -91,12 +79,11 @@ fn collect_header_refs(after_status: &[u8]) -> Result<(ScannedHeaderRefs<'_>, &[
 /// assert_eq!(response.to_text()?, "ok");
 /// # Ok::<(), barehttp::Error>(())
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Response {
   status_code: u16,
   reason: CompactString,
   headers: Headers,
-  body: Bytes,
+  body: Body,
   trailers: Headers,
 }
 
@@ -114,7 +101,25 @@ impl Response {
       status_code,
       reason: reason.into(),
       headers,
-      body: body.into(),
+      body: Body::Bytes(body.into()),
+      trailers,
+    }
+  }
+
+  /// Response whose body is `headers.arena()[start..start + len]` (single allocation).
+  #[must_use]
+  pub(crate) const fn from_tail(
+    status_code: u16,
+    reason: CompactString,
+    headers: Headers,
+    (start, len): (u32, u32),
+    trailers: Headers,
+  ) -> Self {
+    Self {
+      status_code,
+      reason,
+      headers,
+      body: Body::Tail(start, len),
       trailers,
     }
   }
@@ -144,7 +149,10 @@ impl Response {
   /// [`Self::as_bytes`] is a deprecated alias.
   #[must_use]
   pub fn body(&self) -> &[u8] {
-    &self.body
+    match &self.body {
+      Body::Tail(start, len) => tail_slice(self.headers.arena(), *start, *len),
+      Body::Bytes(b) => b,
+    }
   }
 
   /// Trailer fields from chunked responses (RFC 9112 §7.1.2).
@@ -157,35 +165,67 @@ impl Response {
 
   /// Parse a complete buffered HTTP/1.1 response.
   ///
-  /// One copy of the wire image: header spans and the body are subslices of the
-  /// same [`Bytes`] (Callgrind-sensitive). The live receive path keeps owned-buffer
-  /// adoption via `parse_body_from_owned` / wire spans on the connection buffer.
+  /// The scan is zero-copy over `input`; the result owns exactly two buffers:
+  /// a packed name/value arena and an exact-size body (uniquely owned, so
+  /// [`Self::into_bytes`] / [`Self::into_string`] reclaim it without copying).
   ///
   /// # Errors
   /// [`ParseError`] when the status line, headers, framing, or body are illegal.
   pub fn parse(input: &[u8]) -> Result<Self, ParseError> {
-    let data = skip_leading_crlf(input);
-    let owned = Bytes::copy_from_slice(data);
-    let (version, status_code, reason_bytes, after_status) = parse_status_line(owned.as_ref())?;
+    let head = Self::scan_head(input)?;
+    let strategy = Self::body_read_strategy_pairs(head.fields.pairs(head.section), head.status_code, head.version)?;
+    let rest = input.get(head.consumed..).unwrap_or(&[]);
+    let status_code = head.status_code;
+    let reason = reason_to_compact(head.reason);
 
-    let (scanned, remaining) = collect_header_refs(after_status)?;
-    let refs = scanned.as_slice();
+    // Small identity-coded bodies share the header allocation.
+    if !head.has_content_encoding()
+      && let Some(body_len) = tail_body_len(rest, strategy)?
+    {
+      let mut headers = head.into_headers_with_tail(body_len);
+      let start = u32::try_from(headers.arena().len()).map_err(|_| ParseError::BodyExceedsLimit(TAIL_BODY_MAX))?;
+      let tail = headers.arena_tail_mut();
+      let trailers = if strategy == BodyReadStrategy::Chunked {
+        ChunkedDecoder::decode_buffered_into(rest, tail)?
+      } else {
+        tail.extend_from_slice(rest.get(..body_len).unwrap_or(&[]));
+        Headers::new()
+      };
+      let len = u32::try_from(headers.arena().len().saturating_sub(start as usize)).unwrap_or(0);
+      return Ok(Self::from_tail(status_code, reason, headers, (start, len), trailers));
+    }
 
-    let strategy = Self::body_read_strategy_refs(refs, status_code, version)?;
-    let header_end = owned.len().saturating_sub(remaining.len());
-    let header_section = owned.get(..header_end).unwrap_or(&[]);
-    let mut headers = try_wire_spans(header_section, refs).map_or_else(
-      || materialize_headers(refs),
-      |spans| Headers::from_spans(owned.slice(..header_end), spans),
-    );
-    let (decoded, wire_trailers) = decode_body_owned(owned.slice(header_end..), strategy)?;
-    let (body, trailers) = finish_body(&mut headers, decoded, wire_trailers, usize::MAX)?;
+    let (wire_body, wire_trailers) = decode_body_borrowed(rest, strategy)?;
+    let mut headers = head.into_headers();
+    let (body, trailers) = finish_body(&mut headers, wire_body, wire_trailers, usize::MAX)?;
     Ok(Self {
       status_code,
-      reason: reason_to_compact(reason_bytes),
+      reason,
       headers,
-      body,
+      body: Body::Bytes(body),
       trailers,
+    })
+  }
+
+  /// Status line + header field scan as offsets (no name/value copies yet).
+  ///
+  /// # Errors
+  /// [`ParseError`] when the status line or header section is illegal.
+  pub(crate) fn scan_head(input: &[u8]) -> Result<ScannedHead<'_>, ParseError> {
+    let data = skip_leading_crlf(input);
+    let (version, status_code, reason, section) = parse_status_line(data)?;
+    let fields = scan_fields(section)?;
+    let consumed = input
+      .len()
+      .saturating_sub(section.len())
+      .saturating_add(fields.consumed);
+    Ok(ScannedHead {
+      version,
+      status_code,
+      reason,
+      section,
+      fields,
+      consumed,
     })
   }
 
@@ -196,6 +236,10 @@ impl Response {
   ) -> Result<Bytes, ParseError> {
     if body_bytes.len() > max_body {
       return Err(ParseError::BodyExceedsLimit(max_body));
+    }
+    // Common case: no Content-Encoding (length-filtered scan, no value parsing).
+    if !headers.contains(Headers::CONTENT_ENCODING) {
+      return Ok(body_bytes);
     }
 
     // RFC 9110: comma-separated codings, applied in listed order → decompress reverse.
@@ -245,7 +289,7 @@ impl Response {
 
     // Decompress from the TE/CL buffer as a slice — no Bytes→Vec of the
     // compressed body solely to feed the inflater.
-    let decoded = if let Some(coding) = single {
+    let mut decoded = if let Some(coding) = single {
       decompress_coding(coding, &body_bytes, max_body)?
     } else {
       let mut out = Vec::new();
@@ -271,6 +315,10 @@ impl Response {
 
     headers.remove(Headers::CONTENT_ENCODING);
     headers.remove(Headers::CONTENT_LENGTH);
+    // len == cap: `Bytes::from` adopts the Vec (no shared header, no slack kept).
+    if decoded.len() != decoded.capacity() {
+      decoded.shrink_to_fit();
+    }
     Ok(Bytes::from(decoded))
   }
 
@@ -283,39 +331,10 @@ impl Response {
     self.headers.get(name)
   }
 
-  /// Promote borrowed header refs to owned [`Headers`] (copies into a new arena).
-  #[must_use]
-  pub(crate) fn headers_from_refs(refs: &[HeaderRef<'_>]) -> Headers {
-    materialize_headers(refs)
-  }
-
-  /// Offsets into `section` for zero-copy [`Headers::from_spans`], or [`None`] when
-  /// a value needs lossy UTF-8 (caller should [`Self::headers_from_refs`]).
-  #[must_use]
-  pub(crate) fn try_wire_header_spans(
-    section: &[u8],
-    refs: &[HeaderRef<'_>],
-  ) -> Option<FieldList> {
-    try_wire_spans(section, refs)
-  }
-
   /// Own a reason-phrase byte slice.
   #[must_use]
   pub(crate) fn reason_owned(reason_bytes: &[u8]) -> CompactString {
     reason_to_compact(reason_bytes)
-  }
-
-  /// Status line + header scan as borrowed views (no name/value `String`s yet).
-  ///
-  /// # Errors
-  /// [`ParseError`] when the status line or header section is illegal.
-  pub(crate) fn scan_headers_only(
-    input: &[u8]
-  ) -> Result<(u16, &[u8], ScannedHeaderRefs<'_>, Version, &[u8]), ParseError> {
-    let data = skip_leading_crlf(input);
-    let (version, status, reason_bytes, after_status) = parse_status_line(data)?;
-    let (headers, remaining) = collect_header_refs(after_status)?;
-    Ok((status, reason_bytes, headers, version, remaining))
   }
 
   /// Choose how to read the entity body from framing headers.
@@ -334,19 +353,11 @@ impl Response {
     )
   }
 
-  /// Framing strategy from borrowed header refs (before materializing [`Headers`]).
+  /// Framing strategy from `(name, value)` byte pairs (before packing [`Headers`]).
   ///
   /// # Errors
   /// Framing [`ParseError`]s when headers conflict or are illegal for the status/version.
-  pub(crate) fn body_read_strategy_refs(
-    headers: &[HeaderRef<'_>],
-    status_code: u16,
-    version: Version,
-  ) -> Result<BodyReadStrategy, ParseError> {
-    Self::body_read_strategy_pairs(headers.iter().map(|h| (h.name, h.value)), status_code, version)
-  }
-
-  fn body_read_strategy_pairs<'a, I>(
+  pub(crate) fn body_read_strategy_pairs<'a, I>(
     headers: I,
     status_code: u16,
     version: Version,
@@ -465,7 +476,7 @@ impl Response {
   }
 
   /// Deprecated alias of [`Self::status_code`].
-  #[deprecated(note = "use `status_code`")]
+  #[deprecated(since = "0.1.0", note = "use `status_code`")]
   #[must_use]
   #[inline]
   pub const fn status(&self) -> u16 {
@@ -497,7 +508,7 @@ impl Response {
   }
 
   /// Deprecated alias of [`Self::body`].
-  #[deprecated(note = "use `body`")]
+  #[deprecated(since = "0.1.0", note = "use `body`")]
   #[must_use]
   pub fn as_bytes(&self) -> &[u8] {
     self.body()
@@ -544,9 +555,7 @@ impl Response {
     if let Err(error) = core::str::from_utf8(self.body()) {
       return Err(IntoStringError::new(self, error));
     }
-    let Self { body, .. } = self;
-    // UTF-8 validated above; reclaim unique ownership without a copy when possible.
-    let vec = Vec::from(body);
+    let vec = self.into_bytes();
     // SAFETY: `from_utf8` succeeded on these exact bytes before the move.
     Ok(unsafe { String::from_utf8_unchecked(vec) })
   }
@@ -557,13 +566,83 @@ impl Response {
   /// copy when the internal buffer is uniquely owned.
   #[must_use]
   pub fn into_bytes(self) -> Vec<u8> {
-    Vec::from(self.body)
+    match self.body {
+      Body::Tail(start, len) => {
+        // Reuse the shared allocation: slide the body over the header bytes.
+        let mut v = self.headers.into_arena();
+        let begin = (start as usize).min(v.len());
+        v.truncate(begin.saturating_add(len as usize));
+        v.drain(..begin);
+        v
+      },
+      Body::Bytes(b) => Vec::from(b),
+    }
   }
 }
 
 impl AsRef<[u8]> for Response {
   fn as_ref(&self) -> &[u8] {
     self.body()
+  }
+}
+
+impl Clone for Response {
+  fn clone(&self) -> Self {
+    let (headers, body) = match &self.body {
+      // The body lives in the arena tail: keep those bytes in the clone.
+      Body::Tail(start, len) => (self.headers.clone_raw(), Body::Tail(*start, *len)),
+      Body::Bytes(b) => (self.headers.clone(), Body::Bytes(b.clone())),
+    };
+    Self {
+      status_code: self.status_code,
+      reason: self.reason.clone(),
+      headers,
+      body,
+      trailers: self.trailers.clone(),
+    }
+  }
+}
+
+impl core::fmt::Debug for Response {
+  fn fmt(
+    &self,
+    f: &mut core::fmt::Formatter<'_>,
+  ) -> core::fmt::Result {
+    f.debug_struct("Response")
+      .field("status_code", &self.status_code)
+      .field("reason", &self.reason)
+      .field("headers", &self.headers)
+      .field("body", &bytes::Bytes::copy_from_slice(self.body()))
+      .field("trailers", self.trailers())
+      .finish()
+  }
+}
+
+impl PartialEq for Response {
+  fn eq(
+    &self,
+    other: &Self,
+  ) -> bool {
+    self.status_code == other.status_code
+      && self.reason == other.reason
+      && self.headers == other.headers
+      && self.body() == other.body()
+      && self.trailers() == other.trailers()
+  }
+}
+
+impl Eq for Response {}
+
+impl core::hash::Hash for Response {
+  fn hash<H: core::hash::Hasher>(
+    &self,
+    state: &mut H,
+  ) {
+    self.status_code.hash(state);
+    self.reason.hash(state);
+    self.headers.hash(state);
+    self.body().hash(state);
+    self.trailers().hash(state);
   }
 }
 
@@ -826,11 +905,75 @@ fn decode_body_owned(
       // Already owns exact CL bytes — no second allocation.
       Ok((input, Headers::new()))
     },
-    BodyReadStrategy::Chunked => ChunkedDecoder::decode_buffered(input),
+    BodyReadStrategy::Chunked => ChunkedDecoder::decode_buffered(&input),
     BodyReadStrategy::UntilClose => {
       // Already the full body buffer.
       Ok((input, Headers::new()))
     },
+  }
+}
+
+/// Like [`decode_body_owned`] over a borrowed body: one exact-size copy.
+fn decode_body_borrowed(
+  input: &[u8],
+  strategy: BodyReadStrategy,
+) -> Result<(Bytes, Headers), ParseError> {
+  match strategy {
+    BodyReadStrategy::NoBody => Ok((Bytes::new(), Headers::new())),
+    BodyReadStrategy::ContentLength(len) => {
+      if input.len() < len {
+        return Err(ParseError::UnexpectedEndOfInput);
+      }
+      if input.len() > len {
+        return Err(ParseError::ExtraDataAfterResponse);
+      }
+      Ok((owned_bytes(input), Headers::new()))
+    },
+    BodyReadStrategy::Chunked => ChunkedDecoder::decode_buffered(input),
+    BodyReadStrategy::UntilClose => Ok((owned_bytes(input), Headers::new())),
+  }
+}
+
+/// `arena[start..start + len]`, empty when out of range.
+#[inline]
+pub(crate) fn tail_slice(
+  arena: &[u8],
+  start: u32,
+  len: u32,
+) -> &[u8] {
+  let s = start as usize;
+  arena.get(s..s.saturating_add(len as usize)).unwrap_or(&[])
+}
+
+/// Body length when it may be stored in the header arena tail (validates
+/// Content-Length framing like [`decode_body_borrowed`]).
+fn tail_body_len(
+  rest: &[u8],
+  strategy: BodyReadStrategy,
+) -> Result<Option<usize>, ParseError> {
+  let len = match strategy {
+    BodyReadStrategy::NoBody => 0,
+    BodyReadStrategy::ContentLength(len) => {
+      if rest.len() < len {
+        return Err(ParseError::UnexpectedEndOfInput);
+      }
+      if rest.len() > len {
+        return Err(ParseError::ExtraDataAfterResponse);
+      }
+      len
+    },
+    BodyReadStrategy::UntilClose => rest.len(),
+    BodyReadStrategy::Chunked => ChunkedDecoder::buffered_payload_len(rest)?,
+  };
+  Ok((len <= TAIL_BODY_MAX).then_some(len))
+}
+
+/// Exact-capacity unique copy (`Vec` with `len == cap` → no `Bytes` shared header).
+fn owned_bytes(data: &[u8]) -> Bytes {
+  if data.is_empty() {
+    Bytes::new()
+  } else {
+    Bytes::from(data.to_vec())
   }
 }
 
@@ -889,6 +1032,54 @@ mod response_helpers_tests {
   }
 
   #[test]
+  fn small_body_shares_header_allocation() {
+    let r = Response::parse(b"HTTP/1.1 200 OK\r\nX-A: 1\r\nContent-Length: 5\r\n\r\nhello").unwrap();
+    assert!(matches!(r.body, Body::Tail(_, 5)));
+    assert_eq!(r.body(), b"hello");
+    let arena = r.headers().arena().as_ptr();
+    assert_eq!(arena.wrapping_add(r.headers().arena().len() - 5), r.body().as_ptr());
+
+    // Equality / hashing / clone are representation-independent.
+    let built = Response::from_parts(200, "OK", r.headers().clone(), b"hello".to_vec(), Headers::new());
+    assert_eq!(r, built);
+    let c = r.clone();
+    assert_eq!(c.body(), b"hello");
+    assert_eq!(c, r);
+
+    // into_bytes reuses the arena allocation (no new buffer).
+    let v = r.into_bytes();
+    assert_eq!(v, b"hello");
+    assert_eq!(v.as_ptr(), arena);
+  }
+
+  #[test]
+  fn chunked_and_until_close_bodies_use_tail() {
+    let r =
+      Response::parse(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nab\r\n1\r\nc\r\n0\r\nT: v\r\n\r\n")
+        .unwrap();
+    assert!(matches!(r.body, Body::Tail(_, 3)));
+    assert_eq!(r.body(), b"abc");
+    assert_eq!(r.trailers().get("t"), Some("v"));
+    assert_eq!(r.into_string().unwrap(), "abc");
+
+    let u = Response::parse(b"HTTP/1.1 200 OK\r\nX: y\r\n\r\nuntil-close").unwrap();
+    assert_eq!(u.body(), b"until-close");
+    let e = Response::parse(b"HTTP/1.1 204 No Content\r\nX: y\r\n\r\n").unwrap();
+    assert_eq!(e.body(), b"");
+  }
+
+  #[test]
+  fn large_body_is_separate_and_zero_copy() {
+    let mut wire = alloc::format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", TAIL_BODY_MAX + 1).into_bytes();
+    wire.resize(wire.len() + TAIL_BODY_MAX + 1, b'z');
+    let r = Response::parse(&wire).unwrap();
+    assert!(matches!(r.body, Body::Bytes(_)));
+    let p = r.body().as_ptr();
+    let owned = r.into_bytes();
+    assert_eq!(owned.as_ptr(), p);
+  }
+
+  #[test]
   fn body_read_strategy_joins_multiple_te_headers() {
     let mut headers = Headers::new();
     headers.insert("Transfer-Encoding", "gzip");
@@ -928,13 +1119,14 @@ mod response_helpers_tests {
   }
 
   #[test]
-  fn scan_headers_only_builds_headers() {
-    let input = b"HTTP/1.1 200 OK\r\nHost: a\r\nX-A: 1\r\n\r\nbody";
-    let (code, reason, refs, ver, rest) = Response::scan_headers_only(input).unwrap();
-    let headers = Response::headers_from_refs(&refs);
-    assert_eq!(code, 200);
-    assert_eq!(reason_to_compact(reason), "OK");
-    assert_eq!(ver, Version::HTTP_11);
+  fn scan_head_builds_headers() {
+    let input = b"\r\nHTTP/1.1 200 OK\r\nHost: a\r\nX-A: 1\r\n\r\nbody";
+    let head = Response::scan_head(input).unwrap();
+    let rest = input.get(head.consumed..).unwrap();
+    assert_eq!(head.status_code, 200);
+    assert_eq!(reason_to_compact(head.reason), "OK");
+    assert_eq!(head.version, Version::HTTP_11);
+    let headers = head.into_headers();
     assert_eq!(headers.get("host"), Some("a"));
     assert_eq!(headers.get("x-a"), Some("1"));
     assert_eq!(rest, b"body");

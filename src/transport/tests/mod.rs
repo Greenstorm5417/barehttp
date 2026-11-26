@@ -14,3 +14,4 @@ mod test_fragmentation;
 mod test_limits;
 mod test_partial_writes;
 mod test_pool;
+mod test_wire_equivalence;

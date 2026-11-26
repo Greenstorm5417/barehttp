@@ -49,7 +49,7 @@ pub(super) fn decompress_owned(
 ) -> Result<Vec<u8>, DecompressError> {
   let deflate = split_deflate(data)?;
   let mut adler = RunningChecksum::adler();
-  let (out, consumed) = inflate::inflate_owned(deflate, max_out, &mut adler)?;
+  let (out, consumed) = inflate::inflate_owned(deflate, max_out, &mut adler, None)?;
   let trailer_off = consumed
     .checked_add(2)
     .ok_or(DecompressError::InvalidInput)?;
@@ -70,7 +70,7 @@ pub(super) fn decompress(
   }
   let deflate = split_deflate(data)?;
   let mut adler = RunningChecksum::adler();
-  let consumed = inflate::inflate(deflate, max_out, &mut adler, out)?;
+  let consumed = inflate::inflate(deflate, max_out, &mut adler, out, None)?;
   let trailer_off = consumed
     .checked_add(2)
     .ok_or(DecompressError::InvalidInput)?;

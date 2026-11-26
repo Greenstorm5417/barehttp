@@ -107,6 +107,7 @@ impl<'a> BitReader<'a> {
   }
 
   /// Peek up to `n` bits (or fewer at EOF). Returns `(value, bits_available)`.
+  #[inline]
   pub(super) fn peek_bits_available(
     &mut self,
     n: u8,

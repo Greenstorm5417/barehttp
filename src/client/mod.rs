@@ -7,18 +7,17 @@ use crate::error::{Error, InvalidRequest};
 use crate::headers::Headers;
 use crate::method::Method;
 use crate::parser::Response;
-use crate::parser::uri::{Host, Uri};
-use crate::parser::{SerializedRequest, serialize_request};
+use crate::parser::uri::Uri;
+use crate::parser::{HeadOptions, RequestHead};
 use crate::request_builder::ClientRequestBuilder;
 use crate::socket::{BlockingSocket, BlockingSocketFactory};
-use crate::transport::{ConnectionPool, PoolKey, PooledBuffers, RawResponse};
+use crate::transport::{ConnectionPool, PoolKeyRef, RawResponse};
+use crate::util::{HostText, host_text};
 use alloc::borrow::Cow;
-use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
-use core::fmt::Write as _;
 
 #[cfg(feature = "cookie-jar")]
 use crate::cookie_jar::CookieStore;
@@ -226,12 +225,13 @@ where
       config,
       method,
       url.as_ref(),
-      custom_headers.clone(),
+      Cow::Borrowed(custom_headers),
       body.map(|b| b.as_ref().to_vec()),
     )
   }
 
-  /// Like [`Self::request_with_config`], but takes already-owned headers + body (no map/body copy).
+  /// Like [`Self::request_with_config`], with headers borrowed or owned (the map
+  /// is only copied if a redirect has to strip fields) and an owned body.
   ///
   /// Redirect hops reuse the same `Option<Vec<u8>>` in place (borrow for send, never re-copy).
   pub(crate) fn request_with_config_owned(
@@ -239,7 +239,7 @@ where
     config: &Config,
     method: Method,
     url: &str,
-    mut current_headers: Headers,
+    mut current_headers: Cow<'_, Headers>,
     body: Option<Vec<u8>>,
   ) -> Result<Response, Error> {
     // No tunnel / authority-form yet (RFC 9112 §3.2.3 / §9.3.6).
@@ -262,21 +262,25 @@ where
       let uri = Uri::parse(current_url.as_ref()).map_err(Error::Parse)?;
       validate_protocol(config, &uri)?;
 
-      // Jar cookies merge in place; redirect sanitize strips Cookie before the next hop.
+      // Jar cookies ride along as a head option (the caller's map is untouched).
       #[cfg(feature = "cookie-jar")]
-      {
-        let cookie_header = self.cookie_store.cookie_header_for_uri(&uri);
-        current_headers.merge_cookie(&cookie_header);
-      }
+      let jar_cookie = self.cookie_store.cookie_header_for_uri(&uri);
+      #[cfg(feature = "cookie-jar")]
+      let jar_cookie_str = jar_cookie.as_str();
+      #[cfg(not(feature = "cookie-jar"))]
+      let jar_cookie_str = "";
 
+      let host = host_text(&uri);
       let (raw, to_pool) = execute(
         &self.pool,
         self.dns.as_ref(),
         config,
         &uri,
+        &host,
         &current_method,
-        &mut current_headers,
+        &current_headers,
         current_body.as_deref(),
+        jar_cookie_str,
       )?;
 
       #[cfg(feature = "cookie-jar")]
@@ -291,8 +295,9 @@ where
 
       // Only idle-pool after body decode succeeds (gzip/limits/etc.).
       let response = raw_to_response(raw, &current_method, config.max_response_body_size())?;
-      if let Some((key, socket, bufs)) = to_pool {
-        self.pool.return_connection(key, socket, bufs);
+      if let Some(socket) = to_pool {
+        let key = PoolKeyRef::new(uri.scheme(), host.as_str(), uri.port_or_default());
+        self.pool.return_connection(&key, socket);
       }
 
       if config.http_status_as_error() && (400..600).contains(&response.status_code()) {
@@ -316,7 +321,7 @@ where
         return Ok(response);
       };
 
-      sanitize_redirect_headers(&mut current_headers, current_body.is_none());
+      sanitize_redirect_headers(current_headers.to_mut(), current_body.is_none());
       current_url = Cow::Owned(next_url);
       current_method = next_method;
     }
@@ -327,7 +332,7 @@ const fn pooling_enabled(config: &Config) -> bool {
   config.max_idle_per_host() > 0
 }
 
-fn raw_to_response(
+pub(crate) fn raw_to_response(
   raw: RawResponse,
   method: &Method,
   max_body: usize,
@@ -338,12 +343,25 @@ fn raw_to_response(
     mut headers,
     version,
     body_bytes,
+    body_tail,
     decoded_chunked_trailers,
   } = raw;
 
-  let (response_body, trailers) = if method == &Method::Head {
-    (bytes::Bytes::new(), Headers::new())
-  } else if let Some(trailers) = decoded_chunked_trailers {
+  if method == &Method::Head {
+    return Ok(Response::from_parts(
+      status_code,
+      reason,
+      headers,
+      bytes::Bytes::new(),
+      Headers::new(),
+    ));
+  }
+  // Identity-coded body already in the header arena (size checked on read).
+  if let Some(tail) = body_tail {
+    return Ok(Response::from_tail(status_code, reason, headers, tail, Headers::new()));
+  }
+
+  let (response_body, trailers) = if let Some(trailers) = decoded_chunked_trailers {
     // Transport already decoded chunked framing on the wire — skip second pass.
     Response::finish_decoded_body(body_bytes, &mut headers, trailers, max_body).map_err(Error::from)?
   } else {
@@ -489,66 +507,28 @@ fn execute<S, D>(
   dns: &D,
   config: &Config,
   uri: &Uri,
+  host: &HostText<'_>,
   method: &Method,
-  headers: &mut Headers,
+  headers: &Headers,
   body: Option<&[u8]>,
-) -> Result<(RawResponse, Option<(PoolKey, S, PooledBuffers)>), Error>
+  cookie: &str,
+) -> Result<(RawResponse, Option<S>), Error>
 where
   S: BlockingSocket + BlockingSocketFactory,
   D: DnsResolver,
 {
-  // ≤1 host-string alloc per hop: borrow reg-name; own only for IP literals.
-  // Host header reuses that buffer (append `:port` in place when needed).
-  // Residual: PoolKey lowercases into its own String; Headers::set copies into the
-  // arena; transport SNI still formats host separately (out of this change's scope).
-  let mut host = host_from_uri(uri);
   let port = uri.port_or_default();
-  let pool_key = PoolKey::new(uri.scheme().to_ascii_lowercase(), host.as_ref(), port);
+  // Validate + size the head before any DNS / connect work (fail fast, no I/O).
+  let head = build_request(uri, method, host, port, headers, body, config, cookie)?;
 
-  let (mut socket, reused, pooled_bufs) = get_or_create_socket(pool, config, &pool_key)?;
-  match try_one_hop(
-    dns,
-    config,
-    uri,
-    method,
-    headers,
-    body,
-    &mut host,
-    port,
-    &mut socket,
-    reused,
-    pooled_bufs,
-  ) {
-    Ok((raw, reusable, returned_bufs)) => {
-      let to_pool = if pooling_enabled(config) && reusable {
-        Some((pool_key, socket, returned_bufs))
-      } else {
-        None
-      };
-      Ok((raw, to_pool))
-    },
+  let (mut socket, reused) = get_or_create_socket(pool, config, uri, host, port)?;
+  match try_one_hop(dns, config, uri, host, &head, body, method, &mut socket, reused) {
+    Ok((raw, reusable)) => Ok((raw, (pooling_enabled(config) && reusable).then_some(socket))),
     Err(e) if reused && matches!(e, Error::Socket(_)) => {
       drop(socket);
       let mut fresh = S::new().map_err(Error::Socket)?;
-      let (raw, reusable, returned_bufs) = try_one_hop(
-        dns,
-        config,
-        uri,
-        method,
-        headers,
-        body,
-        &mut host,
-        port,
-        &mut fresh,
-        false,
-        PooledBuffers::default(),
-      )?;
-      let to_pool = if pooling_enabled(config) && reusable {
-        Some((pool_key, fresh, returned_bufs))
-      } else {
-        None
-      };
-      Ok((raw, to_pool))
+      let (raw, reusable) = try_one_hop(dns, config, uri, host, &head, body, method, &mut fresh, false)?;
+      Ok((raw, (pooling_enabled(config) && reusable).then_some(fresh)))
     },
     Err(e) => Err(e),
   }
@@ -558,37 +538,21 @@ fn try_one_hop<S, D>(
   dns: &D,
   config: &Config,
   uri: &Uri,
-  method: &Method,
-  headers: &mut Headers,
+  host: &HostText<'_>,
+  head: &RequestHead<'_>,
   body: Option<&[u8]>,
-  host: &mut Cow<'_, str>,
-  port: u16,
+  method: &Method,
   socket: &mut S,
   reused: bool,
-  buffers: PooledBuffers,
-) -> Result<(RawResponse, bool, PooledBuffers), Error>
+) -> Result<(RawResponse, bool), Error>
 where
   S: BlockingSocket + BlockingSocketFactory,
   D: DnsResolver,
 {
-  let mut conn = crate::transport::connection::connect_with_buffers(socket, dns, uri, config, reused, buffers)?;
-  let request = build_request(uri, method, host, port, headers, body, config)?;
-  conn.send_request(&request.head, request.body)?;
+  let mut conn = crate::transport::connection::connect_host(socket, dns, uri, host, config, reused)?;
+  conn.send_head(head, body.unwrap_or(&[]))?;
   let raw = conn.read_raw_response(method != &Method::Head)?;
-  let reusable = conn.is_reusable();
-  let returned_bufs = conn.take_buffers();
-  Ok((raw, reusable, returned_bufs))
-}
-
-/// Hostname for this hop: borrowed reg-name, or one alloc for an IP literal.
-fn host_from_uri<'a>(uri: &Uri<'a>) -> Cow<'a, str> {
-  let Some(auth) = uri.authority() else {
-    return Cow::Borrowed("");
-  };
-  match auth.host() {
-    Host::RegName(name) => Cow::Borrowed(*name),
-    Host::IpAddr(addr) => Cow::Owned(crate::util::format_ip_for_host(*addr)),
-  }
+  Ok((raw, conn.is_reusable()))
 }
 
 #[inline]
@@ -600,50 +564,22 @@ const fn host_omits_port(
     || (uri.scheme().eq_ignore_ascii_case("https") && port == 443)
 }
 
-/// Set `Host` from `host`, appending `:port` without a second host alloc when `host` is owned.
-fn apply_host_header(
-  headers: &mut Headers,
-  uri: &Uri<'_>,
-  host: &mut Cow<'_, str>,
-  port: u16,
-) {
-  if host_omits_port(uri, port) {
-    headers.set(Headers::HOST, host.as_ref());
-    return;
-  }
-  match host {
-    Cow::Owned(s) => {
-      let len = s.len();
-      s.reserve(6);
-      s.push(':');
-      let _ = write!(s, "{port}");
-      headers.set(Headers::HOST, s.as_str());
-      // Restore hostname so a pooled-socket retry can rebuild Host.
-      s.truncate(len);
-    },
-    Cow::Borrowed(s) => {
-      // One alloc: `host:port` (reg-name was not heap-owned).
-      headers.set(Headers::HOST, format!("{s}:{port}").as_str());
-    },
-  }
-}
-
 fn get_or_create_socket<S>(
   pool: &Arc<ConnectionPool<S>>,
   config: &Config,
-  pool_key: &PoolKey,
-) -> Result<(S, bool, PooledBuffers), Error>
+  uri: &Uri,
+  host: &HostText<'_>,
+  port: u16,
+) -> Result<(S, bool), Error>
 where
   S: BlockingSocket + BlockingSocketFactory,
 {
   if pooling_enabled(config)
-    && let Some((s, buffers)) = pool.get(pool_key)
+    && let Some(s) = pool.get(&PoolKeyRef::new(uri.scheme(), host.as_str(), port))
   {
-    return Ok((s, true, buffers));
+    return Ok((s, true));
   }
-  S::new()
-    .map(|s| (s, false, PooledBuffers::default()))
-    .map_err(Error::Socket)
+  S::new().map(|s| (s, false)).map_err(Error::Socket)
 }
 
 /// Default `Accept-Encoding` when compression features are on (no per-request join).
@@ -653,47 +589,36 @@ const DEFAULT_ACCEPT_ENCODING: &str = "gzip, deflate, zstd";
 const DEFAULT_ACCEPT_ENCODING: &str = "gzip, deflate";
 #[cfg(all(feature = "zstd", not(feature = "gzip")))]
 const DEFAULT_ACCEPT_ENCODING: &str = "zstd";
+#[cfg(not(any(feature = "gzip", feature = "zstd")))]
+const DEFAULT_ACCEPT_ENCODING: &str = "";
 
-/// Build wire request (HTTP/1.1 + Host + origin-form target).
+/// Build the wire request head (HTTP/1.1 + Host + origin-form target).
 ///
-/// Mutates `headers` in place (Host / defaults). Header block and body stay
-/// separate ([`SerializedRequest`]) so the transport can write them without
-/// concatenating. Exposed for unit tests that assert wire serialization.
-///
-/// `host` is the hop hostname (no port). On non-default ports an owned host may
-/// temporarily append `:port` for the header value, then truncate back.
+/// Never mutates `headers`: Host, `Connection: close` (pooling off), the
+/// default `User-Agent` / `Accept` / `Accept-Encoding`, and jar `cookie` are
+/// layered on while writing. The head is written later straight into the
+/// connection's scratch buffer; the body stays a separate borrowed slice.
 pub fn build_request<'a>(
-  uri: &Uri,
-  method: &Method,
-  host: &mut Cow<'_, str>,
+  uri: &'a Uri,
+  method: &'a Method,
+  host: &'a HostText<'_>,
   port: u16,
-  headers: &mut Headers,
-  body: Option<&'a [u8]>,
-  config: &Config,
-) -> Result<SerializedRequest<'a>, Error> {
+  headers: &'a Headers,
+  body: Option<&[u8]>,
+  config: &'a Config,
+  cookie: &'a str,
+) -> Result<RequestHead<'a>, Error> {
   // Userinfo rejected at Uri::parse for HTTP client use.
-
-  // Always rebuild Host for the current hop (user Host may be stale after redirects).
-  apply_host_header(headers, uri, host, port);
-
-  // RFC 9112 §9.3: client that will not reuse MUST send Connection: close
-  if !pooling_enabled(config) {
-    headers.set(Headers::CONNECTION, "close");
-  }
-
-  if !config.user_agent().is_empty() && !headers.contains(Headers::USER_AGENT) {
-    headers.insert(Headers::USER_AGENT, config.user_agent());
-  }
-
-  if !config.accept().is_empty() && !headers.contains(Headers::ACCEPT) {
-    headers.insert(Headers::ACCEPT, config.accept());
-  }
-
-  #[cfg(any(feature = "gzip", feature = "zstd"))]
-  if !headers.contains(Headers::ACCEPT_ENCODING) {
-    headers.insert(Headers::ACCEPT_ENCODING, DEFAULT_ACCEPT_ENCODING);
-  }
-
-  // Borrow path/query into the head buffer — no intermediate `path?query` String.
-  serialize_request(method.as_str(), uri.path(), uri.query(), headers, body).map_err(Error::Parse)
+  let opts = HeadOptions {
+    // Always rebuilt for the current hop (a caller Host may be stale after redirects).
+    host: host.as_str(),
+    host_port: (!host_omits_port(uri, port)).then_some(port),
+    // RFC 9112 §9.3: client that will not reuse MUST send Connection: close
+    connection_close: !pooling_enabled(config),
+    user_agent: config.user_agent(),
+    accept: config.accept(),
+    accept_encoding: DEFAULT_ACCEPT_ENCODING,
+    cookie,
+  };
+  RequestHead::new(method.as_str(), uri.path(), uri.query(), headers, body, opts).map_err(Error::Parse)
 }

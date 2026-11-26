@@ -1,7 +1,7 @@
 //! HTTP/1.1 parsing and wire serialization (`pub(crate)`).
 //!
 //! Crate-root re-exports: [`Response`], [`version::Version`].
-//! Internal: [`serialize_request`], [`SerializedRequest`], [`BodyReadStrategy`], [`uri::Uri`], [`has_complete_headers`].
+//! Internal: [`RequestHead`], [`HeadOptions`], [`BodyReadStrategy`], [`uri::Uri`], [`has_complete_headers`].
 
 pub mod chunked;
 #[cfg(feature = "cookie-jar")]
@@ -20,14 +20,27 @@ mod kani_proofs;
 
 /// Buffer already contains a complete header section (`\r\n\r\n` or LF-only `\n\n`).
 #[inline]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn has_complete_headers(data: &[u8]) -> bool {
   header_section_end(data).is_some()
 }
 
 /// Length of the header section including the terminating blank line, if complete.
 #[inline]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn header_section_end(data: &[u8]) -> Option<usize> {
-  let mut off = 0usize;
+  header_section_end_from(data, 0)
+}
+
+/// Like [`header_section_end`], resuming the search at `from` (callers pass the
+/// previous buffer length minus 3 so a terminator split across reads is found
+/// without rescanning the whole prefix).
+#[inline]
+pub(crate) fn header_section_end_from(
+  data: &[u8],
+  from: usize,
+) -> Option<usize> {
+  let mut off = from;
   while let Some(rel) = find_byte(data.get(off..).unwrap_or(&[]), b'\n') {
     let i = off.saturating_add(rel);
     if data.get(i.saturating_add(1)).copied() == Some(b'\n') {
@@ -108,4 +121,7 @@ pub(crate) fn find_cr_or_lf(haystack: &[u8]) -> Option<usize> {
 
 pub use response::BodyReadStrategy;
 pub use response::Response;
-pub use wire_request::{SerializedRequest, serialize_request};
+pub(crate) use response::{TAIL_BODY_MAX, tail_slice};
+#[cfg(test)]
+pub use wire_request::serialize_request;
+pub use wire_request::{HeadOptions, RequestHead, SliceSink};

@@ -18,7 +18,17 @@ const WINDOW: usize = 32_768;
 fn inflate_out_capacity(
   data_len: usize,
   max_out: usize,
+  hint: Option<usize>,
 ) -> usize {
+  // Trusted-enough size hint (gzip ISIZE): exact allocation, no regrowth and no
+  // slack. Bounded like a real bomb would be: `max_out` and DEFLATE's maximum
+  // expansion (~1032:1), so a lying trailer cannot over-allocate further.
+  if let Some(h) = hint
+    && h <= max_out
+    && h <= data_len.saturating_mul(1032)
+  {
+    return h;
+  }
   let scaled = if data_len < 48 {
     data_len.saturating_mul(4).max(64)
   } else {
@@ -135,10 +145,11 @@ pub(super) fn inflate_owned(
   data: &[u8],
   max_out: usize,
   checksum: &mut RunningChecksum,
+  hint: Option<usize>,
 ) -> Result<(Vec<u8>, usize), DecompressError> {
   let mut bits = BitReader::new(data);
-  // Heuristic capacity: prefer avoiding realloc churn on typical HTTP bodies.
-  let mut out = Vec::with_capacity(inflate_out_capacity(data.len(), max_out));
+  // Exact (hinted) or heuristic capacity: avoid realloc churn on typical bodies.
+  let mut out = Vec::with_capacity(inflate_out_capacity(data.len(), max_out, hint));
   // Lazy: fixed/stored-only members never touch the dynamic Huffman pool.
   let mut huff_pool: Option<HuffmanPool> = None;
   loop {
@@ -173,10 +184,11 @@ pub(super) fn inflate(
   max_out: usize,
   checksum: &mut RunningChecksum,
   out: &mut Vec<u8>,
+  hint: Option<usize>,
 ) -> Result<usize, DecompressError> {
   let mut bits = BitReader::new(data);
-  // Heuristic capacity: prefer avoiding realloc churn on typical HTTP bodies.
-  let guess = inflate_out_capacity(data.len(), max_out);
+  // Exact (hinted) or heuristic capacity: avoid realloc churn on typical bodies.
+  let guess = inflate_out_capacity(data.len(), max_out, hint);
   // Fresh buffer: `with_capacity` matches [`inflate_owned`].
   // Reused buffer: clear + reserve keeps pooled capacity.
   if out.capacity() == 0 {

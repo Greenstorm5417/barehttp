@@ -30,7 +30,8 @@ use core::time::Duration;
 pub struct ClientRequestBuilder<S, D> {
   client: HttpClient<S, D>,
   method: Method,
-  url: String,
+  /// Inline up to 24 bytes (short URLs never touch the heap).
+  url: compact_str::CompactString,
   headers: Headers,
   query_params: Vec<(String, String)>,
   form_data: Vec<(String, String)>,
@@ -67,7 +68,7 @@ where
     Self {
       client,
       method,
-      url: String::from(url.as_ref()),
+      url: compact_str::CompactString::from(url.as_ref()),
       headers: Headers::new(),
       query_params: Vec::new(),
       form_data: Vec::new(),
@@ -301,7 +302,7 @@ where
       .unwrap_or_else(|| self.client.config());
     self
       .client
-      .request_with_config_owned(config, self.method, &url, headers, body)
+      .request_with_config_owned(config, self.method, &url, alloc::borrow::Cow::Owned(headers), body)
   }
 
   /// Set the body and send ([`Self::call`]).
@@ -374,22 +375,23 @@ where
   out
 }
 
-fn append_encoded_pairs<'a>(
-  base: &str,
+fn append_encoded_pairs<'a, 'b>(
+  base: &'b str,
   pairs: impl Iterator<Item = (&'a str, &'a str)>,
-) -> String {
+) -> alloc::borrow::Cow<'b, str> {
   let encoded = encode_query_pairs(pairs);
   if encoded.is_empty() {
-    return String::from(base);
+    return alloc::borrow::Cow::Borrowed(base);
   }
-  let mut url = String::from(base);
+  let mut url = String::with_capacity(base.len().saturating_add(1).saturating_add(encoded.len()));
+  url.push_str(base);
   url.push(if url.contains('?') {
     '&'
   } else {
     '?'
   });
   url.push_str(&encoded);
-  url
+  alloc::borrow::Cow::Owned(url)
 }
 
 fn cookie_pair_ok(s: &str) -> bool {
